@@ -38,10 +38,16 @@ export function ActivityFeed({
     .sort((a, b) => b.at - a.at)
     .slice(0, limit);
 
+  // A failed persistence read collapses to [] but must NOT read as "nothing
+  // happened" — the system genuinely does not know (PLA-194).
+  const unknown = events.length === 0 && snapshot.activityAvailable === false;
+
   return (
     <Panel className="flex flex-col">
       <PanelHeader title="Recent activity" id="activity-heading" />
-      {events.length === 0 ? (
+      {unknown ? (
+        <p className="text-meta text-faint">Activity history is unavailable.</p>
+      ) : events.length === 0 ? (
         <p className="text-meta text-faint">Nothing has happened recently.</p>
       ) : (
         <ul className="flex flex-col gap-2.5">

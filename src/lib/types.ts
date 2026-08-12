@@ -265,6 +265,13 @@ export interface DashboardSnapshot {
   zfs: ZfsSnapshot;
   attention: AttentionItem[];
   activity: ActivityEvent[];
+  /**
+   * Whether the activity feed was read successfully. `false` means the
+   * persistence read failed and the empty `activity` array is "unknown", not
+   * "nothing happened" — the UI must render those distinctly. Absent/`true`
+   * means the (possibly empty) feed is authoritative.
+   */
+  activityAvailable?: boolean;
   /** Chart history windows (optional; present in aggregate responses). */
   history?: DashboardHistory;
 }

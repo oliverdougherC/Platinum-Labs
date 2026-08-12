@@ -5,6 +5,7 @@ import { Separator } from "@/components/ui/separator";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { ThroughputChart } from "@/components/charts/throughput-chart";
 import {
+  acquisitionAvailability,
   connectorPresentation,
   healthById,
   mediaVisualState,
@@ -58,7 +59,7 @@ export function MediaModule({
 
       <Separator className="my-5" />
 
-      <AcquisitionBlock snapshot={snapshot} />
+      <AcquisitionBlock snapshot={snapshot} now={now} />
     </Panel>
   );
 }
@@ -162,7 +163,13 @@ function SessionRow({ session }: { session: JellyfinSession }) {
   );
 }
 
-function AcquisitionBlock({ snapshot }: { snapshot: DashboardSnapshot }) {
+function AcquisitionBlock({
+  snapshot,
+  now,
+}: {
+  snapshot: DashboardSnapshot;
+  now: number;
+}) {
   const { items, rollup } = snapshot.acquisition;
   const top = items.slice(0, 4);
 
@@ -171,6 +178,18 @@ function AcquisitionBlock({ snapshot }: { snapshot: DashboardSnapshot }) {
   // (no permanent empty chart placeholder).
   const throughput = snapshot.history?.throughput ?? [];
   const hasFlow = throughput.some((p) => p.bps > 0);
+
+  // Truthful empty state: never claim the queue is "clear" when a source is
+  // actually unavailable or unconfigured (PLA-194).
+  const availability = acquisitionAvailability(snapshot, now);
+  const emptyMessage =
+    availability.kind === "unconfigured"
+      ? "No download sources are configured."
+      : availability.kind === "degraded"
+        ? "Some download sources are unavailable — the queue may be incomplete."
+        : availability.stale
+          ? "Acquisition queue is clear (showing last-known-good)."
+          : "Acquisition queue is clear.";
 
   return (
     <div className="mt-auto flex flex-col gap-4">
@@ -188,7 +207,14 @@ function AcquisitionBlock({ snapshot }: { snapshot: DashboardSnapshot }) {
       {hasFlow ? <ThroughputChart data={throughput} label="Transfer throughput" /> : null}
 
       {top.length === 0 ? (
-        <p className="text-meta text-faint">Acquisition queue is clear.</p>
+        <p
+          className={cn(
+            "text-meta",
+            availability.kind === "degraded" ? "text-warn" : "text-faint",
+          )}
+        >
+          {emptyMessage}
+        </p>
       ) : (
         <ul className="flex flex-col divide-y divide-hairline">
           {top.map((item) => (

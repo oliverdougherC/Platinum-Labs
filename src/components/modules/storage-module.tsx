@@ -2,17 +2,29 @@ import { Panel, PanelHeader } from "@/components/ui/panel";
 import { Badge } from "@/components/ui/badge";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { StatusDot } from "@/components/status-dot";
-import { capacityBand, storageVisualState } from "@/lib/dashboard/derive";
+import { StorageTrendChart } from "@/components/charts/storage-trend-chart";
+import {
+  capacityBand,
+  healthById,
+  storagePresentation,
+  storageVisualState,
+} from "@/lib/dashboard/derive";
 import { projectCapacity, projectionLabel, type StoragePoint } from "@/lib/dashboard/projection";
 import { appConfig } from "@/lib/config";
 import { formatBytes, formatPercent, formatRelativeTime } from "@/lib/utils";
 import type { DashboardSnapshot, ZfsPool, ZfsScanState } from "@/lib/types";
 
+/** Minimum distinct history points before the 30-day trend chart is meaningful. */
+const MIN_TREND_POINTS = 3;
+
 /**
  * ZFS storage — the secondary primary surface (PLA-175 / PLA-188). Per-pool
- * capacity, health, scan/scrub state, 30-day growth, and a subordinate capacity
- * projection when enough real history exists. Empty pool set reads as "not
- * configured", distinct from a failure.
+ * capacity, health, scan/scrub state, the real 30-day used-capacity trend, and a
+ * subordinate capacity projection when enough real history exists.
+ *
+ * Empty/unavailable states are health-aware (PLA-194): a configured-but-
+ * unreachable ZFS source reads as "unavailable", NOT "not configured", and an
+ * empty pool set only reads as "no pools" when the source is genuinely healthy.
  */
 export function StorageModule({
   snapshot,
@@ -23,26 +35,76 @@ export function StorageModule({
 }) {
   const state = storageVisualState(snapshot);
   const pools = snapshot.zfs.pools;
+  const presentation = storagePresentation(snapshot, now);
+  const configError = healthById(snapshot.health, "zfs")?.configError ?? null;
+
+  // No usable pool data: say WHY (unconfigured / misconfigured / unavailable /
+  // stale-with-no-LKG), never a misleading "no pools configured".
+  const empty = pools.length === 0;
+  const emptyMessage =
+    presentation === "unconfigured"
+      ? "Storage is not configured."
+      : presentation === "misconfigured"
+        ? configError
+          ? `Storage is misconfigured: ${configError}.`
+          : "Storage is misconfigured."
+        : presentation === "unavailable"
+          ? "Storage data is unavailable."
+          : presentation === "stale"
+            ? "Storage data is unavailable (last sync failed)."
+            : "No pools reported."; // healthy + genuinely empty
+
+  const stale = presentation === "stale" && !empty;
+  const trend = storageTrend(snapshot);
 
   return (
     <Panel state={state} className="flex min-h-[19rem] flex-col">
-      <PanelHeader title="Storage" id="storage-heading" />
-      {pools.length === 0 ? (
-        <p className="text-body text-faint">No pools configured.</p>
+      <PanelHeader
+        title="Storage"
+        id="storage-heading"
+        trailing={stale ? <Badge tone="warn">stale</Badge> : null}
+      />
+      {empty ? (
+        <p className="text-body text-faint">{emptyMessage}</p>
       ) : (
-        <ul className="flex flex-col gap-5">
-          {pools.map((pool) => (
-            <PoolRow
-              key={pool.name}
-              pool={pool}
-              now={now}
-              history={poolHistory(snapshot, pool.name)}
-            />
-          ))}
-        </ul>
+        <>
+          <ul className="flex flex-col gap-5">
+            {pools.map((pool) => (
+              <PoolRow
+                key={pool.name}
+                pool={pool}
+                now={now}
+                history={poolHistory(snapshot, pool.name)}
+              />
+            ))}
+          </ul>
+          {trend ? (
+            <div className="mt-5">
+              <StorageTrendChart
+                data={trend.data}
+                series={trend.series}
+                label="Used capacity · 30d"
+              />
+            </div>
+          ) : null}
+        </>
       )}
     </Panel>
   );
+}
+
+/**
+ * The real persisted 30-day used-capacity trend, or null when there is not
+ * enough history for it to be meaningful (a fresh install shows current usage
+ * without pretending a trend exists). Subordinate to the current capacity rows.
+ */
+function storageTrend(
+  snapshot: DashboardSnapshot,
+): { data: Array<{ t: number } & Record<string, number>>; series: string[] } | null {
+  const rows = snapshot.history?.storage ?? [];
+  const series = snapshot.history?.storageSeries ?? [];
+  if (series.length === 0 || rows.length < MIN_TREND_POINTS) return null;
+  return { data: rows, series };
 }
 
 /** Extract a pool's used-bytes series from the aggregate history window. */

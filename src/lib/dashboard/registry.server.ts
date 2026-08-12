@@ -254,13 +254,18 @@ function readHistory(now: number): DashboardHistory {
   }
 }
 
-/** Read the persisted normalized activity feed (newest first, bounded). */
-function readActivity(): DashboardSnapshot["activity"] {
+/**
+ * Read the persisted normalized activity feed (newest first, bounded). Returns
+ * an explicit availability flag so a read FAILURE (empty + available:false) is
+ * never rendered as "nothing happened" (empty + available:true) — PLA-194.
+ */
+function readActivity(): { events: ActivityEvent[]; available: boolean } {
   try {
-    return recentEvents(getDb(), ACTIVITY_LIMIT);
+    return { events: recentEvents(getDb(), ACTIVITY_LIMIT), available: true };
   } catch {
-    // One DB read failure must never make the dashboard fail — return empty.
-    return [];
+    // One DB read failure must never make the dashboard fail, but it must also
+    // not masquerade as a truthful empty feed.
+    return { events: [], available: false };
   }
 }
 
@@ -423,11 +428,13 @@ function step(reg: LiveRegistry, now: number): void {
   // The PUBLIC snapshot drops the seeding/completed library from the browser
   // payload and attaches the persisted feed AFTER deriving this cycle's events so
   // the newest events are included immediately.
+  const activity = readActivity();
   const publicSnapshot: DashboardSnapshot = {
     ...snapshot,
     acquisition: filterAcquisitionForDisplay(snapshot.acquisition),
+    activity: activity.events,
+    activityAvailable: activity.available,
   };
-  publicSnapshot.activity = readActivity();
   cached = publicSnapshot;
 }
 
