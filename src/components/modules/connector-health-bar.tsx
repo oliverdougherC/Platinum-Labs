@@ -16,6 +16,7 @@ const PRESENTATION_META: Record<
   stale: { dot: "bg-warn", text: "text-warn", label: "stale" },
   unavailable: { dot: "bg-danger", text: "text-danger", label: "offline" },
   unconfigured: { dot: "bg-hairline", text: "text-faint", label: "not set up" },
+  misconfigured: { dot: "bg-warn", text: "text-warn", label: "misconfigured" },
 };
 
 export function ConnectorHealthBar({

@@ -1,15 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { assembleSnapshot, mergeAcquisition } from "@/lib/dashboard/aggregate";
+import {
+  assembleSnapshot,
+  fillConnectorHealth,
+  mergeAcquisition,
+  CORE_CONNECTORS,
+  type ConnectorConfigStatus,
+} from "@/lib/dashboard/aggregate";
 import type {
   AcquisitionItem,
   AcquisitionSnapshot,
   ConnectorHealth,
+  ConnectorId,
 } from "@/lib/types";
 
 const NOW = 1_754_000_000_000;
 
 function health(id: ConnectorHealth["id"], status: ConnectorHealth["status"]): ConnectorHealth {
-  return { id, status, configured: true, lastSuccessAt: NOW, lastError: null, pollIntervalMs: 10_000 };
+  return { id, status, configured: true, lastSuccessAt: NOW, lastError: null, configError: null, pollIntervalMs: 10_000 };
+}
+
+function configStatus(
+  overrides: Partial<Record<ConnectorId, ConnectorConfigStatus>> = {},
+): Record<ConnectorId, ConnectorConfigStatus> {
+  const base = {} as Record<ConnectorId, ConnectorConfigStatus>;
+  for (const id of CORE_CONNECTORS) {
+    base[id] = { configured: false, configError: null, pollIntervalMs: 10_000 };
+  }
+  return { ...base, ...overrides };
 }
 
 const sonarrItem: AcquisitionItem = {
@@ -78,5 +95,41 @@ describe("assembleSnapshot — partial responses", () => {
     });
     expect(snap.health).toHaveLength(1);
     expect(snap.history?.throughput).toHaveLength(1);
+  });
+});
+
+describe("fillConnectorHealth — every connector represented", () => {
+  it("emits a record for all five core connectors even when none are live", () => {
+    const filled = fillConnectorHealth([], configStatus());
+    expect(filled.map((h) => h.id).sort()).toEqual(
+      [...CORE_CONNECTORS].sort(),
+    );
+    expect(filled.every((h) => h.configured === false)).toBe(true);
+  });
+
+  it("keeps live health and fills the rest", () => {
+    const filled = fillConnectorHealth(
+      [health("jellyfin", "healthy")],
+      configStatus(),
+    );
+    const jf = filled.find((h) => h.id === "jellyfin")!;
+    expect(jf.status).toBe("healthy");
+    expect(jf.configured).toBe(true);
+    // An absent connector is present but flagged not-configured (never "healthy empty").
+    const zfs = filled.find((h) => h.id === "zfs")!;
+    expect(zfs.configured).toBe(false);
+    expect(zfs.status).toBe("unavailable");
+  });
+
+  it("surfaces a misconfiguration as configError without a configured flag", () => {
+    const filled = fillConnectorHealth(
+      [],
+      configStatus({
+        sonarr: { configured: false, configError: "missing SONARR_API_KEY", pollIntervalMs: 25_000 },
+      }),
+    );
+    const sonarr = filled.find((h) => h.id === "sonarr")!;
+    expect(sonarr.configured).toBe(false);
+    expect(sonarr.configError).toBe("missing SONARR_API_KEY");
   });
 });

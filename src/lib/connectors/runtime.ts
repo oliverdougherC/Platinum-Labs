@@ -130,6 +130,7 @@ export class ConnectorRuntime<T> {
       configured: true,
       lastSuccessAt: this.lastSuccessAt,
       lastError: this.lastError,
+      configError: null,
       pollIntervalMs: this.connector.pollIntervalMs,
     };
   }

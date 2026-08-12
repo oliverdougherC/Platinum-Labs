@@ -73,6 +73,7 @@ function buildHealth(
             ? now - 5_000
             : now - 4 * MINUTE,
       lastError: o.lastError ?? (status === "healthy" ? null : "Request timed out"),
+      configError: null,
       pollIntervalMs: appConfig.pollIntervalsMs[id],
     };
   });
@@ -375,10 +376,12 @@ function compose(
 const stalledAttention = (now: number): AttentionItem[] => [
   {
     ruleId: "qbittorrent.transfer.stalled",
+    alertId: "qbittorrent.transfer.stalled:q-2",
     severity: "warning",
     title: "Transfer stalled",
     detail: "Sinners (2025) has been stalled for 18 minutes.",
     source: "qbittorrent",
+    subject: "q-2",
     firstSeenAt: now - 18 * MINUTE,
     lastSeenAt: now,
   },
@@ -387,10 +390,12 @@ const stalledAttention = (now: number): AttentionItem[] => [
 const degradedAttention = (now: number): AttentionItem[] => [
   {
     ruleId: "zfs.pool.degraded",
+    alertId: "zfs.pool.degraded:backup",
     severity: "critical",
     title: "Pool degraded",
     detail: "Pool backup is DEGRADED.",
     source: "zfs",
+    subject: "backup",
     firstSeenAt: now - 40 * MINUTE,
     lastSeenAt: now,
   },
@@ -499,10 +504,12 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       attention: [
         {
           ruleId: "connector.unavailable",
+          alertId: "connector.unavailable:jellyfin",
           severity: "warning",
           title: "Jellyfin unreachable",
           detail: "Jellyfin has been unreachable for 5 minutes.",
           source: "jellyfin",
+          subject: "jellyfin",
           firstSeenAt: now - 5 * MINUTE,
           lastSeenAt: now,
         },
@@ -537,10 +544,12 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       attention: [
         {
           ruleId: "zfs.capacity.warning",
+          alertId: "zfs.capacity.warning:tank",
           severity: "warning",
           title: "Pool filling",
           detail: "tank is at 83% and filling faster than its 30-day baseline.",
           source: "zfs",
+          subject: "tank",
           firstSeenAt: now - 2 * HOUR,
           lastSeenAt: now,
         },
@@ -574,6 +583,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
         configured: false,
         lastSuccessAt: null,
         lastError: null,
+        configError: null,
         pollIntervalMs: appConfig.pollIntervalsMs[id],
       })),
       jellyfin: jellyfinUnavailable(),

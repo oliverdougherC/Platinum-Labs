@@ -1,0 +1,125 @@
+import "server-only";
+
+import type { ServerEnv } from "@/lib/env.server";
+import type { ConnectorId } from "@/lib/types";
+
+/**
+ * Typed connector configuration resolution (PLA-193 / Phase 1.6).
+ *
+ * Each connector's fields are validated *together* so a half-configured service
+ * (URL without API key, qB URL without credentials, a ZFS token with no URL)
+ * becomes an explicit `partial` misconfiguration rather than silently collapsing
+ * into "not configured". The three states are mutually exclusive:
+ *
+ *   - `absent`     — no related fields set at all → intentionally unconfigured.
+ *   - `configured` — all required fields present and valid.
+ *   - `partial`    — some but not all required fields set → misconfiguration.
+ *
+ * Error strings name the *missing field(s)* only and never echo a secret value.
+ */
+
+export type ConnectorConfig<T> =
+  | { kind: "configured"; value: T }
+  | { kind: "absent" }
+  | { kind: "partial"; error: string };
+
+export interface HttpServiceConfig {
+  url: string;
+  apiKey: string;
+}
+export interface QbConfig {
+  url: string;
+  username: string;
+  password: string;
+}
+export type ZfsConfig =
+  | { mode: "helper"; url: string; token: string | undefined }
+  | { mode: "command" };
+
+export interface ResolvedConnectors {
+  jellyfin: ConnectorConfig<HttpServiceConfig>;
+  sonarr: ConnectorConfig<HttpServiceConfig>;
+  radarr: ConnectorConfig<HttpServiceConfig>;
+  qbittorrent: ConnectorConfig<QbConfig>;
+  zfs: ConnectorConfig<ZfsConfig>;
+}
+
+/** Classify a fixed set of required, named fields. */
+function classify<T>(
+  fields: Array<{ name: string; value: string | undefined }>,
+  build: () => T,
+): ConnectorConfig<T> {
+  const present = fields.filter((f) => f.value !== undefined);
+  if (present.length === 0) return { kind: "absent" };
+  if (present.length === fields.length) return { kind: "configured", value: build() };
+  const missing = fields.filter((f) => f.value === undefined).map((f) => f.name);
+  return {
+    kind: "partial",
+    error: `incomplete configuration — missing ${missing.join(", ")}`,
+  };
+}
+
+function httpService(
+  url: string | undefined,
+  urlName: string,
+  apiKey: string | undefined,
+  keyName: string,
+): ConnectorConfig<HttpServiceConfig> {
+  return classify<HttpServiceConfig>(
+    [
+      { name: urlName, value: url },
+      { name: keyName, value: apiKey },
+    ],
+    () => ({ url: url!, apiKey: apiKey! }),
+  );
+}
+
+function resolveZfs(env: ServerEnv): ConnectorConfig<ZfsConfig> {
+  // Command mode is an explicit opt-in and takes priority only when no helper
+  // URL is configured (helper is preferred off-host per PLA-184).
+  if (env.ZFS_COLLECTOR_URL) {
+    return {
+      kind: "configured",
+      value: { mode: "helper", url: env.ZFS_COLLECTOR_URL, token: env.ZFS_COLLECTOR_TOKEN },
+    };
+  }
+  if (env.HOMELAB_ZFS_COMMAND) {
+    return { kind: "configured", value: { mode: "command" } };
+  }
+  if (env.ZFS_COLLECTOR_TOKEN) {
+    return {
+      kind: "partial",
+      error: "incomplete configuration — ZFS_COLLECTOR_TOKEN set without ZFS_COLLECTOR_URL",
+    };
+  }
+  return { kind: "absent" };
+}
+
+export function resolveConnectors(env: ServerEnv): ResolvedConnectors {
+  return {
+    jellyfin: httpService(env.JELLYFIN_URL, "JELLYFIN_URL", env.JELLYFIN_API_KEY, "JELLYFIN_API_KEY"),
+    sonarr: httpService(env.SONARR_URL, "SONARR_URL", env.SONARR_API_KEY, "SONARR_API_KEY"),
+    radarr: httpService(env.RADARR_URL, "RADARR_URL", env.RADARR_API_KEY, "RADARR_API_KEY"),
+    qbittorrent: classify<QbConfig>(
+      [
+        { name: "QBITTORRENT_URL", value: env.QBITTORRENT_URL },
+        { name: "QBITTORRENT_USERNAME", value: env.QBITTORRENT_USERNAME },
+        { name: "QBITTORRENT_PASSWORD", value: env.QBITTORRENT_PASSWORD },
+      ],
+      () => ({
+        url: env.QBITTORRENT_URL!,
+        username: env.QBITTORRENT_USERNAME!,
+        password: env.QBITTORRENT_PASSWORD!,
+      }),
+    ),
+    zfs: resolveZfs(env),
+  };
+}
+
+export const CORE_CONNECTOR_IDS: ConnectorId[] = [
+  "jellyfin",
+  "sonarr",
+  "radarr",
+  "qbittorrent",
+  "zfs",
+];

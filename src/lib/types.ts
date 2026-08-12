@@ -36,6 +36,13 @@ export interface ConnectorHealth {
   lastSuccessAt: number | null;
   /** Sanitized, secret-free error message when degraded/unavailable. */
   lastError: string | null;
+  /**
+   * Set when the connector is half-configured (e.g. URL without API key). Names
+   * the missing field(s) only — never echoes a secret value. Distinct from
+   * `lastError` (a runtime poll failure) and from `configured: false` (a clean,
+   * intentional absence).
+   */
+  configError: string | null;
   /** Configured poll interval in milliseconds. */
   pollIntervalMs: number;
 }
@@ -164,14 +171,24 @@ export interface ActivityEvent {
 }
 
 export interface AttentionItem {
-  /** Stable rule id, e.g. "zfs.capacity.critical". */
+  /** Reusable rule class id, e.g. "zfs.capacity.critical". Not unique per pool. */
   ruleId: string;
+  /**
+   * Stable alert-instance id — a rule/source/subject combination that is unique
+   * across simultaneously-firing entities (e.g. two pools breaching the same
+   * capacity rule). Falls back to `ruleId` when a rule can only fire once.
+   */
+  alertId: string;
   severity: Severity;
   title: string;
   detail: string;
   source: ConnectorId;
+  /** Entity the alert is about (pool name, torrent id, connector id), if any. */
+  subject?: string;
   firstSeenAt: number;
   lastSeenAt: number;
+  /** Epoch ms the alert cleared; set only on resolved lifecycle records. */
+  resolvedAt?: number | null;
 }
 
 /** A single throughput history point. */

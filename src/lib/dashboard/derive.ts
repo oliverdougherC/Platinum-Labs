@@ -36,13 +36,18 @@ export type ConnectorPresentation =
   | "ok"
   | "stale"
   | "unavailable"
-  | "unconfigured";
+  | "unconfigured"
+  | "misconfigured";
 
 export function connectorPresentation(
   health: ConnectorHealth | undefined,
   now: number,
 ): ConnectorPresentation {
-  if (!health || !health.configured) return "unconfigured";
+  if (!health) return "unconfigured";
+  // A half-configured connector is a distinct, actionable state — never conflate
+  // it with a clean "not set up" or a runtime failure.
+  if (health.configError) return "misconfigured";
+  if (!health.configured) return "unconfigured";
   if (health.status === "unavailable") return "unavailable";
   if (health.status !== "healthy" || isConnectorStale(health, now)) {
     return "stale";

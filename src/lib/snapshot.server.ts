@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getDataMode } from "@/lib/env.server";
+import { getDataMode, getServerEnv } from "@/lib/env.server";
 import {
   DEFAULT_SCENARIO,
   isScenario,
@@ -42,10 +42,19 @@ export function resolveScenario(override?: string | string[]): FakeScenario {
   const candidate = Array.isArray(override) ? override[0] : override;
   if (isScenario(candidate)) return candidate;
 
-  const fromEnv = process.env.HOMELAB_FAKE_SCENARIO;
+  const fromEnv = safeEnv()?.HOMELAB_FAKE_SCENARIO;
   if (isScenario(fromEnv)) return fromEnv;
 
   return DEFAULT_SCENARIO;
+}
+
+/** Read typed env without throwing (config errors must not blank the page). */
+function safeEnv(): ReturnType<typeof getServerEnv> | null {
+  try {
+    return getServerEnv();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -56,6 +65,6 @@ export function resolveScenario(override?: string | string[]): FakeScenario {
 export function shouldShowDevControls(): boolean {
   return (
     process.env.NODE_ENV !== "production" ||
-    process.env.HOMELAB_ENABLE_DEV_CONTROLS === "1"
+    safeEnv()?.HOMELAB_ENABLE_DEV_CONTROLS === true
   );
 }

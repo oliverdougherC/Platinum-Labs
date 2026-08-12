@@ -14,11 +14,58 @@ import type {
   ActivityEvent,
   AttentionItem,
   ConnectorHealth,
+  ConnectorId,
   DashboardHistory,
   DashboardSnapshot,
   JellyfinSnapshot,
   ZfsSnapshot,
 } from "@/lib/types";
+
+/** The five core connectors that must always appear in `health`. */
+export const CORE_CONNECTORS: ConnectorId[] = [
+  "jellyfin",
+  "sonarr",
+  "radarr",
+  "qbittorrent",
+  "zfs",
+];
+
+/** Config classification for a connector that has no live runtime. */
+export interface ConnectorConfigStatus {
+  /** True only when fully configured (never true for `partial`). */
+  configured: boolean;
+  /** Sanitized "missing field" message for a half-configured connector. */
+  configError: string | null;
+  pollIntervalMs: number;
+}
+
+/**
+ * Ensure a health record exists for *every* core connector. Connectors with a
+ * live runtime keep their real health; absent/misconfigured ones get an explicit
+ * placeholder so the UI can render "not set up" / "misconfigured" instead of the
+ * connector silently vanishing (Phase 1.5). Empty payloads from an absent
+ * connector must never read as a healthy empty state.
+ */
+export function fillConnectorHealth(
+  present: ConnectorHealth[],
+  configStatus: Record<ConnectorId, ConnectorConfigStatus>,
+): ConnectorHealth[] {
+  const byId = new Map(present.map((h) => [h.id, h]));
+  return CORE_CONNECTORS.map((id) => {
+    const live = byId.get(id);
+    if (live) return live;
+    const cfg = configStatus[id];
+    return {
+      id,
+      status: "unavailable",
+      configured: cfg.configured,
+      lastSuccessAt: null,
+      lastError: null,
+      configError: cfg.configError,
+      pollIntervalMs: cfg.pollIntervalMs,
+    };
+  });
+}
 
 export interface AggregateParts {
   now: number;

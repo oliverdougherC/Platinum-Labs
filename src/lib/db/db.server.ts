@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { migrate } from "@/lib/db/migrate";
 import { safePersist } from "@/lib/db/safe";
+import { getServerEnv } from "@/lib/env.server";
 import type { DB } from "@/lib/db/types";
 
 /**
@@ -18,7 +19,12 @@ import type { DB } from "@/lib/db/types";
 let handle: DB | null = null;
 
 function dbPath(): string {
-  return process.env.HOMELAB_DB_PATH ?? "./data/homelab.db";
+  // Single typed source of truth; falls back to the default if env is unreadable.
+  try {
+    return getServerEnv().HOMELAB_DB_PATH;
+  } catch {
+    return process.env.HOMELAB_DB_PATH ?? "./data/homelab.db";
+  }
 }
 
 export function getDb(): DB {

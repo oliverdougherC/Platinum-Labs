@@ -3,14 +3,17 @@ import "server-only";
 import { z } from "zod";
 
 /**
- * Server-only environment parsing.
+ * Server-only environment parsing — the single typed source of truth for every
+ * server-side setting (PLA-193 config consolidation).
  *
  * The `server-only` import above makes this module a build error if it is ever
  * pulled into a client component graph — enforcing the spec's hard boundary:
  * "Never expose service API keys ... to the browser."
  *
  * Secrets are optional so the app boots in fake-data mode with no credentials.
- * Real connectors (Milestone 02) read the validated values from here.
+ * Connector config is *validated together* (URL + key) by `resolveConnectors`,
+ * so a half-configured service becomes an explicit misconfiguration rather than
+ * silently disappearing.
  */
 
 const optionalUrl = z
@@ -24,6 +27,11 @@ const optionalSecret = z
   .min(1)
   .optional()
   .or(z.literal("").transform(() => undefined));
+
+const boolFlag = z
+  .enum(["0", "1", "true", "false"])
+  .optional()
+  .transform((v) => v === "1" || v === "true");
 
 const envSchema = z.object({
   /** Master switch between deterministic fake data and live connectors. */
@@ -51,6 +59,22 @@ const envSchema = z.object({
   // never shells out to `zpool` directly from browser-originated input.
   ZFS_COLLECTOR_URL: optionalUrl,
   ZFS_COLLECTOR_TOKEN: optionalSecret,
+  /** Opt into direct fixed-argv `zpool`/`zfs` execution on the ZFS host. */
+  HOMELAB_ZFS_COMMAND: boolFlag,
+
+  // --- Operational / non-secret runtime config (previously read ad hoc) ---
+  /** SQLite database file path. */
+  HOMELAB_DB_PATH: z.string().min(1).default("./data/homelab.db"),
+  /** Default fake scenario id (validated against the scenario list at call site). */
+  HOMELAB_FAKE_SCENARIO: z.string().optional(),
+  /** Force the dev scenario switcher on in a production build (screenshots/e2e). */
+  HOMELAB_ENABLE_DEV_CONTROLS: boolFlag,
+  /**
+   * Browser-facing quick links as JSON: `[{"label":"Jellyfin","href":"https://..."}]`.
+   * These are *browser-reachable* URLs, deliberately separate from the
+   * server-side connector base URLs (PLA-191). Invalid JSON is ignored.
+   */
+  HOMELAB_QUICK_LINKS: z.string().optional(),
 });
 
 export type ServerEnv = z.infer<typeof envSchema>;
@@ -71,6 +95,11 @@ export function getServerEnv(): ServerEnv {
 
   cached = parsed.data;
   return cached;
+}
+
+/** Test/hot-reload helper: drop the cached parse so a new env is re-read. */
+export function resetServerEnvCache(): void {
+  cached = null;
 }
 
 /** Resolve the effective data mode. Defaults to fake for safety. */
