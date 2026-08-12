@@ -1,6 +1,8 @@
 import "server-only";
 
 import { getDataMode, getServerEnv } from "@/lib/env.server";
+import { appConfig } from "@/lib/config";
+import { parseQuickLinksEnv, type QuickLink } from "@/lib/quicklinks";
 import {
   DEFAULT_SCENARIO,
   isScenario,
@@ -55,6 +57,19 @@ function safeEnv(): ReturnType<typeof getServerEnv> | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Browser-facing quick links (PLA-191). Configured links (validated http/https)
+ * win; otherwise fake/demo mode shows placeholder links so the launcher isn't
+ * empty, while live mode shows nothing until configured (never localhost by
+ * default in production).
+ */
+export function getQuickLinks(): QuickLink[] {
+  const env = safeEnv();
+  const configured = parseQuickLinksEnv(env?.HOMELAB_QUICK_LINKS);
+  if (configured.length > 0) return configured;
+  return (env?.HOMELAB_DATA_MODE ?? "fake") === "fake" ? appConfig.quickLinks : [];
 }
 
 /**

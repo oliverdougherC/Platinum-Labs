@@ -48,7 +48,9 @@ export const appConfig: AppConfig = {
     stalledTransferSeconds: 15 * 60,
     connectorGraceMs: 90_000,
   },
-  // Placeholder quick links; real hosts come from user config in PLA-191.
+  // DEMO-ONLY placeholder links, shown in fake/demo mode so the launcher isn't
+  // empty. Real browser-facing links come from HOMELAB_QUICK_LINKS (PLA-191);
+  // production live mode never falls back to these localhost URLs.
   quickLinks: [
     { label: "Jellyfin", href: "http://localhost:8096" },
     { label: "Sonarr", href: "http://localhost:8989" },
