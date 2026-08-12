@@ -25,8 +25,23 @@ services:
       HOMELAB_DB_PATH: /data/homelab.db
     volumes:
       - homelab-data:/data
+    # Lets the container reach a host-side service (e.g. the ZFS collector) as
+    # `host.docker.internal` without host networking. Remove if unused.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # No Docker socket, no host privileges, no broad mounts — the container only
     # needs outbound network to reach your services (and the ZFS helper API).
+    # The image already runs as a non-root user (uid 1001).
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Bounded local logs (skip if the host uses a central logging driver).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
