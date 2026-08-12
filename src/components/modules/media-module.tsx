@@ -3,6 +3,7 @@ import { Metric } from "@/components/ui/metric";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ProgressBar } from "@/components/ui/progress-bar";
+import { ThroughputChart } from "@/components/charts/throughput-chart";
 import {
   connectorPresentation,
   healthById,
@@ -165,6 +166,12 @@ function AcquisitionBlock({ snapshot }: { snapshot: DashboardSnapshot }) {
   const { items, rollup } = snapshot.acquisition;
   const top = items.slice(0, 4);
 
+  // Real persisted throughput series (live) / deterministic series (fake). Only
+  // revealed when there is actual transfer flow, so an idle system stays quiet
+  // (no permanent empty chart placeholder).
+  const throughput = snapshot.history?.throughput ?? [];
+  const hasFlow = throughput.some((p) => p.bps > 0);
+
   return (
     <div className="mt-auto flex flex-col gap-4">
       <div className="flex flex-wrap gap-x-10 gap-y-4">
@@ -177,6 +184,8 @@ function AcquisitionBlock({ snapshot }: { snapshot: DashboardSnapshot }) {
         />
         <Metric value={formatRate(rollup.aggregateRateBps)} label="throughput" />
       </div>
+
+      {hasFlow ? <ThroughputChart data={throughput} label="Transfer throughput" /> : null}
 
       {top.length === 0 ? (
         <p className="text-meta text-faint">Acquisition queue is clear.</p>

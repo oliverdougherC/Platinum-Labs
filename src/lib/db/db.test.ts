@@ -6,6 +6,7 @@ import {
   insertActivityEvent,
   insertStorageSample,
   insertThroughput,
+  lastPlaybackAt,
   recentEvents,
   recentThroughput,
   recordHealthTransition,
@@ -135,6 +136,23 @@ describe("alerts lifecycle", () => {
     upsertAlert(db, { ...alert, alertId: "zfs.capacity.critical:tank", ruleId: "zfs.capacity.critical", subject: "tank" });
     upsertAlert(db, { ...alert, alertId: "zfs.capacity.critical:backup", ruleId: "zfs.capacity.critical", subject: "backup" });
     expect(countRows(db, "alerts")).toBe(2);
+  });
+});
+
+describe("lastPlaybackAt (PLA-187)", () => {
+  it("returns the most recent playback event time, or null", () => {
+    expect(lastPlaybackAt(db)).toBeNull(); // fresh DB
+    insertActivityEvent(db, {
+      id: "p1", at: NOW - HOUR, kind: "playback.started", severity: "info",
+      source: "jellyfin", message: "started",
+    });
+    insertActivityEvent(db, {
+      id: "p2", at: NOW - 10 * 60_000, kind: "playback.stopped", severity: "info",
+      source: "jellyfin", message: "stopped",
+    });
+    // A non-playback event must not count.
+    insertActivityEvent(db, event("import", NOW));
+    expect(lastPlaybackAt(db)).toBe(NOW - 10 * 60_000);
   });
 });
 

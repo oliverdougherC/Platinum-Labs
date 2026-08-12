@@ -161,6 +161,21 @@ export function recentEvents(db: DB, limit = 50): ActivityEvent[] {
     .all(limit) as ActivityEvent[];
 }
 
+/**
+ * Epoch ms of the most recent meaningful playback event, or null. Lets the live
+ * dashboard show "Last played N ago" after playback stops, since Jellyfin's
+ * `/Sessions` only reports *current* sessions (PLA-187).
+ */
+export function lastPlaybackAt(db: DB): number | null {
+  const row = db
+    .prepare(
+      `SELECT MAX(at) AS at FROM activity_events
+       WHERE kind IN ('playback.started', 'playback.stopped')`,
+    )
+    .get() as { at: number | null };
+  return row.at ?? null;
+}
+
 export function countRows(db: DB, table: string): number {
   // `table` is never user input — internal callers pass literal names.
   const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {

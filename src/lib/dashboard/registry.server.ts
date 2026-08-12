@@ -27,6 +27,7 @@ import {
   insertActivityEvent,
   insertStorageSample,
   insertThroughput,
+  lastPlaybackAt,
   recentEvents,
   recentThroughput,
   recordHealthTransition,
@@ -200,7 +201,7 @@ function build(): LiveRegistry {
 
 function assemble(reg: LiveRegistry, now: number): DashboardSnapshot {
   const health = fillConnectorHealth(reg.hub.health(), reg.configStatus);
-  return assembleSnapshot({
+  const snapshot = assembleSnapshot({
     now,
     health,
     jellyfin: reg.jellyfinRt?.getState().snapshot ?? null,
@@ -210,6 +211,20 @@ function assemble(reg: LiveRegistry, now: number): DashboardSnapshot {
     zfs: reg.zfsRt?.getState().snapshot ?? null,
     history: readHistory(now),
   });
+
+  // Jellyfin's /Sessions only reports *current* playback, so its lastPlaybackAt
+  // is null once everyone stops. Backfill it from the persisted playback events
+  // so the idle "Last played N ago" line is truthful rather than missing.
+  const jf = snapshot.jellyfin;
+  if (jf.serverAvailable && jf.sessions.length === 0 && jf.lastPlaybackAt === null) {
+    try {
+      const last = lastPlaybackAt(getDb());
+      if (last !== null) snapshot.jellyfin = { ...jf, lastPlaybackAt: last };
+    } catch {
+      // A DB read failure must not affect rendering — leave it null.
+    }
+  }
+  return snapshot;
 }
 
 function readHistory(now: number): DashboardHistory {
