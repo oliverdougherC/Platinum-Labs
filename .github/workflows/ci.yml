@@ -47,6 +47,8 @@ jobs:
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env:
+          # Required by gitleaks-action v2 to enumerate PR commits.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
       - uses: actions/setup-node@v4
         with:
