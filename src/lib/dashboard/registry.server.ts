@@ -41,11 +41,11 @@ import { evaluate, type AlertState, type EvaluateResult } from "@/lib/attention/
 import { detectConditions, ruleTimings, RULE } from "@/lib/attention/rules";
 import type { ActivityEvent, ConnectorId } from "@/lib/types";
 import type {
-  AcquisitionItem,
   AcquisitionSnapshot,
   DashboardHistory,
   DashboardSnapshot,
   JellyfinSnapshot,
+  ServarrSnapshot,
   ZfsSnapshot,
 } from "@/lib/types";
 
@@ -78,8 +78,8 @@ interface LiveRegistry {
   scheduler: PollScheduler;
   configStatus: Record<ConnectorId, ConnectorConfigStatus>;
   jellyfinRt: ConnectorRuntime<JellyfinSnapshot> | null;
-  sonarrRt: ConnectorRuntime<AcquisitionItem[]> | null;
-  radarrRt: ConnectorRuntime<AcquisitionItem[]> | null;
+  sonarrRt: ConnectorRuntime<ServarrSnapshot> | null;
+  radarrRt: ConnectorRuntime<ServarrSnapshot> | null;
   qbRt: ConnectorRuntime<AcquisitionSnapshot> | null;
   zfsRt: ConnectorRuntime<ZfsSnapshot> | null;
 }
@@ -205,8 +205,8 @@ function assemble(reg: LiveRegistry, now: number): DashboardSnapshot {
     now,
     health,
     jellyfin: reg.jellyfinRt?.getState().snapshot ?? null,
-    sonarr: reg.sonarrRt?.getState().snapshot ?? null,
-    radarr: reg.radarrRt?.getState().snapshot ?? null,
+    sonarr: reg.sonarrRt?.getState().snapshot?.items ?? null,
+    radarr: reg.radarrRt?.getState().snapshot?.items ?? null,
     qbittorrent: reg.qbRt?.getState().snapshot ?? null,
     zfs: reg.zfsRt?.getState().snapshot ?? null,
     history: readHistory(now),
@@ -286,6 +286,34 @@ function applyAttention(snapshot: DashboardSnapshot, now: number): EvaluateResul
   return result;
 }
 
+/**
+ * Sonarr/Radarr recent-history events → activity feed. These are the
+ * authoritative import/failure signals (from `/api/v3/history`), replacing the
+ * old "queue item disappeared" inference. Ids are stable per upstream record so
+ * `INSERT OR IGNORE` dedupes across overlapping windows and polls.
+ */
+function servarrHistoryActivity(reg: LiveRegistry): ActivityEvent[] {
+  const out: ActivityEvent[] = [];
+  for (const rt of [reg.sonarrRt, reg.radarrRt]) {
+    const events = rt?.getState().snapshot?.events ?? [];
+    for (const ev of events) {
+      out.push({
+        id: ev.id,
+        at: ev.at,
+        kind: ev.kind,
+        severity: ev.kind === "transfer.failed" ? "warning" : "info",
+        source: ev.source,
+        message:
+          ev.kind === "media.imported"
+            ? `Imported ${ev.title}`
+            : `Transfer failed: ${ev.title}`,
+        subject: ev.id,
+      });
+    }
+  }
+  return out;
+}
+
 /** Capacity-alert lifecycle → activity feed (idempotent ids). deriveEvents owns
  * the rest (connector/transfer/pool/scrub transitions). */
 function alertActivityEvents(result: EvaluateResult): ActivityEvent[] {
@@ -357,9 +385,11 @@ function persist(
     for (const h of snapshot.health) recordHealthTransition(db, now, h.id, h.status);
 
     // Derived activity events (idempotent by id; empty on the baseline) plus the
-    // non-overlapping capacity-alert lifecycle events.
+    // non-overlapping capacity-alert lifecycle events and authoritative Sonarr/
+    // Radarr history events. All are idempotent by id (INSERT OR IGNORE).
     for (const ev of deriveEvents(prevForEvents, snapshot)) insertActivityEvent(db, ev);
     for (const ev of alertActivityEvents(attention)) insertActivityEvent(db, ev);
+    for (const ev of servarrHistoryActivity(reg)) insertActivityEvent(db, ev);
 
     // Alert lifecycle rows (stable per-instance alert_id).
     for (const s of attention.states.values()) {

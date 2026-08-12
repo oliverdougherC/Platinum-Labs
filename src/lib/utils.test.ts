@@ -6,6 +6,7 @@ import {
   formatPercent,
   formatRate,
   formatRelativeTime,
+  opaqueId,
 } from "@/lib/utils";
 
 describe("formatBytes", () => {
@@ -83,5 +84,26 @@ describe("formatDuration", () => {
   it("guards invalid input", () => {
     expect(formatDuration(-1)).toBe("—");
     expect(formatDuration(Number.NaN)).toBe("—");
+  });
+});
+
+describe("opaqueId", () => {
+  const hash = "abcdef0123456789abcdef0123456789abcdef01";
+
+  it("is deterministic and stable for the same input", () => {
+    expect(opaqueId(hash)).toBe(opaqueId(hash));
+  });
+
+  it("differs for different inputs and never contains the raw input", () => {
+    const a = opaqueId(hash);
+    const b = opaqueId(hash.replace("01", "02"));
+    expect(a).not.toBe(b);
+    expect(a).not.toContain(hash);
+    expect(hash).not.toContain(a); // opaque, not a substring/prefix of the source
+  });
+
+  it("produces a compact string", () => {
+    expect(opaqueId(hash).length).toBeLessThanOrEqual(13);
+    expect(opaqueId("")).toMatch(/^[0-9a-z]+$/);
   });
 });

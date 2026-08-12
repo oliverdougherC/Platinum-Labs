@@ -106,6 +106,38 @@ export interface AcquisitionItem {
   rateBps: number | null;
   /** Seconds remaining, when known. */
   etaSeconds: number | null;
+  /**
+   * Opaque, stable key for correlating the SAME acquisition across services —
+   * a Servarr queue item and the qBittorrent transfer moving it. Derived by a
+   * one-way fold of the torrent infohash (Servarr's `downloadId` ↔ qB's `hash`),
+   * so it is safe to expose: it never contains the raw infohash. Absent for
+   * non-torrent downloads (e.g. usenet) and when no infohash is available.
+   */
+  correlationKey?: string | null;
+}
+
+/**
+ * A normalized, meaningful Sonarr/Radarr *history* event (import / failure),
+ * derived from `/api/v3/history` rather than inferred from a queue item
+ * disappearing. Turned into an `ActivityEvent` server-side; the raw upstream
+ * record never reaches the client.
+ */
+export interface ServarrHistoryEvent {
+  /** Stable dedup id (`<source>-history-<recordId>`); idempotent across overlapping windows. */
+  id: string;
+  source: "sonarr" | "radarr";
+  kind: "media.imported" | "transfer.failed";
+  /** Epoch ms of the event (parsed from the record's ISO date). */
+  at: number;
+  title: string;
+  quality: string | null;
+}
+
+/** A Sonarr/Radarr connector snapshot: the active queue plus recent history. */
+export interface ServarrSnapshot {
+  items: AcquisitionItem[];
+  /** Bounded, deduped recent history events (may be empty if history is degraded). */
+  events: ServarrHistoryEvent[];
 }
 
 export interface AcquisitionRollup {
