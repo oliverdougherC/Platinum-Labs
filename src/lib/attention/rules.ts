@@ -36,15 +36,22 @@ export const RULE = {
 
 /**
  * Per-rule timings derived from configured thresholds.
- *  - connector: runtime already applied `connectorGraceMs` before a connector
- *    reads "unavailable", so the engine grace is 0 here (documented, not doubled).
+ *  - connector: the engine owns the entire connector grace (`connectorGraceMs`).
+ *    The rule fires a condition as soon as a connector stops being healthy
+ *    (degraded serving stale LKG, or unavailable), and the engine only promotes
+ *    it to an active alert once that condition has persisted for
+ *    `connectorGraceMs`. This makes "connector unavailable beyond the grace
+ *    period" literally true for BOTH a connector serving last-known-good and one
+ *    that has never had a successful poll (no LKG → runtime reports
+ *    `unavailable` immediately, but the alert still waits out the grace).
+ *    See PLA-189: a single initial failed poll must never raise an alert.
  *  - stalled transfer: the *configurable stall duration* IS the engine grace.
  */
 export function ruleTimings(t: ThresholdConfig): Record<string, RuleTiming> {
   const clearShort = 30_000;
   const clearMed = 60_000;
   return {
-    [RULE.connectorUnavailable]: { graceMs: 0, clearMs: clearShort },
+    [RULE.connectorUnavailable]: { graceMs: t.connectorGraceMs, clearMs: clearShort },
     [RULE.poolNotOnline]: { graceMs: 0, clearMs: clearShort },
     [RULE.capacityWarning]: { graceMs: 0, clearMs: clearMed },
     [RULE.capacityCritical]: { graceMs: 0, clearMs: clearMed },
@@ -59,11 +66,16 @@ export function ruleTimings(t: ThresholdConfig): Record<string, RuleTiming> {
 function connectorRule(inputs: AttentionInputs): AlertCondition[] {
   const out: AlertCondition[] = [];
   for (const h of inputs.health) {
-    // Only configured, fully-set-up connectors; a truly-down connector (runtime
-    // already waited out its grace) is what we alert on — not transient degraded
-    // last-known-good serving.
+    // Only configured, fully-set-up connectors. Fire the condition whenever a
+    // connector stops being healthy — degraded (serving stale last-known-good)
+    // OR unavailable. The engine's `connectorGraceMs` grace then decides whether
+    // this becomes an active alert, so one transient failed poll (which flips a
+    // connector to degraded/unavailable for a single cycle) never alerts, and a
+    // connector that has NEVER succeeded — which the runtime reports as
+    // `unavailable` immediately, with no LKG to keep it `degraded` — still has to
+    // stay down for the full grace before it alerts (PLA-189).
     if (!h.configured || h.configError) continue;
-    if (h.status !== "unavailable") continue;
+    if (h.status === "healthy") continue;
     const name = h.id.charAt(0).toUpperCase() + h.id.slice(1);
     out.push({
       alertId: `${RULE.connectorUnavailable}:${h.id}`,

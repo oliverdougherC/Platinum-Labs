@@ -34,11 +34,16 @@ describe("rule: connector unavailable", () => {
     const c = detectConditions(inputs({ health: [health("jellyfin", { status: "unavailable" })] }));
     expect(c.map((x) => x.alertId)).toContain(`${RULE.connectorUnavailable}:jellyfin`);
   });
-  it("does not fire for healthy, degraded, unconfigured, or misconfigured", () => {
+  it("fires for a configured, degraded connector (grace is owned by the engine, PLA-189)", () => {
+    // A degraded connector (serving stale LKG) produces a *condition*; whether it
+    // ever becomes an active alert is decided by the engine's connector grace.
+    const c = detectConditions(inputs({ health: [health("sonarr", { status: "degraded" })] }));
+    expect(c.map((x) => x.alertId)).toContain(`${RULE.connectorUnavailable}:sonarr`);
+  });
+  it("does not fire for healthy, unconfigured, or misconfigured connectors", () => {
     const c = detectConditions(inputs({
       health: [
         health("jellyfin", { status: "healthy" }),
-        health("sonarr", { status: "degraded" }),
         health("radarr", { configured: false, status: "unavailable" }),
         health("zfs", { configError: "missing url", configured: false, status: "unavailable" }),
       ],
