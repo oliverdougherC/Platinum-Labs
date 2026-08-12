@@ -1,0 +1,627 @@
+/**
+ * Deterministic fake connector/state simulator (PLA-177).
+ *
+ * A reusable development fixture system: every scenario builds a full
+ * `DashboardSnapshot` from the *same normalized types the real connectors use*,
+ * with no randomness (given a fixed `now`, output is identical) so scenarios are
+ * safe for automated tests and screenshots.
+ *
+ * Isomorphic and secret-free. This module performs no I/O — fake mode can never
+ * accidentally reach a real service (asserted in tests).
+ */
+
+import { appConfig } from "@/lib/config";
+import {
+  storageTrendSeries,
+  throughputSeries,
+  type ActivityLevel,
+} from "@/lib/fake/series";
+import type {
+  AcquisitionItem,
+  AcquisitionSnapshot,
+  ActivityEvent,
+  AttentionItem,
+  ConnectorHealth,
+  ConnectorId,
+  ConnectorStatus,
+  DashboardHistory,
+  DashboardSnapshot,
+  JellyfinSession,
+  JellyfinSnapshot,
+  PoolHealth,
+  ZfsPool,
+  ZfsSnapshot,
+} from "@/lib/types";
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+const TiB = 1024 ** 4;
+
+const CONNECTOR_IDS: ConnectorId[] = [
+  "jellyfin",
+  "sonarr",
+  "radarr",
+  "qbittorrent",
+  "zfs",
+];
+
+// --- health helpers ---------------------------------------------------------
+
+interface HealthOverride {
+  status?: ConnectorStatus;
+  configured?: boolean;
+  lastSuccessAt?: number | null;
+  lastError?: string | null;
+}
+
+function buildHealth(
+  now: number,
+  overrides: Partial<Record<ConnectorId, HealthOverride>> = {},
+): ConnectorHealth[] {
+  return CONNECTOR_IDS.map((id) => {
+    const o = overrides[id] ?? {};
+    const status: ConnectorStatus = o.status ?? "healthy";
+    return {
+      id,
+      status,
+      configured: o.configured ?? true,
+      lastSuccessAt:
+        o.lastSuccessAt !== undefined
+          ? o.lastSuccessAt
+          : status === "healthy"
+            ? now - 5_000
+            : now - 4 * MINUTE,
+      lastError: o.lastError ?? (status === "healthy" ? null : "Request timed out"),
+      pollIntervalMs: appConfig.pollIntervalsMs[id],
+    };
+  });
+}
+
+// --- subsystem builders -----------------------------------------------------
+
+function jellyfinIdle(now: number): JellyfinSnapshot {
+  return {
+    serverAvailable: true,
+    version: "10.9.11",
+    sessions: [],
+    lastPlaybackAt: now - 3 * HOUR,
+  };
+}
+
+function session(overrides: Partial<JellyfinSession> & { id: string }): JellyfinSession {
+  return {
+    user: "oliver",
+    title: "Dune: Part Two",
+    subtitle: null,
+    method: "direct-play",
+    progress: 0.42,
+    resolution: "4K",
+    bitrateBps: 38_000_000,
+    ...overrides,
+  };
+}
+
+function jellyfinUnavailable(): JellyfinSnapshot {
+  return { serverAvailable: false, version: null, sessions: [], lastPlaybackAt: null };
+}
+
+function acquisitionEmpty(): AcquisitionSnapshot {
+  return {
+    items: [],
+    rollup: { downloading: 0, importing: 0, failedOrStalled: 0, aggregateRateBps: 0 },
+  };
+}
+
+function rollup(items: AcquisitionItem[]): AcquisitionSnapshot["rollup"] {
+  return {
+    downloading: items.filter((i) => i.state === "downloading").length,
+    importing: items.filter((i) => i.state === "importing").length,
+    failedOrStalled: items.filter((i) => i.state === "stalled" || i.state === "failed")
+      .length,
+    aggregateRateBps: items.reduce((sum, i) => sum + (i.rateBps ?? 0), 0),
+  };
+}
+
+function acquisitionActive(): AcquisitionSnapshot {
+  const items: AcquisitionItem[] = [
+    {
+      id: "q-1",
+      source: "sonarr",
+      title: "Severance — S02E07",
+      quality: "WEB-DL 1080p",
+      state: "downloading",
+      progress: 0.63,
+      rateBps: 7_500_000,
+      etaSeconds: 320,
+    },
+    {
+      id: "q-2",
+      source: "radarr",
+      title: "Sinners (2025)",
+      quality: "Bluray-2160p",
+      state: "downloading",
+      progress: 0.18,
+      rateBps: 4_200_000,
+      etaSeconds: 1_450,
+    },
+    {
+      id: "q-3",
+      source: "sonarr",
+      title: "Shrinking — S02E10",
+      quality: "WEB-DL 1080p",
+      state: "importing",
+      progress: 1,
+      rateBps: null,
+      etaSeconds: null,
+    },
+  ];
+  return { items, rollup: rollup(items) };
+}
+
+function acquisitionStalled(): AcquisitionSnapshot {
+  const items: AcquisitionItem[] = [
+    {
+      id: "q-1",
+      source: "sonarr",
+      title: "Severance — S02E07",
+      quality: "WEB-DL 1080p",
+      state: "downloading",
+      progress: 0.63,
+      rateBps: 7_500_000,
+      etaSeconds: 320,
+    },
+    {
+      id: "q-2",
+      source: "radarr",
+      title: "Sinners (2025)",
+      quality: "Bluray-2160p",
+      state: "stalled",
+      progress: 0.18,
+      rateBps: 0,
+      etaSeconds: null,
+    },
+    {
+      id: "q-4",
+      source: "qbittorrent",
+      title: "ubuntu-24.04.2-live-server-amd64.iso",
+      quality: null,
+      state: "failed",
+      progress: 0.04,
+      rateBps: 0,
+      etaSeconds: null,
+    },
+  ];
+  return { items, rollup: rollup(items) };
+}
+
+function pool(
+  overrides: Partial<Omit<ZfsPool, "capacityFraction">> & { name: string },
+): ZfsPool {
+  const usedBytes = overrides.usedBytes ?? 12.4 * TiB;
+  const totalBytes = overrides.totalBytes ?? 20 * TiB;
+  return {
+    name: overrides.name,
+    usedBytes,
+    totalBytes,
+    capacityFraction: usedBytes / totalBytes, // always derived, never drifts
+    health: overrides.health ?? "ONLINE",
+    lastScrubAt: overrides.lastScrubAt ?? null,
+    scrubErrors: overrides.scrubErrors ?? 0,
+  };
+}
+
+// Scrub timestamps floored to a day boundary so they stay STABLE across the
+// many `now` values of a polling simulation (a drifting scrub time would make
+// deriveEvents emit a spurious scrub event every poll).
+function scrubDay(now: number, daysAgo: number): number {
+  return Math.floor((now - daysAgo * DAY) / DAY) * DAY;
+}
+
+function zfsHealthy(now: number): ZfsSnapshot {
+  return {
+    pools: [
+      pool({ name: "tank", usedBytes: 12.4 * TiB, totalBytes: 20 * TiB, lastScrubAt: scrubDay(now, 6) }),
+      pool({ name: "backup", usedBytes: 3.1 * TiB, totalBytes: 8 * TiB, lastScrubAt: scrubDay(now, 20) }),
+    ],
+  };
+}
+
+function zfsWarning(now: number): ZfsSnapshot {
+  return {
+    pools: [
+      pool({ name: "tank", usedBytes: 16.6 * TiB, totalBytes: 20 * TiB, lastScrubAt: scrubDay(now, 6) }),
+      pool({ name: "backup", usedBytes: 3.1 * TiB, totalBytes: 8 * TiB, lastScrubAt: scrubDay(now, 20) }),
+    ],
+  };
+}
+
+function zfsDegraded(now: number): ZfsSnapshot {
+  return {
+    pools: [
+      pool({ name: "tank", usedBytes: 17.6 * TiB, totalBytes: 20 * TiB, lastScrubAt: scrubDay(now, 6) }),
+      pool({
+        name: "backup",
+        usedBytes: 3.1 * TiB,
+        totalBytes: 8 * TiB,
+        health: "DEGRADED" as PoolHealth,
+        lastScrubAt: scrubDay(now, 20),
+        scrubErrors: 4,
+      }),
+    ],
+  };
+}
+
+function baseActivity(now: number): ActivityEvent[] {
+  return [
+    {
+      id: "ev-2",
+      at: now - 34 * MINUTE,
+      kind: "media.imported",
+      severity: "info",
+      source: "radarr",
+      message: "Imported Sinners (2025)",
+    },
+    {
+      id: "ev-3",
+      at: now - 6 * HOUR,
+      kind: "zfs.scrub.completed",
+      severity: "info",
+      source: "zfs",
+      message: "Scrub of tank completed with 0 errors",
+    },
+  ];
+}
+
+// --- scenario registry ------------------------------------------------------
+
+export const SCENARIOS = [
+  "idle",
+  "direct-play",
+  "transcode",
+  "multi-session",
+  "downloads",
+  "stalled",
+  "connector-unavailable",
+  "stale",
+  "zfs-warning",
+  "zfs-degraded",
+  "unconfigured",
+  // Composite aliases used by defaults and the attention path.
+  "active",
+  "attention",
+] as const;
+
+export type FakeScenario = (typeof SCENARIOS)[number];
+
+export const DEFAULT_SCENARIO: FakeScenario = "active";
+
+/** Type guard for untrusted input (query params, env). */
+export function isScenario(value: unknown): value is FakeScenario {
+  return typeof value === "string" && (SCENARIOS as readonly string[]).includes(value);
+}
+
+/** Human-readable labels for the dev scenario switcher. */
+export const SCENARIO_LABELS: Record<FakeScenario, string> = {
+  idle: "All healthy / idle",
+  "direct-play": "Jellyfin — direct play",
+  transcode: "Jellyfin — transcode",
+  "multi-session": "Multiple sessions",
+  downloads: "Active downloads / imports",
+  stalled: "Stalled / failed transfer",
+  "connector-unavailable": "Connector unavailable",
+  stale: "Stale (last-known-good)",
+  "zfs-warning": "ZFS near threshold",
+  "zfs-degraded": "ZFS DEGRADED",
+  unconfigured: "No connectors configured",
+  active: "Active (playback + downloads)",
+  attention: "Attention (stall + degraded)",
+};
+
+type Builder = (now: number) => DashboardSnapshot;
+
+function fakeHistory(
+  now: number,
+  acquisition: AcquisitionSnapshot,
+  zfs: ZfsSnapshot,
+): DashboardHistory {
+  const rate = acquisition.rollup.aggregateRateBps;
+  const level: ActivityLevel = rate > 20_000_000 ? "high" : rate > 0 ? "light" : "empty";
+
+  const throughput = throughputSeries({ now, level }).map((p) => ({
+    t: p.t,
+    bps: p.bps,
+  }));
+
+  const pools = zfs.pools.map((p) => ({
+    name: p.name,
+    endBytes: p.usedBytes,
+    totalBytes: p.totalBytes,
+  }));
+  const storage = storageTrendSeries({
+    now,
+    days: 30,
+    pools,
+    level: pools.length > 0 ? "light" : "empty",
+  });
+
+  return { throughput, storageSeries: pools.map((p) => p.name), storage };
+}
+
+function compose(
+  now: number,
+  parts: {
+    health?: ConnectorHealth[];
+    jellyfin: JellyfinSnapshot;
+    acquisition: AcquisitionSnapshot;
+    zfs: ZfsSnapshot;
+    attention?: AttentionItem[];
+    activity?: ActivityEvent[];
+  },
+): DashboardSnapshot {
+  return {
+    mode: "fake",
+    generatedAt: now,
+    health: parts.health ?? buildHealth(now),
+    jellyfin: parts.jellyfin,
+    acquisition: parts.acquisition,
+    zfs: parts.zfs,
+    attention: parts.attention ?? [],
+    activity: parts.activity ?? baseActivity(now),
+    history: fakeHistory(now, parts.acquisition, parts.zfs),
+  };
+}
+
+const stalledAttention = (now: number): AttentionItem[] => [
+  {
+    ruleId: "qbittorrent.transfer.stalled",
+    severity: "warning",
+    title: "Transfer stalled",
+    detail: "Sinners (2025) has been stalled for 18 minutes.",
+    source: "qbittorrent",
+    firstSeenAt: now - 18 * MINUTE,
+    lastSeenAt: now,
+  },
+];
+
+const degradedAttention = (now: number): AttentionItem[] => [
+  {
+    ruleId: "zfs.pool.degraded",
+    severity: "critical",
+    title: "Pool degraded",
+    detail: "Pool backup is DEGRADED.",
+    source: "zfs",
+    firstSeenAt: now - 40 * MINUTE,
+    lastSeenAt: now,
+  },
+];
+
+const BUILDERS: Record<FakeScenario, Builder> = {
+  idle: (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+    }),
+
+  "direct-play": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [session({ id: "s1", method: "direct-play" })],
+        lastPlaybackAt: now - 2 * MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+    }),
+
+  transcode: (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({
+            id: "s1",
+            title: "The Bear — S03E01",
+            subtitle: "S03E01 — Tomorrow",
+            method: "transcode",
+            resolution: "1080p",
+            bitrateBps: 12_000_000,
+            progress: 0.27,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+    }),
+
+  "multi-session": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({ id: "s1", user: "oliver", method: "direct-play", progress: 0.42 }),
+          session({
+            id: "s2",
+            user: "sam",
+            title: "Andor — S02E04",
+            subtitle: "S02E04 — Ever Been to Ghorman?",
+            method: "transcode",
+            resolution: "1080p",
+            bitrateBps: 9_500_000,
+            progress: 0.71,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+    }),
+
+  downloads: (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionActive(),
+      zfs: zfsHealthy(now),
+    }),
+
+  stalled: (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionStalled(),
+      zfs: zfsHealthy(now),
+      attention: stalledAttention(now),
+      activity: [
+        {
+          id: "ev-f",
+          at: now - 2 * MINUTE,
+          kind: "transfer.failed",
+          severity: "warning",
+          source: "qbittorrent",
+          message: "Transfer failed: ubuntu-24.04.2-live-server-amd64.iso",
+        },
+        ...baseActivity(now),
+      ],
+    }),
+
+  "connector-unavailable": (now) =>
+    compose(now, {
+      health: buildHealth(now, {
+        jellyfin: { status: "unavailable", lastError: "ECONNREFUSED", lastSuccessAt: now - 5 * MINUTE },
+      }),
+      jellyfin: jellyfinUnavailable(),
+      acquisition: acquisitionActive(),
+      zfs: zfsHealthy(now),
+      attention: [
+        {
+          ruleId: "connector.unavailable",
+          severity: "warning",
+          title: "Jellyfin unreachable",
+          detail: "Jellyfin has been unreachable for 5 minutes.",
+          source: "jellyfin",
+          firstSeenAt: now - 5 * MINUTE,
+          lastSeenAt: now,
+        },
+      ],
+    }),
+
+  // Degraded connector still serving its last-known-good snapshot (old sync).
+  stale: (now) =>
+    compose(now, {
+      health: buildHealth(now, {
+        qbittorrent: {
+          status: "degraded",
+          lastError: "Read timed out; showing last-known-good",
+          lastSuccessAt: now - 8 * MINUTE,
+        },
+      }),
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [session({ id: "s1", method: "direct-play" })],
+        lastPlaybackAt: now - 3 * MINUTE,
+      },
+      acquisition: acquisitionActive(),
+      zfs: zfsHealthy(now),
+    }),
+
+  "zfs-warning": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsWarning(now),
+      attention: [
+        {
+          ruleId: "zfs.capacity.warning",
+          severity: "warning",
+          title: "Pool filling",
+          detail: "tank is at 83% and filling faster than its 30-day baseline.",
+          source: "zfs",
+          firstSeenAt: now - 2 * HOUR,
+          lastSeenAt: now,
+        },
+      ],
+    }),
+
+  "zfs-degraded": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsDegraded(now),
+      attention: degradedAttention(now),
+      activity: [
+        {
+          id: "ev-scrub",
+          at: now - 30 * MINUTE,
+          kind: "zfs.scrub.completed",
+          severity: "warning",
+          source: "zfs",
+          message: "Scrub of backup completed with 4 errors",
+        },
+        ...baseActivity(now),
+      ],
+    }),
+
+  unconfigured: (now) =>
+    compose(now, {
+      health: CONNECTOR_IDS.map((id) => ({
+        id,
+        status: "unavailable" as ConnectorStatus,
+        configured: false,
+        lastSuccessAt: null,
+        lastError: null,
+        pollIntervalMs: appConfig.pollIntervalsMs[id],
+      })),
+      jellyfin: jellyfinUnavailable(),
+      acquisition: acquisitionEmpty(),
+      zfs: { pools: [] },
+      activity: [],
+    }),
+
+  // --- composite aliases ---
+  active: (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [session({ id: "s1", method: "direct-play" })],
+        lastPlaybackAt: now - 2 * MINUTE,
+      },
+      acquisition: acquisitionActive(),
+      zfs: zfsHealthy(now),
+      activity: [
+        {
+          id: "ev-1",
+          at: now - 2 * MINUTE,
+          kind: "playback.started",
+          severity: "info",
+          source: "jellyfin",
+          message: "oliver started watching Dune: Part Two",
+        },
+        ...baseActivity(now),
+      ],
+    }),
+
+  attention: (now) =>
+    compose(now, {
+      health: buildHealth(now, {
+        qbittorrent: { status: "degraded", lastError: "Tracker timeout", lastSuccessAt: now - 3 * MINUTE },
+      }),
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionStalled(),
+      zfs: zfsDegraded(now),
+      attention: [...degradedAttention(now), ...stalledAttention(now)],
+    }),
+};
+
+/** Build a full deterministic dashboard snapshot for a scenario. */
+export function makeFakeSnapshot(
+  scenario: FakeScenario = DEFAULT_SCENARIO,
+  now: number = Date.now(),
+): DashboardSnapshot {
+  return BUILDERS[scenario](now);
+}

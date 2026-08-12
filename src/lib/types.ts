@@ -1,0 +1,209 @@
+/**
+ * Shared, normalized domain types for the homelab dashboard.
+ *
+ * These are intentionally connector-agnostic: every service adapter (Jellyfin,
+ * Sonarr, Radarr, qBittorrent, ZFS) normalizes its raw response into these
+ * shapes so the UI never depends on a vendor payload. Real connector
+ * implementations arrive in Milestone 02 (PLA-178..185); this scaffold defines
+ * the contract and a fake producer (PLA-177 groundwork).
+ *
+ * Isomorphic and secret-free — safe to import from both server and client.
+ */
+
+export type ConnectorId =
+  | "jellyfin"
+  | "sonarr"
+  | "radarr"
+  | "qbittorrent"
+  | "zfs";
+
+/** Health of a single connector. Never encodes status by color alone in the UI. */
+export type ConnectorStatus = "healthy" | "degraded" | "unavailable";
+
+/** How the whole dashboard is currently sourcing data. */
+export type DataMode = "fake" | "live";
+
+export interface ConnectorHealth {
+  id: ConnectorId;
+  status: ConnectorStatus;
+  /**
+   * Whether this connector is configured at all. `false` is distinct from
+   * `unavailable`: an unconfigured connector shows "not set up" rather than a
+   * failure, and the UI must render the two differently (spec §12).
+   */
+  configured: boolean;
+  /** Epoch ms of the last successful poll, or null if never. */
+  lastSuccessAt: number | null;
+  /** Sanitized, secret-free error message when degraded/unavailable. */
+  lastError: string | null;
+  /** Configured poll interval in milliseconds. */
+  pollIntervalMs: number;
+}
+
+/**
+ * Is a connector's last-known-good data stale? Derived, not stored: a connector
+ * can be serving cached data (status !== healthy) while its snapshot is still
+ * shown with a stale indicator. Returns false when never-synced.
+ */
+export function isConnectorStale(
+  health: ConnectorHealth,
+  now: number,
+  staleFactor = 3,
+): boolean {
+  if (health.lastSuccessAt === null) return false;
+  return now - health.lastSuccessAt > health.pollIntervalMs * staleFactor;
+}
+
+export type PlaybackMethod = "direct-play" | "direct-stream" | "transcode";
+
+export interface JellyfinSession {
+  id: string;
+  user: string;
+  title: string;
+  /** Set for episodic content, e.g. "S02E05 — Title". */
+  subtitle: string | null;
+  method: PlaybackMethod;
+  /** 0..1 fraction of the item watched. */
+  progress: number;
+  /** e.g. "1080p", "4K". */
+  resolution: string | null;
+  /** Total stream bitrate in bits/sec, when known. */
+  bitrateBps: number | null;
+}
+
+export interface JellyfinSnapshot {
+  serverAvailable: boolean;
+  version: string | null;
+  sessions: JellyfinSession[];
+  /** Epoch ms of the most recent playback, for the idle "time since" line. */
+  lastPlaybackAt: number | null;
+}
+
+export type AcquisitionState =
+  | "searching"
+  | "downloading"
+  | "importing"
+  | "stalled"
+  | "failed"
+  | "completed";
+
+export interface AcquisitionItem {
+  id: string;
+  source: "sonarr" | "radarr" | "qbittorrent";
+  title: string;
+  quality: string | null;
+  state: AcquisitionState;
+  /** 0..1 fraction complete. */
+  progress: number;
+  /** Bytes/sec transfer rate, when downloading. */
+  rateBps: number | null;
+  /** Seconds remaining, when known. */
+  etaSeconds: number | null;
+}
+
+export interface AcquisitionRollup {
+  downloading: number;
+  importing: number;
+  failedOrStalled: number;
+  /** Aggregate throughput in bytes/sec across active transfers. */
+  aggregateRateBps: number;
+}
+
+export interface AcquisitionSnapshot {
+  items: AcquisitionItem[];
+  rollup: AcquisitionRollup;
+}
+
+export type PoolHealth = "ONLINE" | "DEGRADED" | "FAULTED" | "OFFLINE" | "UNAVAIL";
+
+export interface ZfsPool {
+  name: string;
+  usedBytes: number;
+  totalBytes: number;
+  /** 0..1 fraction used (derived, but carried explicitly for display). */
+  capacityFraction: number;
+  health: PoolHealth;
+  lastScrubAt: number | null;
+  scrubErrors: number;
+}
+
+export interface ZfsSnapshot {
+  pools: ZfsPool[];
+}
+
+export type EventKind =
+  | "playback.started"
+  | "playback.stopped"
+  | "download.started"
+  | "media.imported"
+  | "transfer.completed"
+  | "transfer.failed"
+  | "transfer.stalled"
+  | "transfer.recovered"
+  | "zfs.scrub.completed"
+  | "zfs.scrub.failed"
+  | "pool.health.changed"
+  | "connector.lost"
+  | "connector.recovered";
+
+export type Severity = "info" | "warning" | "critical";
+
+export interface ActivityEvent {
+  id: string;
+  at: number;
+  kind: EventKind;
+  severity: Severity;
+  source: ConnectorId;
+  message: string;
+  /**
+   * Optional structured subject (session id, queue-item id, pool or connector
+   * name). Kept so later command/LLM summaries can group/reference events
+   * without re-parsing `message`.
+   */
+  subject?: string;
+}
+
+export interface AttentionItem {
+  /** Stable rule id, e.g. "zfs.capacity.critical". */
+  ruleId: string;
+  severity: Severity;
+  title: string;
+  detail: string;
+  source: ConnectorId;
+  firstSeenAt: number;
+  lastSeenAt: number;
+}
+
+/** A single throughput history point. */
+export interface ThroughputSamplePoint {
+  t: number;
+  bps: number;
+}
+
+/**
+ * History windows powering the charts. Kept in the aggregate contract so the
+ * client fetches everything in one request (no N+1).
+ */
+export interface DashboardHistory {
+  /** Recent aggregate throughput (media chart). */
+  throughput: ThroughputSamplePoint[];
+  /** Pool names present as series in `storage`. */
+  storageSeries: string[];
+  /** Storage-trend rows: `{ t, <pool>: usedBytes, … }`. */
+  storage: Array<{ t: number } & Record<string, number>>;
+}
+
+/** The single normalized shape the frontend renders. */
+export interface DashboardSnapshot {
+  mode: DataMode;
+  /** Epoch ms this snapshot was generated. */
+  generatedAt: number;
+  health: ConnectorHealth[];
+  jellyfin: JellyfinSnapshot;
+  acquisition: AcquisitionSnapshot;
+  zfs: ZfsSnapshot;
+  attention: AttentionItem[];
+  activity: ActivityEvent[];
+  /** Chart history windows (optional; present in aggregate responses). */
+  history?: DashboardHistory;
+}
