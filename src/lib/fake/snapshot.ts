@@ -207,6 +207,7 @@ function pool(
     totalBytes,
     capacityFraction: usedBytes / totalBytes, // always derived, never drifts
     health: overrides.health ?? "ONLINE",
+    scan: overrides.scan ?? "finished",
     lastScrubAt: overrides.lastScrubAt ?? null,
     scrubErrors: overrides.scrubErrors ?? 0,
   };

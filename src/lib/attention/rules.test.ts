@@ -14,7 +14,7 @@ function health(id: ConnectorHealth["id"], overrides: Partial<ConnectorHealth> =
 function pool(overrides: Partial<ZfsPool> = {}): ZfsPool {
   return {
     name: "tank", usedBytes: 10, totalBytes: 100, capacityFraction: 0.1,
-    health: "ONLINE", lastScrubAt: null, scrubErrors: 0, ...overrides,
+    health: "ONLINE", scan: "none", lastScrubAt: null, scrubErrors: 0, ...overrides,
   };
 }
 function item(overrides: Partial<AcquisitionItem> = {}): AcquisitionItem {

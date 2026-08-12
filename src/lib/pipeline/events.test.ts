@@ -126,6 +126,7 @@ function pool(name: string, health: "ONLINE" | "DEGRADED", lastScrubAt: number) 
     totalBytes: total,
     capacityFraction: used / total,
     health: health as import("@/lib/types").PoolHealth,
+    scan: "finished" as const,
     lastScrubAt,
     scrubErrors: 0,
   };

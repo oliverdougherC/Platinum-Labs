@@ -33,6 +33,7 @@ function pool(overrides: Partial<ZfsPool> = {}): ZfsPool {
     totalBytes: 20,
     capacityFraction: 0.5,
     health: "ONLINE",
+    scan: "none",
     lastScrubAt: null,
     scrubErrors: 0,
     ...overrides,

@@ -123,6 +123,14 @@ export interface AcquisitionSnapshot {
 
 export type PoolHealth = "ONLINE" | "DEGRADED" | "FAULTED" | "OFFLINE" | "UNAVAIL";
 
+/**
+ * Current pool scan state. `finished` + `scrubErrors > 0` represents a scrub
+ * that completed with errors (a "failed" scrub); `resilvering` covers an
+ * in-progress resilver. Preserved from `zpool status` without exposing raw
+ * command output.
+ */
+export type ZfsScanState = "none" | "scrubbing" | "resilvering" | "finished";
+
 export interface ZfsPool {
   name: string;
   usedBytes: number;
@@ -130,6 +138,8 @@ export interface ZfsPool {
   /** 0..1 fraction used (derived, but carried explicitly for display). */
   capacityFraction: number;
   health: PoolHealth;
+  /** Current scan/scrub/resilver state. */
+  scan: ZfsScanState;
   lastScrubAt: number | null;
   scrubErrors: number;
 }

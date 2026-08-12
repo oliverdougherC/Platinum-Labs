@@ -87,6 +87,14 @@ describe("buildZfsSnapshot", () => {
     expect(backup.scrubErrors).toBe(2);
   });
 
+  it("preserves the scan/scrub state on the normalized pool (PLA-184)", () => {
+    const snap = buildZfsSnapshot(parseZpoolList(LIST), parseZpoolStatus(STATUS));
+    // tank's scrub has completed in the fixture.
+    expect(snap.pools.find((p) => p.name === "tank")!.scan).toBe("finished");
+    // A pool with no scan data defaults to "none".
+    expect(buildZfsSnapshot(parseZpoolList(LIST)).pools[0]!.scan).toBe("none");
+  });
+
   it("empty input yields an empty pool set (missing command)", () => {
     expect(buildZfsSnapshot([]).pools).toEqual([]);
   });

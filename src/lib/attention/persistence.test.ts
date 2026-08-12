@@ -26,7 +26,7 @@ afterEach(() => db.close());
 function pool(overrides: Partial<ZfsPool>): ZfsPool {
   return {
     name: "tank", usedBytes: 95, totalBytes: 100, capacityFraction: 0.95,
-    health: "ONLINE", lastScrubAt: null, scrubErrors: 0, ...overrides,
+    health: "ONLINE", scan: "none", lastScrubAt: null, scrubErrors: 0, ...overrides,
   };
 }
 
