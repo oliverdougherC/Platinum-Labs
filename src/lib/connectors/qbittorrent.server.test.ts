@@ -36,7 +36,16 @@ function res(over: Partial<MockRes>): MockRes {
 }
 
 const loginOk = () => res({});
+// qB 5.x: 204 No Content, empty body, session cookie named QBT_SID_<port>.
+const loginOk204 = () =>
+  res({
+    ok: true,
+    status: 204,
+    text: async () => "",
+    headers: { getSetCookie: () => ["QBT_SID_8080=fAffemrH2LQ; HttpOnly; path=/"] },
+  });
 const loginRejected = () => res({ text: async () => "Fails." });
+const loginRejected401 = () => res({ ok: false, status: 401 });
 const loginNoCookie = () => res({ headers: { getSetCookie: () => [] } });
 
 /** Install a fetch that dispatches on url + method via the supplied handler. */
@@ -75,6 +84,19 @@ describe("makeQbClient auth", () => {
     expect(cookieSeen).toBe("SID=abc123");
   });
 
+  it("accepts a qB 5.x login (HTTP 204, QBT_SID_<port> cookie) and forwards it", async () => {
+    const fetchMock = install((url) => {
+      if (url.endsWith("/auth/login")) return loginOk204();
+      return res({ json: async () => [{ hash: "z" }] });
+    });
+    const client = makeQbClient(CFG);
+    const data = await client.torrentsInfo(signal);
+    expect(data).toEqual([{ hash: "z" }]);
+    const dataCall = fetchMock.mock.calls.find(([u]) => String(u).endsWith("/torrents/info"))!;
+    const cookie = (dataCall[1] as { headers?: Record<string, string> })?.headers?.Cookie;
+    expect(cookie).toBe("QBT_SID_8080=fAffemrH2LQ"); // full name=value, verbatim
+  });
+
   it("rejects bad credentials (200 body 'Fails.') without echoing them", async () => {
     install((url) => (url.endsWith("/auth/login") ? loginRejected() : res({})));
     const client = makeQbClient(CFG);
@@ -84,6 +106,12 @@ describe("makeQbClient auth", () => {
     await client.torrentsInfo(signal).catch((e: Error) => {
       expect(e.message).not.toContain("s3cr3t");
     });
+  });
+
+  it("rejects bad credentials signalled as HTTP 401 (qB 5.x)", async () => {
+    install((url) => (url.endsWith("/auth/login") ? loginRejected401() : res({})));
+    const client = makeQbClient(CFG);
+    await expect(client.torrentsInfo(signal)).rejects.toThrow(/HTTP 401/);
   });
 
   it("fails when login returns no SID cookie", async () => {
