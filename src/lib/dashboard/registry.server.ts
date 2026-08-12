@@ -30,11 +30,15 @@ import {
   recentEvents,
   recentThroughput,
   recordHealthTransition,
+  resolveAlert,
   storageTrend,
+  upsertAlert,
 } from "@/lib/db/repository";
 import { runMaintenance } from "@/lib/db/retention";
 import { deriveEvents } from "@/lib/pipeline/events";
-import type { ConnectorId } from "@/lib/types";
+import { evaluate, type AlertState, type EvaluateResult } from "@/lib/attention/engine";
+import { detectConditions, ruleTimings, RULE } from "@/lib/attention/rules";
+import type { ActivityEvent, ConnectorId } from "@/lib/types";
 import type {
   AcquisitionItem,
   AcquisitionSnapshot,
@@ -82,9 +86,13 @@ interface LiveRegistry {
 let registry: LiveRegistry | null = null;
 let cached: DashboardSnapshot | null = null;
 let prevForEvents: DashboardSnapshot | null = null;
+let alertStates = new Map<string, AlertState>();
 let initPromise: Promise<void> | null = null;
 let assembleTimer: ReturnType<typeof setInterval> | null = null;
 let maintenanceTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Engine rules whose lifecycle deriveEvents does NOT already cover. */
+const ENGINE_EVENT_RULES = new Set<string>([RULE.capacityWarning, RULE.capacityCritical]);
 
 // Storage-sampling cadence state: only persist a storage row when a *new* ZFS
 // observation arrives (its lastSuccessAt advances) and enough time has elapsed —
@@ -241,11 +249,70 @@ function readActivity(): DashboardSnapshot["activity"] {
 }
 
 /**
- * Persist samples, health transitions, and newly-derived events. `deriveBaseline`
- * true means this is the silent baseline: samples/health are recorded, but no
- * events are emitted (prevForEvents is null so deriveEvents is naturally empty).
+ * Run the deterministic attention engine against the snapshot's normalized
+ * domain data, update the in-memory alert states, and assign the ranked active
+ * alerts onto `snapshot.attention`. Returns the engine result for persistence.
+ * Never throws (rule detection is individually guarded).
  */
-function persist(reg: LiveRegistry, snapshot: DashboardSnapshot, now: number): void {
+function applyAttention(snapshot: DashboardSnapshot, now: number): EvaluateResult {
+  const result = evaluate(
+    alertStates,
+    detectConditions({
+      health: snapshot.health,
+      pools: snapshot.zfs.pools,
+      acquisition: snapshot.acquisition.items,
+      thresholds: appConfig.thresholds,
+    }),
+    ruleTimings(appConfig.thresholds),
+    now,
+  );
+  alertStates = result.states;
+  snapshot.attention = result.active;
+  return result;
+}
+
+/** Capacity-alert lifecycle → activity feed (idempotent ids). deriveEvents owns
+ * the rest (connector/transfer/pool/scrub transitions). */
+function alertActivityEvents(result: EvaluateResult): ActivityEvent[] {
+  const out: ActivityEvent[] = [];
+  for (const s of result.opened) {
+    if (!ENGINE_EVENT_RULES.has(s.ruleId)) continue;
+    out.push({
+      id: `alert.opened:${s.alertId}:${s.firstSeenAt ?? 0}`,
+      at: s.firstSeenAt ?? 0,
+      kind: "alert.opened",
+      severity: s.severity,
+      source: s.source,
+      message: s.detail,
+      subject: s.subject,
+    });
+  }
+  for (const s of result.resolved) {
+    if (!ENGINE_EVENT_RULES.has(s.ruleId)) continue;
+    out.push({
+      id: `alert.resolved:${s.alertId}:${s.resolvedAt ?? 0}`,
+      at: s.resolvedAt ?? 0,
+      kind: "alert.resolved",
+      severity: "info",
+      source: s.source,
+      message: `Resolved: ${s.title}`,
+      subject: s.subject,
+    });
+  }
+  return out;
+}
+
+/**
+ * Persist samples, health transitions, derived events, and alert lifecycle.
+ * On the baseline (prevForEvents === null) deriveEvents is naturally empty, so
+ * no false events are recorded — but current bad conditions still open alerts.
+ */
+function persist(
+  reg: LiveRegistry,
+  snapshot: DashboardSnapshot,
+  now: number,
+  attention: EvaluateResult,
+): void {
   tryPersist((db) => {
     // Throughput sampled every cycle (feeds the ~45m media chart).
     insertThroughput(db, { t: now, bps: snapshot.acquisition.rollup.aggregateRateBps });
@@ -274,15 +341,35 @@ function persist(reg: LiveRegistry, snapshot: DashboardSnapshot, now: number): v
     // Health transitions (deduped inside the repository).
     for (const h of snapshot.health) recordHealthTransition(db, now, h.id, h.status);
 
-    // Derived activity events (idempotent by id; empty on the baseline).
+    // Derived activity events (idempotent by id; empty on the baseline) plus the
+    // non-overlapping capacity-alert lifecycle events.
     for (const ev of deriveEvents(prevForEvents, snapshot)) insertActivityEvent(db, ev);
+    for (const ev of alertActivityEvents(attention)) insertActivityEvent(db, ev);
+
+    // Alert lifecycle rows (stable per-instance alert_id).
+    for (const s of attention.states.values()) {
+      if (s.status !== "active") continue;
+      upsertAlert(db, {
+        alertId: s.alertId,
+        ruleId: s.ruleId,
+        severity: s.severity,
+        title: s.title,
+        detail: s.detail,
+        source: s.source,
+        subject: s.subject ?? null,
+        firstSeenAt: s.firstSeenAt ?? now,
+        lastSeenAt: s.lastSeenAt,
+      });
+    }
+    for (const s of attention.resolved) resolveAlert(db, s.alertId, s.resolvedAt ?? now);
   });
 }
 
-/** One steady-state tick: assemble, persist events, then attach fresh activity. */
-function tick(reg: LiveRegistry, now: number): void {
+/** One aggregate step: assemble, evaluate attention, persist, attach activity. */
+function step(reg: LiveRegistry, now: number): void {
   const snapshot = assemble(reg, now);
-  persist(reg, snapshot, now);
+  const attention = applyAttention(snapshot, now);
+  persist(reg, snapshot, now, attention);
   prevForEvents = snapshot;
   // Attach the persisted feed AFTER deriving this cycle's events so the newest
   // events are included immediately.
@@ -307,20 +394,17 @@ async function init(reg: LiveRegistry): Promise<void> {
   await reg.hub.refreshAll();
 
   // 2. First aggregate becomes the silent event baseline (prevForEvents is still
-  //    null, so persist() records samples/health but emits no events).
-  const now = Date.now();
-  const baseline = assemble(reg, now);
-  persist(reg, baseline, now);
-  prevForEvents = baseline;
-  baseline.activity = readActivity();
-  cached = baseline;
+  //    null, so persist() records samples/health but emits no derived events).
+  //    Current bad conditions still open alerts — that reflects real state, not a
+  //    spurious "just happened" event.
+  step(reg, Date.now());
 
   // 3. Background polling continues on each connector's own cadence (we already
   //    primed above, so skip the scheduler's immediate fan-out).
   reg.scheduler.start(false);
 
   // 4. Slow aggregate loop + low-cadence maintenance loop.
-  assembleTimer = setInterval(() => tick(reg, Date.now()), ASSEMBLE_INTERVAL_MS);
+  assembleTimer = setInterval(() => step(reg, Date.now()), ASSEMBLE_INTERVAL_MS);
   if (assembleTimer && typeof assembleTimer === "object" && "unref" in assembleTimer) {
     assembleTimer.unref();
   }
@@ -345,6 +429,7 @@ export function __resetLiveRegistryForTests(): void {
   registry = null;
   cached = null;
   prevForEvents = null;
+  alertStates = new Map();
   initPromise = null;
   assembleTimer = null;
   maintenanceTimer = null;

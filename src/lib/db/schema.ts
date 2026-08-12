@@ -81,4 +81,39 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_audit_at ON action_audit (at);
     `,
   },
+  {
+    id: 2,
+    name: "alert_instance_identity",
+    // A single global rule_id primary key cannot represent two pools (or two
+    // downloads) simultaneously violating the same rule. Re-key the table on a
+    // stable per-instance `alert_id` (rule + subject), keeping `rule_id` as the
+    // reusable rule class. Forward-safe: existing rows are migrated with
+    // alert_id = rule_id.
+    up: `
+      ALTER TABLE alerts RENAME TO alerts_v1;
+
+      CREATE TABLE alerts (
+        alert_id    TEXT PRIMARY KEY,
+        rule_id     TEXT    NOT NULL,
+        severity    TEXT    NOT NULL,
+        title       TEXT    NOT NULL,
+        detail      TEXT    NOT NULL,
+        source      TEXT    NOT NULL,
+        subject     TEXT,
+        first_seen  INTEGER NOT NULL,
+        last_seen   INTEGER NOT NULL,
+        resolved_at INTEGER
+      );
+      CREATE INDEX idx_alerts_v2_last_seen ON alerts (last_seen);
+      CREATE INDEX idx_alerts_v2_rule ON alerts (rule_id);
+      CREATE INDEX idx_alerts_v2_open ON alerts (resolved_at);
+
+      INSERT INTO alerts
+        (alert_id, rule_id, severity, title, detail, source, subject, first_seen, last_seen, resolved_at)
+      SELECT rule_id, rule_id, severity, title, detail, source, NULL, first_seen, last_seen, resolved_at
+        FROM alerts_v1;
+
+      DROP TABLE alerts_v1;
+    `,
+  },
 ];

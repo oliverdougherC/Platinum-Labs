@@ -151,7 +151,9 @@ export type EventKind =
   | "zfs.scrub.failed"
   | "pool.health.changed"
   | "connector.lost"
-  | "connector.recovered";
+  | "connector.recovered"
+  | "alert.opened"
+  | "alert.resolved";
 
 export type Severity = "info" | "warning" | "critical";
 
