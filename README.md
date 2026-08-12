@@ -130,6 +130,10 @@ CI (`.github/workflows/ci.yml`) runs `verify`, a secret scan (gitleaks) +
 
 ## Deployment (Docker)
 
+> Full operational runbook — update/rollback/backup, network topology, the ZFS
+> collector, the security model, and the soak — lives in
+> [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
 The app is a **long-running Node server**: it holds in-process timers (connector
 scheduler, aggregate loop, hourly maintenance) and last-known-good state. It is
 **not** stateless/serverless-compatible — run it as a persistent process.
@@ -158,10 +162,14 @@ docker compose up -d --build
 
 The dashboard never runs browser-controlled shell. Pick one safe mode:
 
-1. **Helper API** (preferred when containerized / off the ZFS host): run a
-   minimal read-only helper on the host that returns normalized pool JSON and set
-   `ZFS_COLLECTOR_URL` (+ optional `ZFS_COLLECTOR_TOKEN`). The container needs no
-   ZFS access, no Docker socket, and no host privileges.
+1. **Helper API** (preferred when containerized / off the ZFS host): a minimal
+   read-only helper returning normalized pool JSON; set `ZFS_COLLECTOR_URL`
+   (+ `ZFS_COLLECTOR_TOKEN`). Ships as `scripts/zfs-collector.mjs` (Node) or
+   `scripts/zfs-collector.py` (Python), and as a compartmentalized **sidecar
+   container** (`docker/zfs-collector.Dockerfile`) that reads ZFS via
+   `--device=/dev/zfs` with `cap_drop: ALL`, `read_only`, and no host mounts —
+   the dashboard container itself needs no ZFS access, no Docker socket, and no
+   host privileges.
 2. **Direct commands** (only when the process runs *on* the ZFS host): set
    `HOMELAB_ZFS_COMMAND=1`. The collector runs a *fixed argv*
    (`zpool list -Hp -o …`, `zpool status`) via `execFile` — no shell, no
