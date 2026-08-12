@@ -11,6 +11,7 @@
 import type {
   AcquisitionItem,
   AcquisitionSnapshot,
+  AcquisitionState,
   ActivityEvent,
   AttentionItem,
   ConnectorHealth,
@@ -87,34 +88,131 @@ const JELLYFIN_UNAVAILABLE: JellyfinSnapshot = {
   lastPlaybackAt: null,
 };
 
+/**
+ * Priority ordering for a correlated acquisition — the state the user most needs
+ * to see wins when the same download is reported differently by two services
+ * (e.g. qB "stalled" + Servarr "downloading" → stalled; Servarr "importing" + qB
+ * "completed" → importing). Also drives display ordering.
+ */
+const STATE_PRIORITY: AcquisitionState[] = [
+  "failed",
+  "stalled",
+  "importing",
+  "downloading",
+  "searching",
+  "completed",
+];
+
+function pickState(states: AcquisitionState[]): AcquisitionState {
+  let best: AcquisitionState = "completed";
+  let bestIdx = STATE_PRIORITY.length;
+  for (const s of states) {
+    const i = STATE_PRIORITY.indexOf(s);
+    if (i >= 0 && i < bestIdx) {
+      bestIdx = i;
+      best = s;
+    }
+  }
+  return best;
+}
+
+/**
+ * Merge a group of items that share an opaque correlation key (the same
+ * infohash) into ONE acquisition item. Servarr is the authority for human media
+ * identity (title/quality/import state); qBittorrent is the authority for live
+ * transfer telemetry (rate/ETA/progress/stall). Only exact-identifier groups
+ * reach here — there is deliberately no fuzzy title matching.
+ */
+function mergeCorrelatedGroup(key: string, group: AcquisitionItem[]): AcquisitionItem {
+  const servarr = group.find((i) => i.source === "sonarr" || i.source === "radarr");
+  const qb = group.find((i) => i.source === "qbittorrent");
+  const identity = servarr ?? qb ?? group[0]!;
+  const telemetry = qb ?? servarr ?? group[0]!;
+  return {
+    id: `acq-${key}`,
+    source: identity.source,
+    title: identity.title,
+    quality: identity.quality ?? qb?.quality ?? null,
+    state: pickState(group.map((i) => i.state)),
+    progress: telemetry.progress,
+    rateBps: qb?.rateBps ?? servarr?.rateBps ?? null,
+    etaSeconds: qb?.etaSeconds ?? servarr?.etaSeconds ?? null,
+    correlationKey: key,
+  };
+}
+
+/**
+ * Collapse items that represent the SAME acquisition across services into a
+ * single coherent row, keyed on the opaque correlation key. Items with no key
+ * (or a unique key) pass through unchanged — an identifier mismatch keeps two
+ * items separate.
+ */
+export function correlateAcquisition(items: AcquisitionItem[]): AcquisitionItem[] {
+  const groups = new Map<string, AcquisitionItem[]>();
+  const singles: AcquisitionItem[] = [];
+  for (const it of items) {
+    if (it.correlationKey) {
+      const g = groups.get(it.correlationKey) ?? [];
+      g.push(it);
+      groups.set(it.correlationKey, g);
+    } else {
+      singles.push(it);
+    }
+  }
+  const merged: AcquisitionItem[] = [];
+  for (const [key, group] of groups) {
+    merged.push(group.length === 1 ? group[0]! : mergeCorrelatedGroup(key, group));
+  }
+  return [...merged, ...singles];
+}
+
+function rollupOf(items: AcquisitionItem[], aggregateRateBps: number): AcquisitionSnapshot["rollup"] {
+  return {
+    downloading: items.filter((i) => i.state === "downloading").length,
+    importing: items.filter((i) => i.state === "importing").length,
+    failedOrStalled: items.filter(
+      (i) => i.state === "stalled" || i.state === "failed",
+    ).length,
+    aggregateRateBps: Math.max(0, Math.round(aggregateRateBps)),
+  };
+}
+
 export function mergeAcquisition(
   sonarr: AcquisitionItem[] | null,
   radarr: AcquisitionItem[] | null,
   qbittorrent: AcquisitionSnapshot | null,
 ): AcquisitionSnapshot {
-  const items = [
+  const items = correlateAcquisition([
     ...(sonarr ?? []),
     ...(radarr ?? []),
     ...(qbittorrent?.items ?? []),
-  ];
+  ]);
 
   // qBittorrent's global download speed is the authoritative live throughput;
   // fall back to summing per-item rates for the *arr-only case.
   const summedRates = items.reduce((sum, i) => sum + (i.rateBps ?? 0), 0);
-  const aggregateRateBps =
-    qbittorrent?.rollup.aggregateRateBps ?? summedRates;
+  const aggregateRateBps = qbittorrent?.rollup.aggregateRateBps ?? summedRates;
 
-  return {
-    items,
-    rollup: {
-      downloading: items.filter((i) => i.state === "downloading").length,
-      importing: items.filter((i) => i.state === "importing").length,
-      failedOrStalled: items.filter(
-        (i) => i.state === "stalled" || i.state === "failed",
-      ).length,
-      aggregateRateBps: Math.max(0, Math.round(aggregateRateBps)),
-    },
-  };
+  return { items, rollup: rollupOf(items, aggregateRateBps) };
+}
+
+/**
+ * Project the correlated acquisition set to the *browser-facing* view: drop the
+ * seeding/completed library (that belongs in the activity history, not a
+ * permanent list of every torrent) and order by what most needs attention. The
+ * rollup is preserved — completed items never contributed to its counts. Kept
+ * separate from `mergeAcquisition` so the full set (including completions) is
+ * still available for server-side event derivation.
+ */
+export function filterAcquisitionForDisplay(
+  acq: AcquisitionSnapshot,
+): AcquisitionSnapshot {
+  const items = acq.items
+    .filter((i) => i.state !== "completed")
+    .sort(
+      (a, b) => STATE_PRIORITY.indexOf(a.state) - STATE_PRIORITY.indexOf(b.state),
+    );
+  return { items, rollup: acq.rollup };
 }
 
 export function assembleSnapshot(parts: AggregateParts): DashboardSnapshot {

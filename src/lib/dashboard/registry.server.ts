@@ -20,6 +20,7 @@ import { makeCommandCollect, makeHelperCollect } from "@/lib/connectors/zfs.serv
 import {
   assembleSnapshot,
   fillConnectorHealth,
+  filterAcquisitionForDisplay,
   type ConnectorConfigStatus,
 } from "@/lib/dashboard/aggregate";
 import { getDb, tryPersist } from "@/lib/db/db.server";
@@ -412,14 +413,22 @@ function persist(
 
 /** One aggregate step: assemble, evaluate attention, persist, attach activity. */
 function step(reg: LiveRegistry, now: number): void {
+  // The FULL snapshot (correlated, including completed transfers) drives attention
+  // and event derivation so completion transitions are never lost.
   const snapshot = assemble(reg, now);
   const attention = applyAttention(snapshot, now);
   persist(reg, snapshot, now, attention);
   prevForEvents = snapshot;
-  // Attach the persisted feed AFTER deriving this cycle's events so the newest
-  // events are included immediately.
-  snapshot.activity = readActivity();
-  cached = snapshot;
+
+  // The PUBLIC snapshot drops the seeding/completed library from the browser
+  // payload and attaches the persisted feed AFTER deriving this cycle's events so
+  // the newest events are included immediately.
+  const publicSnapshot: DashboardSnapshot = {
+    ...snapshot,
+    acquisition: filterAcquisitionForDisplay(snapshot.acquisition),
+  };
+  publicSnapshot.activity = readActivity();
+  cached = publicSnapshot;
 }
 
 /** Non-blocking scheduled maintenance (retention + downsampling). */

@@ -15,7 +15,7 @@
 import { z } from "zod";
 import { parseUpstream } from "@/lib/connectors/validate";
 import type { Connector } from "@/lib/connectors/connector";
-import { clamp } from "@/lib/utils";
+import { clamp, opaqueId } from "@/lib/utils";
 import type {
   AcquisitionItem,
   AcquisitionSnapshot,
@@ -86,8 +86,13 @@ function normalizeTorrent(raw: RawTorrent, index: number): AcquisitionItem {
   const dlspeed = raw.dlspeed ?? 0;
   const state = mapQbState(raw.state, dlspeed);
   const eta = raw.eta;
+  // Never expose the raw infohash as a browser-visible id. The opaque, stable
+  // key (a one-way fold of the case-normalized hash) doubles as the id and the
+  // cross-service correlation key with Sonarr/Radarr (which key on the same
+  // infohash via their downloadId).
+  const key = raw.hash ? opaqueId(raw.hash.toLowerCase()) : null;
   return {
-    id: `qbittorrent-${raw.hash ?? index}`,
+    id: key ? `qbittorrent-${key}` : `qbittorrent-${index}`,
     source: "qbittorrent",
     title: raw.name ?? "Unknown",
     quality: null,
@@ -95,6 +100,7 @@ function normalizeTorrent(raw: RawTorrent, index: number): AcquisitionItem {
     progress: clamp(raw.progress ?? 0, 0, 1),
     rateBps: state === "downloading" ? dlspeed : dlspeed > 0 ? dlspeed : 0,
     etaSeconds: eta == null || eta >= ETA_INFINITY ? null : eta,
+    correlationKey: key,
   };
 }
 
