@@ -21,8 +21,18 @@ export async function GET(req: NextRequest) {
       headers: { "Cache-Control": "no-store" },
     });
   } catch (err) {
-    // Only a total backend failure (e.g. live mode not configured) reaches here.
-    const message = err instanceof Error ? err.message : "Dashboard unavailable";
-    return Response.json({ error: message }, { status: 503 });
+    // Only a total backend failure (e.g. live mode misconfigured) reaches here —
+    // connector failures are already isolated upstream. Never send a backend
+    // exception message to the browser (it may contain internal paths, a
+    // misconfig detail, or a URL with a token): log the sanitized diagnostic
+    // server-side and return a generic, stable public error.
+    console.error(
+      "[api/dashboard] request failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return Response.json(
+      { error: "Dashboard temporarily unavailable" },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
+    );
   }
 }
