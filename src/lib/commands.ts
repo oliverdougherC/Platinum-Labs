@@ -8,6 +8,7 @@
  */
 
 import { interpretHealth } from "@/lib/dashboard/health-interpretation";
+import { acquisitionAvailability } from "@/lib/dashboard/derive";
 import type { QuickLink } from "@/lib/quicklinks";
 import type { DashboardSnapshot } from "@/lib/types";
 
@@ -111,6 +112,17 @@ function whoIsWatching(ctx: CommandContext): CommandResult {
 function downloads(ctx: CommandContext): CommandResult {
   const { items, rollup } = ctx.snapshot.acquisition;
   if (items.length === 0) {
+    const availability = acquisitionAvailability(ctx.snapshot, ctx.now);
+    if (availability.kind === "unconfigured") {
+      return { kind: "answer", title: "Downloads", lines: ["No acquisition services are configured."] };
+    }
+    if (availability.kind === "degraded" || availability.stale) {
+      return {
+        kind: "answer",
+        title: "Downloads",
+        lines: ["The acquisition queue is unavailable or incomplete, so its status cannot be determined."],
+      };
+    }
     return { kind: "answer", title: "Downloads", lines: ["The acquisition queue is clear."] };
   }
   const head = `${rollup.downloading} downloading · ${rollup.importing} importing · ${rollup.failedOrStalled} stalled/failed`;
@@ -149,6 +161,13 @@ function issues(ctx: CommandContext): CommandResult {
 }
 
 function addedToday(ctx: CommandContext): CommandResult {
+  if (ctx.snapshot.activityAvailable === false) {
+    return {
+      kind: "answer",
+      title: "Added today",
+      lines: ["Activity history is unavailable or incomplete, so recent additions cannot be determined."],
+    };
+  }
   const since = ctx.now - DAY;
   const added = ctx.snapshot.activity.filter(
     (e) => e.kind === "media.imported" && e.at >= since,

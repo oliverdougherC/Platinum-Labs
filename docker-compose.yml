@@ -19,7 +19,7 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     env_file:
-      - .env
+      - ${HOMEPAGE_ENV_FILE:-.env}
     environment:
       # Persistent SQLite lives on the named volume; history survives restarts.
       HOMELAB_DB_PATH: /data/homelab.db

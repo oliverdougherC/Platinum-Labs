@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TOKEN = os.environ.get("ZFS_COLLECTOR_TOKEN", "")
@@ -75,6 +76,17 @@ def _parse_list(stdout):
     return pools
 
 
+def _parse_scan_timestamp(scan):
+    match = re.search(r"(?: on | since )(.+)$", scan)
+    if not match:
+        return None
+    try:
+        parsed = datetime.strptime(re.sub(r"\s+", " ", match.group(1).strip()), "%a %b %d %H:%M:%S %Y")
+    except ValueError:
+        return None
+    return int(parsed.timestamp() * 1000)
+
+
 def _apply_status(pools, stdout):
     current = None
     for raw in stdout.splitlines():
@@ -87,8 +99,13 @@ def _apply_status(pools, stdout):
                 current["scanState"] = "resilvering"
             elif re.search(r"in progress", scan, re.I):
                 current["scanState"] = "scrubbing"
+            elif re.search(r"none requested", scan, re.I):
+                current["scanState"] = "none"
             elif re.search(r"repaired|scrub|canceled", scan, re.I):
                 current["scanState"] = "finished"
+            ts = _parse_scan_timestamp(scan)
+            if ts is not None:
+                current["lastScrubAt"] = ts
             m = re.search(r"with (\d+) errors", scan, re.I)
             if m:
                 current["scrubErrors"] = int(m.group(1))

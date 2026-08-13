@@ -44,6 +44,24 @@ describe("runCommand — queries operate on normalized state", () => {
     expect(r.kind).toBe("answer");
     if (r.kind === "answer") expect(r.lines[0]).toMatch(/downloading/);
   });
+  it("does not claim an empty download queue is clear when acquisition data is incomplete", () => {
+    const c = ctx("idle");
+    c.snapshot.acquisition.items = [];
+    c.snapshot.health = c.snapshot.health.map((h) =>
+      h.id === "qbittorrent" ? { ...h, status: "unavailable" } : h,
+    );
+    const r = runCommand("downloads", c);
+    if (r.kind === "answer") expect(r.lines.join(" ")).toMatch(/unavailable|incomplete/i);
+  });
+  it("does not claim a stale empty download queue is clear", () => {
+    const c = ctx("idle");
+    c.snapshot.acquisition.items = [];
+    c.snapshot.health = c.snapshot.health.map((h) =>
+      h.id === "sonarr" ? { ...h, lastSuccessAt: c.now - h.pollIntervalMs * 4 } : h,
+    );
+    const r = runCommand("downloads", c);
+    if (r.kind === "answer") expect(r.lines.join(" ")).toMatch(/unavailable|incomplete/i);
+  });
   it("storage", () => {
     const r = runCommand("storage", ctx("idle"));
     if (r.kind === "answer") expect(r.lines.join(" ")).toMatch(/tank/);
@@ -57,6 +75,13 @@ describe("runCommand — queries operate on normalized state", () => {
   it("what was added today", () => {
     const r = runCommand("what was added today", ctx("active"));
     expect(r.kind).toBe("answer");
+  });
+  it("does not claim nothing was added when activity history is unavailable", () => {
+    const c = ctx("idle");
+    c.snapshot.activity = [];
+    c.snapshot.activityAvailable = false;
+    const r = runCommand("what was added today", c);
+    if (r.kind === "answer") expect(r.lines.join(" ")).toMatch(/unavailable|incomplete/i);
   });
 });
 

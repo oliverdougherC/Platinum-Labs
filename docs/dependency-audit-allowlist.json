@@ -1,0 +1,33 @@
+{
+  "reviewedAt": "2026-08-13",
+  "notes": [
+    "As of 2026-08-13, fresh npm audit output reports the first production remediation for the current Next.js advisory chain as next@16.3.0.",
+    "The CI production gate only accepts the exact advisory/package pairs listed below. Any new or changed high/critical production advisory fails the build."
+  ],
+  "productionAccepted": [
+    {
+      "id": "GHSA-6G55-P6WH-862Q",
+      "package": "postcss",
+      "severity": "high",
+      "expiresOn": "2026-11-30",
+      "reason": "The vulnerable PostCSS copy is bundled under Next 15.x and npm audit offers only a Next 16 major upgrade. This private dashboard never accepts or processes user-supplied CSS or source maps, so the sourceMappingURL file-read path is not reachable from an HTTP request.",
+      "tracking": "Re-evaluate after validating a Next.js 16 upgrade path."
+    },
+    {
+      "id": "GHSA-R28C-9Q8G-F849",
+      "package": "postcss",
+      "severity": "high",
+      "expiresOn": "2026-11-30",
+      "reason": "The vulnerable PostCSS copy is bundled under Next 15.x and npm audit offers only a Next 16 major upgrade. This private dashboard never accepts or processes user-supplied CSS or source maps, so the sourceMappingURL traversal path is not reachable from an HTTP request.",
+      "tracking": "Re-evaluate after validating a Next.js 16 upgrade path."
+    },
+    {
+      "id": "GHSA-F88M-G3JW-G9CJ",
+      "package": "sharp",
+      "severity": "high",
+      "expiresOn": "2026-11-30",
+      "reason": "The production Sharp advisory is pulled in by Next 15.x and npm audit only advertises a fix via Next 16.3.0. The application has no arbitrary image upload or third-party image-ingestion pipeline; all image assets are trusted, checked-in files.",
+      "tracking": "Re-evaluate after validating a Next.js 16 upgrade path."
+    }
+  ]
+}

@@ -143,9 +143,11 @@ function mergeCorrelatedGroup(key: string, group: AcquisitionItem[]): Acquisitio
 
 /**
  * Collapse items that represent the SAME acquisition across services into a
- * single coherent row, keyed on the opaque correlation key. Items with no key
- * (or a unique key) pass through unchanged — an identifier mismatch keeps two
- * items separate.
+ * single coherent row, keyed on the opaque correlation key. Every keyed item
+ * receives the canonical acquisition id even when it is the only source
+ * currently reporting; source membership may change between polls, but the
+ * underlying acquisition identity must not. Keyless items pass through
+ * unchanged, and an identifier mismatch keeps two items separate.
  */
 export function correlateAcquisition(items: AcquisitionItem[]): AcquisitionItem[] {
   const groups = new Map<string, AcquisitionItem[]>();
@@ -161,7 +163,7 @@ export function correlateAcquisition(items: AcquisitionItem[]): AcquisitionItem[
   }
   const merged: AcquisitionItem[] = [];
   for (const [key, group] of groups) {
-    merged.push(group.length === 1 ? group[0]! : mergeCorrelatedGroup(key, group));
+    merged.push(mergeCorrelatedGroup(key, group));
   }
   return [...merged, ...singles];
 }

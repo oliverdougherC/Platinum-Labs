@@ -75,24 +75,20 @@ function httpService(
 }
 
 function resolveZfs(env: ServerEnv): ConnectorConfig<ZfsConfig> {
-  // Command mode is an explicit opt-in and takes priority only when no helper
-  // URL is configured (helper is preferred off-host per PLA-184).
-  if (env.ZFS_COLLECTOR_URL) {
-    return {
-      kind: "configured",
-      value: { mode: "helper", url: env.ZFS_COLLECTOR_URL, token: env.ZFS_COLLECTOR_TOKEN },
-    };
-  }
-  if (env.HOMELAB_ZFS_COMMAND) {
-    return { kind: "configured", value: { mode: "command" } };
-  }
-  if (env.ZFS_COLLECTOR_TOKEN) {
-    return {
-      kind: "partial",
-      error: "incomplete configuration — ZFS_COLLECTOR_TOKEN set without ZFS_COLLECTOR_URL",
-    };
-  }
-  return { kind: "absent" };
+  const helper = classify<ZfsConfig>(
+    [
+      { name: "ZFS_COLLECTOR_URL", value: env.ZFS_COLLECTOR_URL },
+      { name: "ZFS_COLLECTOR_TOKEN", value: env.ZFS_COLLECTOR_TOKEN },
+    ],
+    () => ({ mode: "helper", url: env.ZFS_COLLECTOR_URL!, token: env.ZFS_COLLECTOR_TOKEN! }),
+  );
+
+  // Helper mode is preferred when fully configured, and a half-configured
+  // helper is always a misconfiguration rather than silently falling back to
+  // direct host commands.
+  if (helper.kind !== "absent") return helper;
+  if (env.HOMELAB_ZFS_COMMAND) return { kind: "configured", value: { mode: "command" } };
+  return helper;
 }
 
 export function resolveConnectors(env: ServerEnv): ResolvedConnectors {

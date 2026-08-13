@@ -87,7 +87,7 @@ describe("resolveConnectors — zfs (two modes)", () => {
     expect(resolveConnectors(env({})).zfs).toEqual({ kind: "absent" });
   });
 
-  it("helper mode when the collector url is set", () => {
+  it("helper mode when the collector url and token are set", () => {
     const r = resolveConnectors(
       env({ ZFS_COLLECTOR_URL: "http://host:9000", ZFS_COLLECTOR_TOKEN: "t" }),
     ).zfs;
@@ -101,9 +101,29 @@ describe("resolveConnectors — zfs (two modes)", () => {
     if (r.kind === "configured") expect(r.value).toEqual({ mode: "command" });
   });
 
-  it("partial when a token is set with no url and no command mode", () => {
+  it("partial when only the helper url is set", () => {
+    const r = resolveConnectors(env({ ZFS_COLLECTOR_URL: "http://host:9000" })).zfs;
+    expect(r.kind).toBe("partial");
+    if (r.kind === "partial") {
+      expect(r.error).toContain("ZFS_COLLECTOR_TOKEN");
+      expect(r.error).not.toContain("host:9000");
+    }
+  });
+
+  it("partial when only the helper token is set", () => {
     const r = resolveConnectors(env({ ZFS_COLLECTOR_TOKEN: "orphan-token" })).zfs;
     expect(r.kind).toBe("partial");
-    if (r.kind === "partial") expect(r.error).not.toContain("orphan-token");
+    if (r.kind === "partial") {
+      expect(r.error).toContain("ZFS_COLLECTOR_URL");
+      expect(r.error).not.toContain("orphan-token");
+    }
+  });
+
+  it("does not fall back to command mode when helper config is partial", () => {
+    const r = resolveConnectors(
+      env({ ZFS_COLLECTOR_URL: "http://host:9000", HOMELAB_ZFS_COMMAND: true }),
+    ).zfs;
+    expect(r.kind).toBe("partial");
+    if (r.kind === "partial") expect(r.error).toContain("ZFS_COLLECTOR_TOKEN");
   });
 });

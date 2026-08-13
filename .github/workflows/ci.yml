@@ -34,6 +34,11 @@ jobs:
         run: npm run lint
       - name: Unit / component tests
         run: npm run test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Python collector tests
+        run: python3 -m unittest scripts/test_zfs_collector.py
       - name: Production build
         run: npm run build
 
@@ -54,15 +59,21 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Dependency audit (high+)
-        # Informational — flags known-vulnerable deps without blocking the merge
-        # on transitive advisories that may lack a fix.
-        run: npm audit --audit-level=high || true
+      - name: Install (clean, from lockfile)
+        run: npm ci
+      - name: Dependency audit gate (production high/critical)
+        run: npm run audit:prod
+      - name: Dependency audit report (all dependencies)
+        run: npm run audit:all
 
   docker:
     name: docker image builds
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validate production Compose topology
+        run: HOMEPAGE_ENV_FILE=.env.example ZFS_COLLECTOR_TOKEN=ci-placeholder docker compose -f docker-compose.yml -f docker-compose.production.yml --profile zfs-sidecar config --quiet
       - name: Build production image
         run: docker build -t platinum-labs:ci .
+      - name: Build ZFS collector sidecar image
+        run: docker build -f docker/zfs-collector.Dockerfile -t platinum-labs-zfs-collector:ci .

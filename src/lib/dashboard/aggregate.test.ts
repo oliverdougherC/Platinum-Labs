@@ -101,10 +101,10 @@ describe("correlateAcquisition — cross-service correlation (exact identifiers 
     expect(m.progress).toBeCloseTo(0.63, 5); // qB progress (more current)
   });
 
-  it("leaves Sonarr-only, Radarr-only, and qB-only items unmerged", () => {
-    expect(correlateAcquisition([acqItem({ id: "sonarr-1", source: "sonarr", correlationKey: "A" })])).toHaveLength(1);
-    expect(correlateAcquisition([acqItem({ id: "radarr-1", source: "radarr", correlationKey: "B" })])).toHaveLength(1);
-    expect(correlateAcquisition([acqItem({ id: "qbittorrent-C", source: "qbittorrent", correlationKey: "C" })])[0]!.id).toBe("qbittorrent-C");
+  it("canonicalizes keyed Sonarr-only, Radarr-only, and qB-only items", () => {
+    expect(correlateAcquisition([acqItem({ id: "sonarr-1", source: "sonarr", correlationKey: "A" })])[0]!.id).toBe("acq-A");
+    expect(correlateAcquisition([acqItem({ id: "radarr-1", source: "radarr", correlationKey: "B" })])[0]!.id).toBe("acq-B");
+    expect(correlateAcquisition([acqItem({ id: "qbittorrent-C", source: "qbittorrent", correlationKey: "C" })])[0]!.id).toBe("acq-C");
   });
 
   it("keeps items with mismatched identifiers separate", () => {

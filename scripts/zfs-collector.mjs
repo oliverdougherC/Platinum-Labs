@@ -100,12 +100,13 @@ function applyStatus(pools, stdout) {
       const scan = line.slice("scan:".length).trim();
       if (/resilver in progress/i.test(scan)) current.scanState = "resilvering";
       else if (/in progress/i.test(scan)) current.scanState = "scrubbing";
+      else if (/none requested/i.test(scan)) current.scanState = "none";
       else if (/repaired|scrub|canceled/i.test(scan)) current.scanState = "finished";
       const withErrors = scan.match(/with (\d+) errors/i);
       if (withErrors) current.scrubErrors = Number(withErrors[1]);
-      const on = scan.match(/ on (.+)$/);
-      if (on) {
-        const ts = Date.parse(on[1].trim().replace(/\s+/g, " "));
+      const timestamp = scan.match(/(?: on | since )(.+)$/);
+      if (timestamp) {
+        const ts = Date.parse(timestamp[1].trim().replace(/\s+/g, " "));
         if (!Number.isNaN(ts)) current.lastScrubAt = ts;
       }
     } else if (current && line.startsWith("errors:")) {
