@@ -1,0 +1,93 @@
+# Production hardening + topology override for the Homelab Homepage.
+#
+# Usage:
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.production.yml \
+#     up -d --build
+#
+# Enable the hardened ZFS sidecar only when this host exposes /dev/zfs:
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.production.yml \
+#     --profile zfs-sidecar \
+#     up -d --build
+
+services:
+  homepage:
+    restart: unless-stopped
+    init: true
+    user: "1001:1001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid
+    ports:
+      - "${HOMEPAGE_BIND_ADDRESS:-127.0.0.1}:${HOMEPAGE_PORT:-3000}:3000"
+    networks:
+      default: {}
+      media: {}
+      jellyfin: {}
+      zfs_private: {}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  zfs-collector:
+    profiles: ["zfs-sidecar"]
+    build:
+      context: .
+      dockerfile: docker/zfs-collector.Dockerfile
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid
+    environment:
+      ZFS_COLLECTOR_TOKEN: ${ZFS_COLLECTOR_TOKEN:?set ZFS_COLLECTOR_TOKEN when enabling the zfs-sidecar profile}
+      ZFS_COLLECTOR_BIND: 0.0.0.0
+      ZFS_COLLECTOR_PORT: 9797
+    devices:
+      - "/dev/zfs:/dev/zfs"
+    expose:
+      - "9797"
+    hostname: zfs-collector
+    networks:
+      zfs_private:
+        aliases:
+          - zfs-collector
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import os,sys,urllib.request; req=urllib.request.Request('http://127.0.0.1:9797', headers={'Authorization': 'Bearer '+os.environ['ZFS_COLLECTOR_TOKEN']}); sys.exit(0 if urllib.request.urlopen(req, timeout=5).status == 200 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  homelab-data:
+    name: ${HOMEPAGE_VOLUME_NAME:-homelab-homepage-data}
+
+networks:
+  media:
+    external: true
+    name: ${MEDIA_NETWORK_NAME:-media_default}
+  jellyfin:
+    external: true
+    name: ${JELLYFIN_NETWORK_NAME:-jellyfin_default}
+  zfs_private:
+    internal: true

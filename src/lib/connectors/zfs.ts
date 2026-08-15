@@ -12,7 +12,21 @@ import { z } from "zod";
 import { parseUpstream } from "@/lib/connectors/validate";
 import type { Connector } from "@/lib/connectors/connector";
 import { clamp } from "@/lib/utils";
-import type { PoolHealth, ZfsPool, ZfsSnapshot } from "@/lib/types";
+import type { PoolHealth, ZfsPool, ZfsScanState, ZfsSnapshot } from "@/lib/types";
+
+/** Map the parsed scrub/scan state onto the normalized model. */
+function toScanState(state: ScrubState | undefined): ZfsScanState {
+  switch (state) {
+    case "in-progress":
+      return "scrubbing";
+    case "resilvering":
+      return "resilvering";
+    case "completed":
+      return "finished";
+    default:
+      return "none";
+  }
+}
 
 const KNOWN_HEALTH: PoolHealth[] = [
   "ONLINE",
@@ -129,6 +143,7 @@ export function buildZfsSnapshot(
         totalBytes: p.size,
         capacityFraction: p.size > 0 ? clamp(p.alloc / p.size, 0, 1) : 0,
         health: mapPoolHealth(p.health),
+        scan: toScanState(info?.state),
         lastScrubAt: info?.lastScrubAt ?? null,
         scrubErrors: info?.errors ?? 0,
       };
@@ -145,6 +160,7 @@ const collectorPoolSchema = z
     alloc: z.number(),
     free: z.number().optional(),
     health: z.string(),
+    scanState: z.enum(["none", "scrubbing", "resilvering", "finished"]).optional(),
     lastScrubAt: z.number().nullable().optional(),
     scrubErrors: z.number().optional(),
   })
@@ -164,6 +180,7 @@ export function normalizeZfsCollector(raw: unknown): ZfsSnapshot {
       totalBytes: p.size,
       capacityFraction: p.size > 0 ? clamp(p.alloc / p.size, 0, 1) : 0,
       health: mapPoolHealth(p.health),
+      scan: p.scanState ?? "none",
       lastScrubAt: p.lastScrubAt ?? null,
       scrubErrors: p.scrubErrors ?? 0,
     })),

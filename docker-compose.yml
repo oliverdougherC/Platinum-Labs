@@ -1,0 +1,53 @@
+# Homelab Homepage — example production compose (PLA-196).
+#
+# Usage:
+#   cp .env.example .env      # fill in connector URLs/keys (or leave blank for fake mode)
+#   docker compose up -d --build
+#
+# The dashboard is intended for a private/LAN/Tailscale network. If you expose it
+# through a reverse proxy (e.g. Nginx Proxy Manager), terminate TLS and add
+# authentication/access control there — see the README security section.
+
+services:
+  homepage:
+    build: .
+    # Or pin a published image instead of building:
+    # image: ghcr.io/oliverdougherc/platinum-labs:latest
+    restart: unless-stopped
+    # Bind to localhost only by default; a reverse proxy or Tailscale should
+    # provide external access. Change to "3000:3000" to expose on the LAN.
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - ${HOMEPAGE_ENV_FILE:-.env}
+    environment:
+      # Persistent SQLite lives on the named volume; history survives restarts.
+      HOMELAB_DB_PATH: /data/homelab.db
+    volumes:
+      - homelab-data:/data
+    # Lets the container reach a host-side service (e.g. the ZFS collector) as
+    # `host.docker.internal` without host networking. Remove if unused.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # No Docker socket, no host privileges, no broad mounts — the container only
+    # needs outbound network to reach your services (and the ZFS helper API).
+    # The image already runs as a non-root user (uid 1001).
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Bounded local logs (skip if the host uses a central logging driver).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  homelab-data:

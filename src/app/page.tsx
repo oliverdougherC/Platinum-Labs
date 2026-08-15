@@ -1,5 +1,6 @@
 import {
   getDashboardSnapshot,
+  getQuickLinks,
   resolveScenario,
   shouldShowDevControls,
 } from "@/lib/snapshot.server";
@@ -41,6 +42,7 @@ export default async function HomePage({
       <LiveDashboard
         initial={initial}
         scenario={devControls ? scenarioParam : undefined}
+        quickLinks={getQuickLinks()}
       />
       {devControls ? <ScenarioSwitcher current={currentScenario} /> : null}
     </main>

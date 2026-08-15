@@ -15,7 +15,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run typecheck && npm run lint && npm run test"
+    "audit:prod": "node scripts/audit-policy.mjs --scope=prod",
+    "audit:all": "node scripts/audit-policy.mjs --scope=all --report-only",
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "soak": "node scripts/soak.mjs",
+    "compose:prod:config": "HOMEPAGE_ENV_FILE=.env.example MEDIA_NETWORK_NAME=media_default JELLYFIN_NETWORK_NAME=jellyfin_default HOMEPAGE_BIND_ADDRESS=127.0.0.1 HOMEPAGE_PORT=3000 HOMEPAGE_VOLUME_NAME=homelab-homepage-data ZFS_COLLECTOR_TOKEN=placeholder docker compose -f docker-compose.yml -f docker-compose.production.yml --profile zfs-sidecar config"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",

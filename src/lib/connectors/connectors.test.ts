@@ -128,6 +128,128 @@ describe("ConnectorRuntime — overlap protection", () => {
   });
 });
 
+describe("ConnectorRuntime — capped backoff with jitter (PLA-194)", () => {
+  function alwaysFail(id: Ping extends never ? never : "jellyfin") {
+    const connector: Connector<Ping> = {
+      id,
+      pollIntervalMs: 10_000,
+      async poll() {
+        throw new ConnectorError("down");
+      },
+    };
+    return connector;
+  }
+
+  it("one transient failure does NOT back off (retries at normal cadence)", async () => {
+    const clock = fakeClock();
+    const rt = new ConnectorRuntime(alwaysFail("jellyfin"), {
+      now: clock.now,
+      jitter: () => 0,
+    });
+    await rt.refresh(); // failure #1
+    expect(rt.isBackingOff()).toBe(false); // a single blip is retried normally
+  });
+
+  it("backs off after repeated failures and skips ticks within the window", async () => {
+    const clock = fakeClock();
+    let polls = 0;
+    const connector: Connector<Ping> = {
+      id: "jellyfin",
+      pollIntervalMs: 10_000,
+      async poll() {
+        polls += 1;
+        throw new ConnectorError("down");
+      },
+    };
+    const rt = new ConnectorRuntime(connector, {
+      now: clock.now,
+      backoffBaseMs: 5_000,
+      backoffMaxMs: 60_000,
+      jitter: () => 0, // deterministic: delay = 50% of capped
+    });
+
+    await rt.refresh(); // #1 (polls=1), no backoff yet
+    await rt.refresh(); // #2 (polls=2), backoff engages
+    expect(polls).toBe(2);
+    expect(rt.isBackingOff()).toBe(true);
+
+    // A tick within the backoff window is a no-op (no extra poll).
+    await rt.refresh();
+    expect(polls).toBe(2);
+
+    // After the window elapses it polls again.
+    clock.advance(5_000); // 50% of base 5000 = 2500 → advancing 5000 passes it
+    await rt.refresh();
+    expect(polls).toBe(3);
+  });
+
+  it("recovery resets the backoff immediately", async () => {
+    const clock = fakeClock();
+    let mode: "fail" | "ok" = "fail";
+    const connector: Connector<Ping> = {
+      id: "jellyfin",
+      pollIntervalMs: 10_000,
+      async poll() {
+        if (mode === "fail") throw new ConnectorError("down");
+        return { ok: true, value: 1 };
+      },
+    };
+    const rt = new ConnectorRuntime(connector, { now: clock.now, backoffBaseMs: 5_000, jitter: () => 1 });
+    await rt.refresh(); // #1 fail
+    await rt.refresh(); // #2 fail → backoff
+    expect(rt.isBackingOff()).toBe(true);
+    clock.advance(60_000);
+    mode = "ok";
+    const state = await rt.refresh(); // recovers
+    expect(state.health.status).toBe("healthy");
+    expect(rt.isBackingOff()).toBe(false); // backoff cleared on recovery
+  });
+});
+
+describe("ConnectorHub — chaos: fail then recover each connector independently", () => {
+  it("keeps every other connector healthy while one is unplugged, then self-heals", async () => {
+    const modes: Record<string, "ok" | "fail"> = {
+      jellyfin: "ok",
+      sonarr: "ok",
+      radarr: "ok",
+      qbittorrent: "ok",
+      zfs: "ok",
+    };
+    const ids = Object.keys(modes) as Array<keyof typeof modes>;
+    const make = (id: string): Connector<Ping> => ({
+      id: id as Connector<Ping>["id"],
+      pollIntervalMs: 10_000,
+      async poll() {
+        if (modes[id] === "fail") throw new ConnectorError("down");
+        return { ok: true, value: 1 };
+      },
+    });
+
+    const hub = new ConnectorHub();
+    for (const id of ids) hub.register(new ConnectorRuntime(make(id)));
+    await hub.refreshAll(); // all healthy
+    expect(hub.health().every((h) => h.status === "healthy")).toBe(true);
+
+    // Unplug each connector one at a time; the rest stay healthy; then recover.
+    for (const target of ids) {
+      modes[target] = "fail";
+      await hub.refreshAll();
+      const health = hub.health();
+      // The target is no longer healthy...
+      expect(health.find((h) => h.id === target)!.status).not.toBe("healthy");
+      // ...but every other connector still is (partial dashboard remains usable).
+      for (const other of ids) {
+        if (other === target) continue;
+        expect(health.find((h) => h.id === other)!.status).toBe("healthy");
+      }
+      // Recover it and confirm it self-heals without any restart.
+      modes[target] = "ok";
+      await hub.refreshAll();
+      expect(hub.health().find((h) => h.id === target)!.status).toBe("healthy");
+    }
+  });
+});
+
 describe("ConnectorHub — fan-out isolation", () => {
   it("returns partial healthy data when some connectors fail", async () => {
     const hub = new ConnectorHub();

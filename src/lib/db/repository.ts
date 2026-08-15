@@ -64,21 +64,25 @@ export function recordHealthTransition(
 }
 
 export interface AlertRecord {
+  /** Stable per-instance id (rule + subject), unique across simultaneous entities. */
+  alertId: string;
+  /** Reusable rule class id. */
   ruleId: string;
   severity: Severity;
   title: string;
   detail: string;
   source: ConnectorId;
+  subject: string | null;
   firstSeenAt: number;
   lastSeenAt: number;
 }
 
-/** Upsert an active alert: keep first_seen, bump last_seen, clear resolved. */
+/** Upsert an active alert instance: keep first_seen, bump last_seen, clear resolved. */
 export function upsertAlert(db: DB, a: AlertRecord): void {
   db.prepare(
-    `INSERT INTO alerts (rule_id, severity, title, detail, source, first_seen, last_seen, resolved_at)
-     VALUES (@ruleId, @severity, @title, @detail, @source, @firstSeenAt, @lastSeenAt, NULL)
-     ON CONFLICT(rule_id) DO UPDATE SET
+    `INSERT INTO alerts (alert_id, rule_id, severity, title, detail, source, subject, first_seen, last_seen, resolved_at)
+     VALUES (@alertId, @ruleId, @severity, @title, @detail, @source, @subject, @firstSeenAt, @lastSeenAt, NULL)
+     ON CONFLICT(alert_id) DO UPDATE SET
        severity = excluded.severity,
        title = excluded.title,
        detail = excluded.detail,
@@ -87,10 +91,26 @@ export function upsertAlert(db: DB, a: AlertRecord): void {
   ).run(a);
 }
 
-export function resolveAlert(db: DB, ruleId: string, at: number): void {
+export function resolveAlert(db: DB, alertId: string, at: number): void {
   db.prepare(
-    "UPDATE alerts SET resolved_at = ? WHERE rule_id = ? AND resolved_at IS NULL",
-  ).run(at, ruleId);
+    "UPDATE alerts SET resolved_at = ? WHERE alert_id = ? AND resolved_at IS NULL",
+  ).run(at, alertId);
+}
+
+export interface StoredAlert extends AlertRecord {
+  resolvedAt: number | null;
+}
+
+/** Currently-open (unresolved) alerts, most-recently-seen first. */
+export function activeAlerts(db: DB): StoredAlert[] {
+  return db
+    .prepare(
+      `SELECT alert_id AS alertId, rule_id AS ruleId, severity, title, detail,
+              source, subject, first_seen AS firstSeenAt, last_seen AS lastSeenAt,
+              resolved_at AS resolvedAt
+       FROM alerts WHERE resolved_at IS NULL ORDER BY last_seen DESC`,
+    )
+    .all() as StoredAlert[];
 }
 
 export function insertAudit(
@@ -139,6 +159,21 @@ export function recentEvents(db: DB, limit = 50): ActivityEvent[] {
        FROM activity_events ORDER BY at DESC LIMIT ?`,
     )
     .all(limit) as ActivityEvent[];
+}
+
+/**
+ * Epoch ms of the most recent meaningful playback event, or null. Lets the live
+ * dashboard show "Last played N ago" after playback stops, since Jellyfin's
+ * `/Sessions` only reports *current* sessions (PLA-187).
+ */
+export function lastPlaybackAt(db: DB): number | null {
+  const row = db
+    .prepare(
+      `SELECT MAX(at) AS at FROM activity_events
+       WHERE kind IN ('playback.started', 'playback.stopped')`,
+    )
+    .get() as { at: number | null };
+  return row.at ?? null;
 }
 
 export function countRows(db: DB, table: string): number {

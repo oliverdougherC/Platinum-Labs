@@ -6,6 +6,7 @@ import {
   type QbClient,
 } from "@/lib/connectors/qbittorrent";
 import { ConnectorValidationError } from "@/lib/connectors/connector";
+import { opaqueId } from "@/lib/utils";
 
 describe("mapQbState", () => {
   it("distinguishes truly stalled (0 speed) from slow-but-moving", () => {
@@ -50,6 +51,16 @@ describe("normalizeQbittorrent", () => {
     expect(snap.rollup.downloading).toBe(1);
     expect(snap.rollup.failedOrStalled).toBe(2); // stalled + error
     expect(snap.rollup.aggregateRateBps).toBe(7_500_000);
+  });
+
+  it("uses an opaque id/correlation key and never exposes the raw infohash", () => {
+    const hash = "abcdef0123456789abcdef0123456789abcdef01";
+    const snap = normalizeQbittorrent({ torrents: [{ hash, name: "X", progress: 0.5, dlspeed: 1, eta: 60, state: "downloading" }] });
+    const item = snap.items[0]!;
+    const key = opaqueId(hash);
+    expect(item.id).toBe(`qbittorrent-${key}`);
+    expect(item.correlationKey).toBe(key);
+    expect(JSON.stringify(snap)).not.toContain(hash); // raw infohash never leaks
   });
 
   it("empty torrent list → empty snapshot", () => {

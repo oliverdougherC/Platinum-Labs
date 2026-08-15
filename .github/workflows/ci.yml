@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least-privilege by default.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck · lint · test · build
+    runs-on: ubuntu-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install (clean, from lockfile)
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Unit / component tests
+        run: npm run test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Python collector tests
+        run: python3 -m unittest scripts/test_zfs_collector.py
+      - name: Production build
+        run: npm run build
+
+  security:
+    name: secret scan · dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          # Required by gitleaks-action v2 to enumerate PR commits.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install (clean, from lockfile)
+        run: npm ci
+      - name: Dependency audit gate (production high/critical)
+        run: npm run audit:prod
+      - name: Dependency audit report (all dependencies)
+        run: npm run audit:all
+
+  docker:
+    name: docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate production Compose topology
+        run: HOMEPAGE_ENV_FILE=.env.example ZFS_COLLECTOR_TOKEN=ci-placeholder docker compose -f docker-compose.yml -f docker-compose.production.yml --profile zfs-sidecar config --quiet
+      - name: Build production image
+        run: docker build -t platinum-labs:ci .
+      - name: Build ZFS collector sidecar image
+        run: docker build -f docker/zfs-collector.Dockerfile -t platinum-labs-zfs-collector:ci .

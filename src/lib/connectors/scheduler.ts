@@ -25,13 +25,17 @@ export class PollScheduler {
     private readonly runtimes: ConnectorRuntime<unknown>[],
   ) {}
 
-  /** Kick an immediate refresh, then schedule each connector on its cadence. */
-  start(): void {
+  /**
+   * Schedule each connector on its own cadence. By default it also primes the
+   * cache with an immediate isolated fan-out; pass `prime: false` when the caller
+   * has already performed (and awaited) the initial refresh to establish the
+   * silent event baseline (see registry startup).
+   */
+  start(prime = true): void {
     if (this.started) return;
     this.started = true;
 
-    // Prime the cache immediately (isolated fan-out).
-    void this.hub.refreshAll();
+    if (prime) void this.hub.refreshAll();
 
     for (const rt of this.runtimes) {
       const interval = rt.getState().health.pollIntervalMs;

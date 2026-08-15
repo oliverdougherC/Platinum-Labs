@@ -28,6 +28,12 @@ export interface RuntimeOptions {
   graceMs?: number;
   /** Injectable clock for tests. */
   now?: () => number;
+  /** First backoff delay after a failure (doubles per consecutive failure). */
+  backoffBaseMs?: number;
+  /** Maximum backoff delay (the retry cadence never grows past this). */
+  backoffMaxMs?: number;
+  /** Injectable jitter in [0,1) for deterministic tests (default Math.random). */
+  jitter?: () => number;
 }
 
 /** Race a poll against a timeout, aborting the signal when it fires. */
@@ -57,6 +63,9 @@ export async function pollWithTimeout<T>(
   }
 }
 
+/** Consecutive failures before capped backoff engages (one blip retries normally). */
+const BACKOFF_AFTER_FAILURES = 2;
+
 export class ConnectorRuntime<T> {
   private snapshot: T | null = null;
   private lastSuccessAt: number | null = null;
@@ -67,6 +76,15 @@ export class ConnectorRuntime<T> {
   private readonly graceMs: number;
   private readonly now: () => number;
 
+  // Capped exponential backoff with jitter on repeated failure, so a persistently
+  // down service is retried on a bounded, decreasing cadence rather than hammered
+  // every scheduler tick (PLA-194).
+  private readonly backoffBaseMs: number;
+  private readonly backoffMaxMs: number;
+  private readonly jitter: () => number;
+  private consecutiveFailures = 0;
+  private nextAttemptAt = 0;
+
   constructor(
     private readonly connector: Connector<T>,
     opts: RuntimeOptions = {},
@@ -74,6 +92,9 @@ export class ConnectorRuntime<T> {
     this.timeoutMs = opts.timeoutMs ?? Math.min(connector.pollIntervalMs, 8_000);
     this.graceMs = opts.graceMs ?? appConfig.thresholds.connectorGraceMs;
     this.now = opts.now ?? Date.now;
+    this.backoffBaseMs = opts.backoffBaseMs ?? Math.min(connector.pollIntervalMs, 5_000);
+    this.backoffMaxMs = opts.backoffMaxMs ?? 5 * 60_000;
+    this.jitter = opts.jitter ?? Math.random;
   }
 
   get id() {
@@ -91,10 +112,22 @@ export class ConnectorRuntime<T> {
    */
   refresh(): Promise<ConnectorState<T>> {
     if (this.inFlight) return this.inFlight;
+    // While backing off after repeated failures, a scheduler tick is a no-op —
+    // this keeps a persistently-down service from being polled every interval
+    // (and prevents poll pile-up) without affecting other connectors. A single
+    // transient failure still retries at the normal cadence.
+    if (this.isBackingOff()) {
+      return Promise.resolve(this.getState());
+    }
     this.inFlight = this.doRefresh().finally(() => {
       this.inFlight = null;
     });
     return this.inFlight;
+  }
+
+  /** True when the runtime is currently within its backoff window. */
+  isBackingOff(): boolean {
+    return this.consecutiveFailures >= BACKOFF_AFTER_FAILURES && this.now() < this.nextAttemptAt;
   }
 
   private async doRefresh(): Promise<ConnectorState<T>> {
@@ -103,9 +136,20 @@ export class ConnectorRuntime<T> {
       this.snapshot = snapshot;
       this.lastSuccessAt = this.now();
       this.lastError = null;
+      // Recovery: reset backoff so polling returns to normal cadence at once.
+      this.consecutiveFailures = 0;
+      this.nextAttemptAt = 0;
     } catch (err) {
       // Retain last-known-good; only the health/error changes.
       this.lastError = sanitizeError(err);
+      this.consecutiveFailures += 1;
+      if (this.consecutiveFailures >= BACKOFF_AFTER_FAILURES) {
+        const steps = this.consecutiveFailures - BACKOFF_AFTER_FAILURES;
+        const capped = Math.min(this.backoffMaxMs, this.backoffBaseMs * 2 ** steps);
+        // Jitter to 50–100% of the capped delay to avoid synchronized retries.
+        const delay = capped * (0.5 + 0.5 * this.jitter());
+        this.nextAttemptAt = this.now() + delay;
+      }
     }
     return this.getState();
   }
@@ -130,6 +174,7 @@ export class ConnectorRuntime<T> {
       configured: true,
       lastSuccessAt: this.lastSuccessAt,
       lastError: this.lastError,
+      configError: null,
       pollIntervalMs: this.connector.pollIntervalMs,
     };
   }

@@ -36,6 +36,13 @@ export interface ConnectorHealth {
   lastSuccessAt: number | null;
   /** Sanitized, secret-free error message when degraded/unavailable. */
   lastError: string | null;
+  /**
+   * Set when the connector is half-configured (e.g. URL without API key). Names
+   * the missing field(s) only — never echoes a secret value. Distinct from
+   * `lastError` (a runtime poll failure) and from `configured: false` (a clean,
+   * intentional absence).
+   */
+  configError: string | null;
   /** Configured poll interval in milliseconds. */
   pollIntervalMs: number;
 }
@@ -99,6 +106,38 @@ export interface AcquisitionItem {
   rateBps: number | null;
   /** Seconds remaining, when known. */
   etaSeconds: number | null;
+  /**
+   * Opaque, stable key for correlating the SAME acquisition across services —
+   * a Servarr queue item and the qBittorrent transfer moving it. Derived by a
+   * one-way fold of the torrent infohash (Servarr's `downloadId` ↔ qB's `hash`),
+   * so it is safe to expose: it never contains the raw infohash. Absent for
+   * non-torrent downloads (e.g. usenet) and when no infohash is available.
+   */
+  correlationKey?: string | null;
+}
+
+/**
+ * A normalized, meaningful Sonarr/Radarr *history* event (import / failure),
+ * derived from `/api/v3/history` rather than inferred from a queue item
+ * disappearing. Turned into an `ActivityEvent` server-side; the raw upstream
+ * record never reaches the client.
+ */
+export interface ServarrHistoryEvent {
+  /** Stable dedup id (`<source>-history-<recordId>`); idempotent across overlapping windows. */
+  id: string;
+  source: "sonarr" | "radarr";
+  kind: "media.imported" | "transfer.failed";
+  /** Epoch ms of the event (parsed from the record's ISO date). */
+  at: number;
+  title: string;
+  quality: string | null;
+}
+
+/** A Sonarr/Radarr connector snapshot: the active queue plus recent history. */
+export interface ServarrSnapshot {
+  items: AcquisitionItem[];
+  /** Bounded, deduped recent history events (may be empty if history is degraded). */
+  events: ServarrHistoryEvent[];
 }
 
 export interface AcquisitionRollup {
@@ -116,6 +155,14 @@ export interface AcquisitionSnapshot {
 
 export type PoolHealth = "ONLINE" | "DEGRADED" | "FAULTED" | "OFFLINE" | "UNAVAIL";
 
+/**
+ * Current pool scan state. `finished` + `scrubErrors > 0` represents a scrub
+ * that completed with errors (a "failed" scrub); `resilvering` covers an
+ * in-progress resilver. Preserved from `zpool status` without exposing raw
+ * command output.
+ */
+export type ZfsScanState = "none" | "scrubbing" | "resilvering" | "finished";
+
 export interface ZfsPool {
   name: string;
   usedBytes: number;
@@ -123,6 +170,8 @@ export interface ZfsPool {
   /** 0..1 fraction used (derived, but carried explicitly for display). */
   capacityFraction: number;
   health: PoolHealth;
+  /** Current scan/scrub/resilver state. */
+  scan: ZfsScanState;
   lastScrubAt: number | null;
   scrubErrors: number;
 }
@@ -144,7 +193,9 @@ export type EventKind =
   | "zfs.scrub.failed"
   | "pool.health.changed"
   | "connector.lost"
-  | "connector.recovered";
+  | "connector.recovered"
+  | "alert.opened"
+  | "alert.resolved";
 
 export type Severity = "info" | "warning" | "critical";
 
@@ -164,14 +215,24 @@ export interface ActivityEvent {
 }
 
 export interface AttentionItem {
-  /** Stable rule id, e.g. "zfs.capacity.critical". */
+  /** Reusable rule class id, e.g. "zfs.capacity.critical". Not unique per pool. */
   ruleId: string;
+  /**
+   * Stable alert-instance id — a rule/source/subject combination that is unique
+   * across simultaneously-firing entities (e.g. two pools breaching the same
+   * capacity rule). Falls back to `ruleId` when a rule can only fire once.
+   */
+  alertId: string;
   severity: Severity;
   title: string;
   detail: string;
   source: ConnectorId;
+  /** Entity the alert is about (pool name, torrent id, connector id), if any. */
+  subject?: string;
   firstSeenAt: number;
   lastSeenAt: number;
+  /** Epoch ms the alert cleared; set only on resolved lifecycle records. */
+  resolvedAt?: number | null;
 }
 
 /** A single throughput history point. */
@@ -204,6 +265,13 @@ export interface DashboardSnapshot {
   zfs: ZfsSnapshot;
   attention: AttentionItem[];
   activity: ActivityEvent[];
+  /**
+   * Whether the activity feed was read successfully. `false` means the
+   * persistence read failed and the empty `activity` array is "unknown", not
+   * "nothing happened" — the UI must render those distinctly. Absent/`true`
+   * means the (possibly empty) feed is authoritative.
+   */
+  activityAvailable?: boolean;
   /** Chart history windows (optional; present in aggregate responses). */
   history?: DashboardHistory;
 }

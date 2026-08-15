@@ -123,13 +123,11 @@ function deriveAcquisition(
     }
   }
 
-  // Items that left the queue after importing / near-completion → imported.
-  for (const [id, p] of before) {
-    if (after.has(id)) continue;
-    if (p.state === "importing" || (p.state === "downloading" && p.progress >= 0.99)) {
-      emit("media.imported", "info", p.source, id, `Imported ${p.title}`);
-    }
-  }
+  // `media.imported` is intentionally NOT inferred from a queue item
+  // disappearing — that heuristic misfires whenever an item leaves the queue for
+  // any reason (removed, blocklisted, filtered). Sonarr/Radarr `/api/v3/history`
+  // is the authoritative source for imports and is emitted directly by the
+  // registry (PLA-181/182).
 }
 
 function deriveZfs(prev: ZfsPool[], curr: ZfsPool[], emit: Emit): void {

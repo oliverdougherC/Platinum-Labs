@@ -24,6 +24,13 @@ export const MEDIA_CONNECTORS: ConnectorId[] = [
   "qbittorrent",
 ];
 
+/** Connectors that feed the acquisition queue. */
+export const ACQUISITION_CONNECTORS: ConnectorId[] = [
+  "sonarr",
+  "radarr",
+  "qbittorrent",
+];
+
 export function healthById(
   health: ConnectorHealth[],
   id: ConnectorId,
@@ -36,13 +43,18 @@ export type ConnectorPresentation =
   | "ok"
   | "stale"
   | "unavailable"
-  | "unconfigured";
+  | "unconfigured"
+  | "misconfigured";
 
 export function connectorPresentation(
   health: ConnectorHealth | undefined,
   now: number,
 ): ConnectorPresentation {
-  if (!health || !health.configured) return "unconfigured";
+  if (!health) return "unconfigured";
+  // A half-configured connector is a distinct, actionable state — never conflate
+  // it with a clean "not set up" or a runtime failure.
+  if (health.configError) return "misconfigured";
+  if (!health.configured) return "unconfigured";
   if (health.status === "unavailable") return "unavailable";
   if (health.status !== "healthy" || isConnectorStale(health, now)) {
     return "stale";
@@ -79,6 +91,49 @@ export function storageVisualState(snapshot: DashboardSnapshot): VisualState {
   if (snapshot.zfs.pools.some((p) => p.health !== "ONLINE")) return "attention";
   if (hasAttentionFrom(snapshot, ["zfs"])) return "attention";
   return "ambient";
+}
+
+/**
+ * Truthful empty-state for the acquisition surface (PLA-194). Distinguishes a
+ * genuinely clear queue from an unavailable/incomplete one so `items.length===0`
+ * never silently reads as "clear" when a source is actually down.
+ */
+export type AcquisitionAvailability =
+  | { kind: "clear"; stale: boolean } // ≥1 configured source, none down; queue truly empty
+  | { kind: "degraded" } // a configured source is unavailable/misconfigured → may be incomplete
+  | { kind: "unconfigured" }; // no acquisition source configured at all
+
+export function acquisitionAvailability(
+  snapshot: DashboardSnapshot,
+  now: number,
+): AcquisitionAvailability {
+  const pres = ACQUISITION_CONNECTORS.map((id) =>
+    connectorPresentation(healthById(snapshot.health, id), now),
+  );
+  const configured = pres.filter((p) => p !== "unconfigured");
+  if (configured.length === 0) return { kind: "unconfigured" };
+  if (configured.some((p) => p === "unavailable" || p === "misconfigured")) {
+    return { kind: "degraded" };
+  }
+  return { kind: "clear", stale: configured.some((p) => p === "stale") };
+}
+
+/**
+ * How the storage surface should present its (possibly empty) pool set (PLA-194).
+ * A configured-but-unavailable ZFS source must never read as "not configured".
+ */
+export type StoragePresentation =
+  | "ok" // healthy; render pools (or a truthful empty set)
+  | "stale" // serving last-known-good; render pools with a freshness hint
+  | "unavailable" // configured but currently unreachable
+  | "unconfigured" // no ZFS source configured
+  | "misconfigured"; // half-configured (e.g. token without URL)
+
+export function storagePresentation(
+  snapshot: DashboardSnapshot,
+  now: number,
+): StoragePresentation {
+  return connectorPresentation(healthById(snapshot.health, "zfs"), now);
 }
 
 /** Capacity band for a pool, used for tone selection (never color-only). */

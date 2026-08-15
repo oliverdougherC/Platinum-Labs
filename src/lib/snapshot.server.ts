@@ -1,6 +1,8 @@
 import "server-only";
 
-import { getDataMode } from "@/lib/env.server";
+import { getDataMode, getServerEnv } from "@/lib/env.server";
+import { appConfig } from "@/lib/config";
+import { parseQuickLinksEnv, type QuickLink } from "@/lib/quicklinks";
 import {
   DEFAULT_SCENARIO,
   isScenario,
@@ -42,10 +44,32 @@ export function resolveScenario(override?: string | string[]): FakeScenario {
   const candidate = Array.isArray(override) ? override[0] : override;
   if (isScenario(candidate)) return candidate;
 
-  const fromEnv = process.env.HOMELAB_FAKE_SCENARIO;
+  const fromEnv = safeEnv()?.HOMELAB_FAKE_SCENARIO;
   if (isScenario(fromEnv)) return fromEnv;
 
   return DEFAULT_SCENARIO;
+}
+
+/** Read typed env without throwing (config errors must not blank the page). */
+function safeEnv(): ReturnType<typeof getServerEnv> | null {
+  try {
+    return getServerEnv();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Browser-facing quick links (PLA-191). Configured links (validated http/https)
+ * win; otherwise fake/demo mode shows placeholder links so the launcher isn't
+ * empty, while live mode shows nothing until configured (never localhost by
+ * default in production).
+ */
+export function getQuickLinks(): QuickLink[] {
+  const env = safeEnv();
+  const configured = parseQuickLinksEnv(env?.HOMELAB_QUICK_LINKS);
+  if (configured.length > 0) return configured;
+  return (env?.HOMELAB_DATA_MODE ?? "fake") === "fake" ? appConfig.quickLinks : [];
 }
 
 /**
@@ -56,6 +80,6 @@ export function resolveScenario(override?: string | string[]): FakeScenario {
 export function shouldShowDevControls(): boolean {
   return (
     process.env.NODE_ENV !== "production" ||
-    process.env.HOMELAB_ENABLE_DEV_CONTROLS === "1"
+    safeEnv()?.HOMELAB_ENABLE_DEV_CONTROLS === true
   );
 }

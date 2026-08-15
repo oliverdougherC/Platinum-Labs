@@ -8,7 +8,9 @@ import { StorageModule } from "@/components/modules/storage-module";
 import { ActivityFeed } from "@/components/modules/activity-feed";
 import { QuickAccess } from "@/components/modules/quick-access";
 import { ConnectorHealthBar } from "@/components/modules/connector-health-bar";
+import { CommandPalette } from "@/components/command-palette";
 import { cn } from "@/lib/utils";
+import type { QuickLink } from "@/lib/quicklinks";
 import type { DashboardSnapshot } from "@/lib/types";
 
 /**
@@ -26,10 +28,12 @@ import type { DashboardSnapshot } from "@/lib/types";
 export function LiveDashboard({
   initial,
   scenario,
+  quickLinks = [],
   pollMs = 7_000,
 }: {
   initial: DashboardSnapshot;
   scenario?: string;
+  quickLinks?: QuickLink[];
   pollMs?: number;
 }) {
   const [snapshot, setSnapshot] = useState(initial);
@@ -100,7 +104,10 @@ export function LiveDashboard({
       </div>
 
       <div className="mt-auto flex flex-col gap-6">
-        <QuickAccess />
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <QuickAccess links={quickLinks} />
+          <CommandPalette snapshot={snapshot} links={quickLinks} now={now} />
+        </div>
         <ConnectorHealthBar snapshot={snapshot} now={now} />
       </div>
     </>

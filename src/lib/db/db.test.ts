@@ -6,6 +6,7 @@ import {
   insertActivityEvent,
   insertStorageSample,
   insertThroughput,
+  lastPlaybackAt,
   recentEvents,
   recentThroughput,
   recordHealthTransition,
@@ -101,11 +102,13 @@ describe("connector health transitions", () => {
 
 describe("alerts lifecycle", () => {
   const alert = {
+    alertId: "zfs.pool.degraded:backup",
     ruleId: "zfs.pool.degraded",
     severity: "critical" as const,
     title: "Pool degraded",
     detail: "backup is DEGRADED",
     source: "zfs" as const,
+    subject: "backup",
     firstSeenAt: NOW,
     lastSeenAt: NOW,
   };
@@ -113,7 +116,7 @@ describe("alerts lifecycle", () => {
   it("upsert keeps first_seen, bumps last_seen; resolve stamps resolved_at", () => {
     upsertAlert(db, alert);
     upsertAlert(db, { ...alert, lastSeenAt: NOW + 60_000 });
-    const row = db.prepare("SELECT * FROM alerts WHERE rule_id = ?").get(alert.ruleId) as {
+    const row = db.prepare("SELECT * FROM alerts WHERE alert_id = ?").get(alert.alertId) as {
       first_seen: number;
       last_seen: number;
       resolved_at: number | null;
@@ -122,11 +125,34 @@ describe("alerts lifecycle", () => {
     expect(row.last_seen).toBe(NOW + 60_000);
     expect(row.resolved_at).toBeNull();
 
-    resolveAlert(db, alert.ruleId, NOW + 120_000);
-    const resolved = db.prepare("SELECT resolved_at FROM alerts WHERE rule_id = ?").get(alert.ruleId) as {
+    resolveAlert(db, alert.alertId, NOW + 120_000);
+    const resolved = db.prepare("SELECT resolved_at FROM alerts WHERE alert_id = ?").get(alert.alertId) as {
       resolved_at: number | null;
     };
     expect(resolved.resolved_at).toBe(NOW + 120_000);
+  });
+
+  it("tracks two subjects under the same rule as distinct alert instances", () => {
+    upsertAlert(db, { ...alert, alertId: "zfs.capacity.critical:tank", ruleId: "zfs.capacity.critical", subject: "tank" });
+    upsertAlert(db, { ...alert, alertId: "zfs.capacity.critical:backup", ruleId: "zfs.capacity.critical", subject: "backup" });
+    expect(countRows(db, "alerts")).toBe(2);
+  });
+});
+
+describe("lastPlaybackAt (PLA-187)", () => {
+  it("returns the most recent playback event time, or null", () => {
+    expect(lastPlaybackAt(db)).toBeNull(); // fresh DB
+    insertActivityEvent(db, {
+      id: "p1", at: NOW - HOUR, kind: "playback.started", severity: "info",
+      source: "jellyfin", message: "started",
+    });
+    insertActivityEvent(db, {
+      id: "p2", at: NOW - 10 * 60_000, kind: "playback.stopped", severity: "info",
+      source: "jellyfin", message: "stopped",
+    });
+    // A non-playback event must not count.
+    insertActivityEvent(db, event("import", NOW));
+    expect(lastPlaybackAt(db)).toBe(NOW - 10 * 60_000);
   });
 });
 
@@ -147,11 +173,13 @@ describe("retention keeps the database bounded", () => {
 
   it("keeps unresolved alerts regardless of age", () => {
     upsertAlert(db, {
+      alertId: "old.unresolved:x",
       ruleId: "old.unresolved",
       severity: "warning",
       title: "x",
       detail: "y",
       source: "qbittorrent",
+      subject: "x",
       firstSeenAt: NOW - 400 * DAY,
       lastSeenAt: NOW - 400 * DAY,
     });
