@@ -183,6 +183,40 @@ describe("performSeerrRequest — movie", () => {
     });
   });
 
+  it("REGRESSION: a retry after a lost success response creates no second request", async () => {
+    // First call succeeds (approved) but the browser never sees the response;
+    // an immediate retry re-resolves the media, finds Seerr now tracks it, and
+    // settles as already-requested without a second createRequest.
+    let requested = false;
+    const createRequest = vi.fn(async () => {
+      requested = true;
+      return request(REQUEST_STATUS.APPROVED);
+    });
+    const client = stubClient({
+      movieDetails: async () =>
+        movieDetails(requested ? MEDIA_STATUS.PROCESSING : undefined),
+      createRequest,
+    });
+
+    const first = await performSeerrRequest(client, {
+      mediaType: "movie",
+      mediaId: 101,
+    });
+    const retry = await performSeerrRequest(client, {
+      mediaType: "movie",
+      mediaId: 101,
+    });
+
+    expect(first).toEqual({ ok: true, outcome: "approved", title: "The Martian" });
+    expect(retry).toEqual({
+      ok: true,
+      outcome: "already-requested",
+      state: "processing",
+      title: "The Martian",
+    });
+    expect(createRequest).toHaveBeenCalledTimes(1);
+  });
+
   it("fails with a sanitized message when create fails", async () => {
     const client = stubClient({
       movieDetails: async () => movieDetails(),
