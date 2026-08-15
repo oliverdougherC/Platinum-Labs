@@ -59,6 +59,11 @@ echo "target: ${DEPLOY_REF} -> ${TARGET_SHA}"
 say "Deploying on ${DEPLOY_HOST}"
 ssh -o BatchMode=yes "$DEPLOY_HOST" bash -s -- "$TARGET_SHA" "$DEPLOY_DIR" "$DEPLOY_PORT" <<'REMOTE'
 set -euo pipefail
+# The whole remote body lives in a function invoked with stdin redirected to
+# /dev/null. bash reads this script from stdin, so any inner command that
+# reads stdin (docker compose exec, ssh, …) would otherwise silently consume
+# the REST OF THIS SCRIPT and make a half-run deployment look successful.
+main() {
 TARGET_SHA="$1"; DEPLOY_DIR="$2"; PORT="$3"
 SRC="$DEPLOY_DIR/src"
 
@@ -139,6 +144,8 @@ echo "deployed SHA : $(git -C "$SRC" rev-parse HEAD)"
 echo "backup       : $BACKUP_DIR"
 docker compose ps
 echo "=== deployment OK ==="
+}
+main "$@" </dev/null
 REMOTE
 
 say "Deployment of ${TARGET_SHA} succeeded."
