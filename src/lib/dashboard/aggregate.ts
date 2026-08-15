@@ -88,6 +88,8 @@ export interface AggregateParts {
   attention?: AttentionItem[];
   activity?: ActivityEvent[];
   history?: DashboardHistory;
+  /** Operator-declared media pool (PLA-275); null/undefined when not configured. */
+  mediaPool?: string | null;
 }
 
 const JELLYFIN_UNAVAILABLE: JellyfinSnapshot = {
@@ -241,5 +243,6 @@ export function assembleSnapshot(parts: AggregateParts): DashboardSnapshot {
     attention: parts.attention ?? [],
     activity: parts.activity ?? [],
     history: parts.history,
+    mediaPool: parts.mediaPool ?? null,
   };
 }

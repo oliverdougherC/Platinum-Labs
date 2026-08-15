@@ -30,6 +30,10 @@ SAFETY PROPERTIES
     container's own private network namespace — never published to the LAN).
   - degrades per-section: a section that cannot be collected reports
     status "unavailable" (or "not-configured"); it is NEVER reported as zeros.
+  - never blocks on slow providers (PLA-272): GPU, Docker, and pool-device
+    topology are refreshed by background daemon threads; /v1/host serves the
+    latest completed result (or "unavailable" before the first / after a
+    stale one) and stays fast even if nvidia-smi or the Docker proxy hangs.
   - stdlib only: runs anywhere Python 3 exists.
 
 HOST TELEMETRY SOURCES
@@ -68,8 +72,10 @@ NET_INTERFACES = [
 ]
 DOCKER_PROXY_URL = os.environ.get("DOCKER_PROXY_URL", "").rstrip("/")
 EXEC_TIMEOUT = 8
-GPU_CACHE_SECONDS = 2.0
-DOCKER_CACHE_SECONDS = 5.0
+GPU_CACHE_SECONDS = 2.0  # background refresh cadence (between completions)
+DOCKER_CACHE_SECONDS = 5.0  # background refresh cadence (between completions)
+POOL_DEVICES_CACHE_SECONDS = 30.0  # device topology changes rarely
+DOCKER_REFRESH_DEADLINE = 8.0  # total budget for one docker refresh cycle
 SECTOR_BYTES = 512  # /proc/diskstats sector counts are always 512-byte units
 
 if not TOKEN:
@@ -359,22 +365,68 @@ def _read_arc():
     }
 
 
-class _SlowCache:
-    """Serve a cached value, refreshing at most once per `ttl` seconds."""
+def _stale_bound(interval):
+    """Freshness horizon for a background cache: 3x its cadence, min 15 s."""
+    return max(3.0 * interval, 15.0)
 
-    def __init__(self, ttl, fetch):
-        self.ttl = ttl
+
+class _BackgroundCache:
+    """Serve slow-provider data without ever blocking the request path.
+
+    `get()` never fetches: it returns the last completed fetch result
+    immediately, or `placeholder` before the first fetch completes. A single
+    daemon thread per cache (started lazily on the first `get()`) refreshes
+    the value, sleeping `interval` seconds between refresh COMPLETIONS, so a
+    slow or hanging provider (Docker proxy, nvidia-smi, zpool) can never
+    delay `/v1/host` or stack up concurrent work (PLA-272).
+
+    A fetch that raises or returns None leaves the last known value in place.
+    Freshness: when `stale_after` is set and the last completed fetch is
+    older than it, `get()` returns `placeholder` instead of the old value —
+    stale telemetry is never served as fresh, and never as fabricated zeros.
+    With `stale_after=None` the last known value is kept indefinitely (only
+    used for non-telemetry data that changes rarely, e.g. pool device
+    topology).
+    """
+
+    def __init__(self, interval, fetch, placeholder, stale_after=None, now=time.monotonic):
+        self.interval = interval
         self.fetch = fetch
+        self.placeholder = placeholder
+        self.stale_after = stale_after
+        self.now = now
         self.lock = threading.Lock()
-        self.at = 0.0
         self.value = None
+        self.at = None  # monotonic time of the last COMPLETED fetch
+        self._started = False
 
     def get(self):
+        self._ensure_thread()
         with self.lock:
-            if time.monotonic() - self.at >= self.ttl:
-                self.value = self.fetch()
-                self.at = time.monotonic()
+            if self.at is None:
+                return self.placeholder
+            if self.stale_after is not None and self.now() - self.at >= self.stale_after:
+                return self.placeholder
             return self.value
+
+    def _ensure_thread(self):
+        with self.lock:
+            if self._started:
+                return
+            self._started = True
+        threading.Thread(target=self._run, daemon=True, name="collector-cache").start()
+
+    def _run(self):
+        while True:
+            try:
+                value = self.fetch()
+            except Exception:
+                value = None  # keep last known value; staleness handles decay
+            if value is not None:
+                with self.lock:
+                    self.value = value
+                    self.at = self.now()
+            time.sleep(self.interval)
 
 
 def _fetch_gpu():
@@ -426,9 +478,10 @@ def _docker_get(path):
         return json.loads(res.read())
 
 
-def _fetch_docker():
+def _fetch_docker(now=time.monotonic):
     if not DOCKER_PROXY_URL:
         return {"status": "not-configured"}
+    started = now()
     try:
         listing = _docker_get("/containers/json?all=true")
     except Exception:
@@ -455,7 +508,11 @@ def _fetch_docker():
             "systemCpuNs": None,
             "memoryBytes": None,
         }
-        if state == "running":
+        # Bound one refresh cycle: once the total budget is spent, skip the
+        # remaining per-container stats calls (their fields stay null) so a
+        # slow proxy can't stretch a refresh indefinitely. List-derived
+        # fields are still returned for every container.
+        if state == "running" and now() - started < DOCKER_REFRESH_DEADLINE:
             try:
                 stats = _docker_get(
                     f"/containers/{entry['Id']}/stats?stream=false&one-shot=true"
@@ -474,8 +531,31 @@ def _fetch_docker():
     return {"status": "ok", "containers": containers}
 
 
-GPU_CACHE = _SlowCache(GPU_CACHE_SECONDS, _fetch_gpu)
-DOCKER_CACHE = _SlowCache(DOCKER_CACHE_SECONDS, _fetch_docker)
+def _fetch_pool_devices():
+    """pool -> leaf devices via `zpool status` (fixed argv, read-only)."""
+    try:
+        status = subprocess.run(
+            ["zpool", "status"],
+            capture_output=True, text=True, timeout=EXEC_TIMEOUT, check=True,
+        )
+    except Exception:
+        return None  # keep the last known mapping (or the empty placeholder)
+    return _parse_pool_devices(status.stdout)
+
+
+GPU_CACHE = _BackgroundCache(
+    GPU_CACHE_SECONDS, _fetch_gpu, {"status": "unavailable"},
+    stale_after=_stale_bound(GPU_CACHE_SECONDS),
+)
+DOCKER_CACHE = _BackgroundCache(
+    DOCKER_CACHE_SECONDS, _fetch_docker, {"status": "unavailable"},
+    stale_after=_stale_bound(DOCKER_CACHE_SECONDS),
+)
+# Device topology is not telemetry (it only groups per-pool I/O), so the last
+# known mapping is kept on failure; `{}` is the harmless empty fallback.
+POOL_DEVICES_CACHE = _BackgroundCache(
+    POOL_DEVICES_CACHE_SECONDS, _fetch_pool_devices, {},
+)
 
 
 def _section(fn, *args):
@@ -490,14 +570,10 @@ def _section(fn, *args):
 
 
 def _collect_host():
-    try:
-        status = subprocess.run(
-            ["zpool", "status"],
-            capture_output=True, text=True, timeout=EXEC_TIMEOUT, check=True,
-        )
-        pool_devices = _parse_pool_devices(status.stdout)
-    except Exception:
-        pool_devices = {}
+    # Never run slow providers inline: everything below either reads procfs
+    # (fast) or serves a background cache, so /v1/host stays within the
+    # dashboard's ~2 s polling deadline regardless of Docker/GPU/zpool health.
+    pool_devices = POOL_DEVICES_CACHE.get()
     return {
         "sampledAt": int(time.time() * 1000),
         "cpu": _section(_read_cpu),

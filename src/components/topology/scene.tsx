@@ -1,46 +1,40 @@
 "use client";
 
-import { memo, useMemo } from "react";
 import {
-  arcPath,
-  CANVAS_H,
-  CANVAS_W,
-  CONTAINER_CLUSTER,
-  CORE_CENTER,
-  CORE_INNER_R,
-  CORE_SPOKE_MAX,
-  flowPath,
-  HALO_R,
-  NETWORK_EDGE,
-  pointOnCircle,
-  SERVICE_NODES,
-  spokeAngle,
-  storageBodyFor,
-  type ServiceId,
-} from "@/lib/topology/layout";
-import { flowDurationSeconds } from "@/lib/topology/smoothing";
-import type { FlowState } from "@/lib/topology/activity";
-import { formatBytes, formatCapacityPair, formatRate } from "@/lib/format/bytes";
-import { formatPercent, formatRelativeTime } from "@/lib/utils";
-import type {
-  ConnectorHealth,
-  DashboardSnapshot,
-  ZfsPool,
-} from "@/lib/types";
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { buildBackground } from "@/lib/scene/background";
+import { buildLabels, LABEL_PRIMARY_PX, LABEL_SECONDARY_PX } from "@/lib/scene/labels";
+import { computeLayout } from "@/lib/scene/layout";
+import { buildSceneModel, type SceneModel, type ServiceId } from "@/lib/scene/model";
+import { SceneMotion } from "@/lib/scene/motion";
+import { drawDebug, renderScene, type Camera, type LiveFlowGeom } from "@/lib/scene/render";
+import { routeFlow, type FlowGeom } from "@/lib/scene/routing";
+import type { SceneLayout } from "@/lib/scene/layout";
+import type { DashboardSnapshot } from "@/lib/types";
 
 /**
- * The Living Topology scene (PLA-266/267): ONE full-screen SVG composition.
+ * The Living Topology scene host (PLA-266 rebuild): a Canvas-2D real-time
+ * renderer with a DOM overlay for typography and interaction.
  *
- *  - compute core: every logical CPU as a fine radial spoke (real core count);
- *  - memory halo: a stippled ring whose filled arc is real memory occupancy;
- *  - storage bodies: capacity arcs on LOGICAL capacity, health/scrub local;
- *  - service orbit: quiet nodes; problems change only their own node;
- *  - flows: real activity animates real paths (see lib/topology/activity).
+ * RENDERER CHOICE — Canvas 2D, deliberately:
+ *  - the scene is a few hundred primitives; a 2D context renders it in well
+ *    under a millisecond and costs no GPU memory management, no WebGL context
+ *    loss handling, and no new dependency for a page that runs 24/7;
+ *  - text stays in the DOM (crisp at every devicePixelRatio, real
+ *    accessibility tree), projected from world coordinates;
+ *  - rendering is deterministic (fixed seed, time-parameterized motion), which
+ *    the screenshot review pipeline depends on.
  *
- * Motion engineering: no requestAnimationFrame loop. Values update at the
- * telemetry cadence (~2s) and CSS transitions/animations interpolate between
- * states; `prefers-reduced-motion` and the frozen screenshot mode disable the
- * marching animations via the `data-motion` attribute set by the app shell.
+ * Loop engineering (spec §23): one rAF loop, frame-skipped to ~30 fps active
+ * and ~12 fps idle, fully stopped when the document is hidden, frozen and
+ * reduced-motion render single static frames. Telemetry updates change TARGET
+ * state (SceneMotion) — never rebuild the scene, never re-render React at
+ * frame rate.
  */
 
 export type TopologySelection =
@@ -51,625 +45,326 @@ export type TopologySelection =
 
 export interface SceneProps {
   snapshot: DashboardSnapshot;
-  flows: FlowState[];
+  /** Reference time for staleness gating (snapshot time when frozen). */
+  now: number;
+  seerrConfigured: boolean;
+  frozen: boolean;
+  reducedMotion: boolean;
+  /** Dev-only geometry overlay (never available in production builds). */
+  debug?: boolean;
   onSelect: (sel: TopologySelection) => void;
 }
 
-// --- compute core ------------------------------------------------------------
+const ACTIVE_FRAME_MS = 1000 / 30;
+const IDLE_FRAME_MS = 1000 / 12;
 
-function ComputeCore({
-  snapshot,
-  onSelect,
-}: {
-  snapshot: DashboardSnapshot;
-  onSelect: SceneProps["onSelect"];
-}) {
-  const cpu = snapshot.telemetry.cpu;
-  const perCore = cpu.value?.perCore ?? [];
-  const total = cpu.value?.totalFraction ?? null;
-  const load = cpu.value?.load1 ?? null;
-  const dim = cpu.status !== "available";
-
-  return (
-    <g
-      role="button"
-      tabIndex={0}
-      aria-label="Host compute detail"
-      className="cursor-pointer outline-none focus-visible:opacity-90"
-      onClick={() => onSelect({ kind: "host" })}
-      onKeyDown={(e) => e.key === "Enter" && onSelect({ kind: "host" })}
-    >
-      {/* hairline base ring the spokes grow from */}
-      <circle
-        cx={CORE_CENTER.x}
-        cy={CORE_CENTER.y}
-        r={CORE_INNER_R}
-        className="fill-none stroke-hairline"
-        strokeWidth={1}
-      />
-      {/* one fine spoke per REAL logical CPU — uniform base, load extends it */}
-      <g
-        className="core-rotate"
-        style={{ transformOrigin: `${CORE_CENTER.x}px ${CORE_CENTER.y}px` }}
-      >
-        {perCore.map((util, i) => {
-          const angle = spokeAngle(i, perCore.length);
-          const start = pointOnCircle(CORE_CENTER, CORE_INNER_R + 4, angle);
-          return (
-            <g
-              key={i}
-              transform={`translate(${start.x} ${start.y}) rotate(${(angle * 180) / Math.PI})`}
-            >
-              <line
-                x1={0}
-                y1={0}
-                x2={CORE_SPOKE_MAX}
-                y2={0}
-                className="cpu-spoke stroke-fg"
-                strokeWidth={1.5}
-                strokeLinecap="round"
-                style={{
-                  transform: `scaleX(${0.22 + 0.78 * Math.min(util, 1)})`,
-                  opacity: 0.26 + 0.54 * Math.min(util, 1),
-                }}
-              />
-            </g>
-          );
-        })}
-      </g>
-      {/* unavailable state: no fake spokes, an honest label instead */}
-      {dim && (
-        <text
-          x={CORE_CENTER.x}
-          y={CORE_CENTER.y - 14}
-          textAnchor="middle"
-          className="fill-faint text-[13px]"
-        >
-          cpu {cpu.status === "not-configured" ? "not collected" : cpu.status}
-        </text>
-      )}
-      <text
-        x={CORE_CENTER.x}
-        y={CORE_CENTER.y - 16}
-        textAnchor="middle"
-        className="fill-faint text-[11px] uppercase tracking-[0.18em]"
-      >
-        {dim ? "" : "p910"}
-      </text>
-      {!dim && total !== null && (
-        <>
-          <text
-            x={CORE_CENTER.x}
-            y={CORE_CENTER.y + 12}
-            textAnchor="middle"
-            className="tnum fill-fg text-[26px] font-light"
-          >
-            {formatPercent(total)}
-          </text>
-          <text
-            x={CORE_CENTER.x}
-            y={CORE_CENTER.y + 34}
-            textAnchor="middle"
-            className="tnum fill-faint text-[11px]"
-          >
-            load {load?.toFixed(2) ?? "—"} · {perCore.length} threads
-          </text>
-        </>
-      )}
-    </g>
-  );
+interface HitBody {
+  id: string;
+  label: string;
+  cx: number;
+  cy: number;
+  r: number;
+  selection: TopologySelection;
 }
 
-// --- memory halo -------------------------------------------------------------
-
-function MemoryHalo({ snapshot }: { snapshot: DashboardSnapshot }) {
-  const mem = snapshot.telemetry.memory;
-  const fraction =
-    mem.status !== "not-configured" && mem.value
-      ? mem.value.usedBytes / mem.value.totalBytes
-      : null;
-  const swapFraction =
-    mem.value !== null &&
-    mem.value.swapTotalBytes !== null &&
-    mem.value.swapUsedBytes !== null &&
-    mem.value.swapTotalBytes > 0
-      ? mem.value.swapUsedBytes / mem.value.swapTotalBytes
-      : null;
-  const swapMeaningful = swapFraction !== null && swapFraction > 0.05;
-  const labelAnchor = pointOnCircle(CORE_CENTER, HALO_R + 18, -Math.PI / 4);
-
-  return (
-    <g aria-hidden>
-      {/* full faint ring (capacity) */}
-      <circle
-        cx={CORE_CENTER.x}
-        cy={CORE_CENTER.y}
-        r={HALO_R}
-        className="halo-stipple fill-none stroke-hairline"
-        strokeWidth={1}
-        strokeDasharray="1 5"
-      />
-      {/* used-memory arc */}
-      {fraction !== null && (
-        <path
-          d={arcPath(CORE_CENTER, HALO_R, fraction)}
-          className="memory-arc fill-none stroke-fg"
-          strokeWidth={2}
-          strokeLinecap="round"
-          style={{ opacity: mem.status === "stale" ? 0.16 : 0.3 }}
-        />
-      )}
-      {/* swap pressure: a short second arc only when meaningful */}
-      {swapMeaningful && swapFraction !== null && (
-        <path
-          d={arcPath(CORE_CENTER, HALO_R + 7, swapFraction)}
-          className="fill-none stroke-warn"
-          strokeWidth={1.5}
-          style={{ opacity: 0.5 }}
-        />
-      )}
-      <text
-        x={labelAnchor.x}
-        y={labelAnchor.y}
-        className="tnum fill-faint text-[11px]"
-      >
-        {mem.value
-          ? `mem ${formatBytes(mem.value.usedBytes, { system: "binary", digits: 0 })} / ${formatBytes(mem.value.totalBytes, { system: "binary", digits: 0 })}`
-          : `mem ${mem.status === "not-configured" ? "not collected" : mem.status}`}
-      </text>
-    </g>
-  );
-}
-
-// --- storage bodies ----------------------------------------------------------
-
-function capacityToneClass(fraction: number): string {
-  if (fraction >= 0.9) return "stroke-danger";
-  if (fraction >= 0.8) return "stroke-warn";
-  return "stroke-fg";
-}
-
-function StorageBody({
-  pool,
-  index,
-  readBps,
-  writeBps,
-  onSelect,
-}: {
-  pool: ZfsPool;
-  index: number;
-  readBps: number;
-  writeBps: number;
-  onSelect: SceneProps["onSelect"];
-}) {
-  const body = storageBodyFor(pool.name, index);
-  const { center, r } = body;
-  const unhealthy = pool.health !== "ONLINE";
-  const io = readBps + writeBps;
-  const ioIntensity = io > 250_000 ? Math.min(1, Math.log10(io / 250_000) / 2.5) : 0;
-  const writeDominant = writeBps > readBps;
-  const capacityLabel = formatCapacityPair(pool.usedBytes, pool.totalBytes);
-  const basisNote = pool.capacityBasis === "pool-allocation" ? " (pool alloc)" : "";
-
-  return (
-    <g
-      role="button"
-      tabIndex={0}
-      aria-label={`${pool.name} storage detail`}
-      className="cursor-pointer outline-none"
-      onClick={() => onSelect({ kind: "pool", name: pool.name })}
-      onKeyDown={(e) => e.key === "Enter" && onSelect({ kind: "pool", name: pool.name })}
-    >
-      {/* interior: barely-there disc whose weight follows occupancy */}
-      <circle
-        cx={center.x}
-        cy={center.y}
-        r={r - 6}
-        className="fill-fg"
-        style={{ opacity: 0.025 + 0.075 * pool.capacityFraction }}
-      />
-      {/* body ring — health is LOCAL: only this ring turns red */}
-      <circle
-        cx={center.x}
-        cy={center.y}
-        r={r}
-        className={`fill-none ${unhealthy ? "stroke-danger" : "stroke-hairline"}`}
-        strokeWidth={unhealthy ? 1.5 : 1}
-      />
-      {/* logical capacity arc */}
-      <path
-        d={arcPath(center, r, pool.capacityFraction)}
-        className={`memory-arc fill-none ${capacityToneClass(pool.capacityFraction)}`}
-        strokeWidth={2.5}
-        strokeLinecap="round"
-        style={{ opacity: 0.5 }}
-      />
-      {/* live I/O: an inner dashed ring that slowly turns while the pool works */}
-      {ioIntensity > 0 && (
-        <circle
-          cx={center.x}
-          cy={center.y}
-          r={r * 0.52}
-          className={`io-ring fill-none ${writeDominant ? "stroke-ok" : "stroke-accent"}`}
-          strokeWidth={1.2}
-          strokeDasharray="1.5 13"
-          style={{
-            opacity: 0.16 + 0.38 * ioIntensity,
-            animationDuration: `${20 - 13 * ioIntensity}s`,
-            animationDirection: writeDominant ? "normal" : "reverse",
-          }}
-        />
-      )}
-      {/* scrub in progress: slow marching outer ring */}
-      {(pool.scan === "scrubbing" || pool.scan === "resilvering") && (
-        <circle
-          cx={center.x}
-          cy={center.y}
-          r={r + 7}
-          className="io-ring fill-none stroke-accent"
-          strokeWidth={1}
-          strokeDasharray="4 10"
-          style={{ opacity: 0.4, animationDuration: "30s" }}
-        />
-      )}
-      <text
-        x={center.x}
-        y={center.y - 4}
-        textAnchor="middle"
-        className="fill-fg text-[14px]"
-        style={{ opacity: 0.92 }}
-      >
-        {pool.name}
-      </text>
-      <text
-        x={center.x}
-        y={center.y + 14}
-        textAnchor="middle"
-        className="tnum fill-muted text-[11.5px]"
-      >
-        {capacityLabel}
-        {basisNote}
-      </text>
-      <text
-        x={center.x}
-        y={center.y + r + 18}
-        textAnchor="middle"
-        className={`text-[11px] ${unhealthy ? "fill-danger" : "fill-faint"}`}
-      >
-        {unhealthy
-          ? `${pool.health}${pool.scrubErrors > 0 ? ` · ${pool.scrubErrors} errors` : ""}`
-          : pool.scan === "scrubbing"
-            ? "scrubbing"
-            : pool.lastScrubAt
-              ? `scrubbed ${formatRelativeTime(pool.lastScrubAt, Date.now())}`
-              : formatPercent(pool.capacityFraction)}
-      </text>
-    </g>
-  );
-}
-
-// --- service orbit -----------------------------------------------------------
-
-interface ServiceActivity {
-  countLabel: string | null;
-  active: boolean;
-  detail: string | null;
-}
-
-function serviceActivity(snapshot: DashboardSnapshot, id: ServiceId): ServiceActivity {
-  if (id === "jellyfin") {
-    const sessions = snapshot.jellyfin.sessions;
-    if (sessions.length > 0) {
-      const transcoding = sessions.some((s) => s.method === "transcode");
-      return {
-        countLabel: String(sessions.length),
-        active: true,
-        detail: transcoding ? "transcoding" : "streaming",
-      };
-    }
-    return { countLabel: null, active: false, detail: null };
+function hitBodies(model: SceneModel, layout: SceneLayout): HitBody[] {
+  const out: HitBody[] = [];
+  out.push({
+    id: "core",
+    label: "Host compute detail",
+    cx: layout.core.center.x,
+    cy: layout.core.center.y,
+    r: layout.core.memR + layout.core.memBandW,
+    selection: { kind: "host" },
+  });
+  for (const s of model.services) {
+    const g = layout.services.get(s.id);
+    if (!g) continue;
+    out.push({
+      id: g.id,
+      label: `${s.label} detail`,
+      cx: g.center.x,
+      cy: g.center.y,
+      r: g.r + 12,
+      selection: { kind: "service", id: s.id },
+    });
   }
-  if (id === "qbittorrent") {
-    const n =
-      snapshot.acquisition.rollup.downloading +
-      snapshot.acquisition.rollup.failedOrStalled;
-    return n > 0
-      ? { countLabel: String(n), active: snapshot.acquisition.rollup.downloading > 0, detail: null }
-      : { countLabel: null, active: false, detail: null };
+  for (const pool of model.storage) {
+    const g = layout.storage.get(pool.name);
+    if (!g) continue;
+    out.push({
+      id: g.id,
+      label: `${pool.name} storage detail`,
+      cx: g.center.x,
+      cy: g.center.y,
+      r: g.atmosphereR,
+      selection: { kind: "pool", name: pool.name },
+    });
   }
-  if (id === "sonarr" || id === "radarr") {
-    const items = snapshot.acquisition.items.filter(
-      (i) => i.source === id && i.state !== "completed",
-    );
-    return items.length > 0
-      ? {
-          countLabel: String(items.length),
-          active: items.some((i) => i.state === "downloading" || i.state === "importing"),
-          detail: null,
-        }
-      : { countLabel: null, active: false, detail: null };
+  if (model.docker.status !== "not-configured") {
+    const belt = layout.dockerBelt;
+    const mid = (belt.a0 + belt.a1) / 2;
+    out.push({
+      id: "docker",
+      label: "Docker containers detail",
+      cx: belt.center.x + Math.cos(mid) * belt.r,
+      cy: belt.center.y + Math.sin(mid) * belt.r,
+      r: 54,
+      selection: { kind: "docker" },
+    });
   }
-  return { countLabel: null, active: false, detail: null };
+  return out;
 }
 
-function serviceHealth(
-  health: ConnectorHealth[],
-  id: ServiceId,
-): "ok" | "degraded" | "down" | "unconfigured" {
-  if (id === "seerr") return "ok"; // interactive surface, not a polled connector
-  const h = health.find((x) => x.id === id);
-  if (!h || !h.configured) return "unconfigured";
-  if (h.status === "healthy") return "ok";
-  if (h.status === "degraded") return "degraded";
-  return "down";
-}
+const LABEL_TONE_CLASS: Record<string, string> = {
+  fg: "text-fg",
+  muted: "text-muted",
+  faint: "text-faint",
+  warn: "text-warn",
+  danger: "text-danger",
+};
 
-function ServiceOrbit({
+export function TopologyScene({
   snapshot,
-  onSelect,
-}: {
-  snapshot: DashboardSnapshot;
-  onSelect: SceneProps["onSelect"];
-}) {
-  return (
-    <g>
-      {SERVICE_NODES.map((node) => {
-        const health = serviceHealth(snapshot.health, node.id);
-        const activity = serviceActivity(snapshot, node.id);
-        const strokeClass =
-          health === "down"
-            ? "stroke-danger"
-            : health === "degraded"
-              ? "stroke-warn"
-              : activity.active
-                ? "stroke-accent"
-                : "stroke-border";
-        return (
-          <g
-            key={node.id}
-            role="button"
-            tabIndex={0}
-            aria-label={`${node.label} detail`}
-            className="cursor-pointer outline-none"
-            onClick={() => onSelect({ kind: "service", id: node.id })}
-            onKeyDown={(e) => e.key === "Enter" && onSelect({ kind: "service", id: node.id })}
-          >
-            <circle
-              cx={node.center.x}
-              cy={node.center.y}
-              r={node.r}
-              className={`fill-none ${strokeClass}`}
-              strokeWidth={health === "ok" && !activity.active ? 1 : 1.5}
-              strokeDasharray={health === "unconfigured" ? "3 5" : undefined}
-              style={{ opacity: activity.active ? 0.9 : 0.75 }}
-            />
-            {/* quiet healthy tick; state text only when there is state */}
-            {activity.countLabel ? (
-              <text
-                x={node.center.x}
-                y={node.center.y + 4}
-                textAnchor="middle"
-                className="tnum fill-fg text-[13px]"
-              >
-                {activity.countLabel}
-              </text>
-            ) : health === "ok" ? (
-              <circle
-                cx={node.center.x}
-                cy={node.center.y}
-                r={2}
-                className="fill-ok"
-                style={{ opacity: 0.7 }}
-              />
-            ) : null}
-            <text
-              x={node.center.x}
-              y={node.center.y + node.r + 16}
-              textAnchor="middle"
-              className="fill-muted text-[12px]"
-            >
-              {node.label}
-            </text>
-            {(health !== "ok" || activity.detail) && (
-              <text
-                x={node.center.x}
-                y={node.center.y + node.r + 31}
-                textAnchor="middle"
-                className={`text-[10.5px] ${
-                  health === "down"
-                    ? "fill-danger"
-                    : health === "degraded"
-                      ? "fill-warn"
-                      : "fill-faint"
-                }`}
-              >
-                {health === "down"
-                  ? "unreachable"
-                  : health === "degraded"
-                    ? "stale"
-                    : health === "unconfigured"
-                      ? "not set up"
-                      : activity.detail}
-              </text>
-            )}
-          </g>
-        );
-      })}
-    </g>
-  );
-}
-
-// --- secondary docker containers ---------------------------------------------
-
-function ContainerCluster({
-  snapshot,
-  onSelect,
-}: {
-  snapshot: DashboardSnapshot;
-  onSelect: SceneProps["onSelect"];
-}) {
-  const docker = snapshot.telemetry.docker;
-  if (docker.status === "not-configured") return null;
-  const containers = docker.value?.containers ?? [];
-  const shown = containers.slice(0, 48);
-  const perRow = 12;
-
-  return (
-    <g
-      role="button"
-      tabIndex={0}
-      aria-label="Docker containers detail"
-      className="cursor-pointer outline-none"
-      onClick={() => onSelect({ kind: "docker" })}
-      onKeyDown={(e) => e.key === "Enter" && onSelect({ kind: "docker" })}
-    >
-      {shown.map((c, i) => {
-        const x = CONTAINER_CLUSTER.x + (i % perRow) * 11;
-        const y = CONTAINER_CLUSTER.y + Math.floor(i / perRow) * 11;
-        const bad = c.health === "unhealthy" || c.state !== "running";
-        return (
-          <circle
-            key={c.name}
-            cx={x}
-            cy={y}
-            r={1.8}
-            className={bad ? "fill-danger" : "fill-fg"}
-            style={{ opacity: bad ? 0.9 : 0.3 }}
-          >
-            <title>{`${c.name} — ${c.state}${c.health ? ` (${c.health})` : ""}`}</title>
-          </circle>
-        );
-      })}
-      <text
-        x={CONTAINER_CLUSTER.x}
-        y={CONTAINER_CLUSTER.y - 14}
-        className="fill-faint text-[11px]"
-      >
-        {docker.value
-          ? `${docker.value.running}/${docker.value.total} containers${
-              docker.value.unhealthy > 0 ? ` · ${docker.value.unhealthy} unhealthy` : ""
-            }`
-          : `containers ${docker.status}`}
-      </text>
-    </g>
-  );
-}
-
-// --- network edge ------------------------------------------------------------
-
-function NetworkEdge({ snapshot }: { snapshot: DashboardSnapshot }) {
-  const net = snapshot.telemetry.network;
-  const mid = (NETWORK_EDGE.yTop + NETWORK_EDGE.yBottom) / 2;
-  return (
-    <g aria-hidden>
-      <line
-        x1={NETWORK_EDGE.x}
-        y1={NETWORK_EDGE.yTop}
-        x2={NETWORK_EDGE.x}
-        y2={NETWORK_EDGE.yBottom}
-        className="stroke-hairline"
-        strokeWidth={1}
-      />
-      <text
-        x={NETWORK_EDGE.x - 8}
-        y={mid - 30}
-        textAnchor="end"
-        className="fill-faint text-[11px] uppercase tracking-[0.18em]"
-      >
-        network
-      </text>
-      <text x={NETWORK_EDGE.x - 8} y={mid - 6} textAnchor="end" className="tnum fill-muted text-[12px]">
-        {net.value ? `↓ ${formatRate(net.value.rxBps)}` : "↓ —"}
-      </text>
-      <text x={NETWORK_EDGE.x - 8} y={mid + 14} textAnchor="end" className="tnum fill-muted text-[12px]">
-        {net.value ? `↑ ${formatRate(net.value.txBps)}` : "↑ —"}
-      </text>
-      {net.status !== "available" && (
-        <text x={NETWORK_EDGE.x - 8} y={mid + 34} textAnchor="end" className="fill-faint text-[10px]">
-          {net.status === "not-configured" ? "not collected" : net.status}
-        </text>
-      )}
-    </g>
-  );
-}
-
-// --- flows -------------------------------------------------------------------
-
-function FlowLayer({ flows }: { flows: FlowState[] }) {
-  return (
-    <g aria-hidden>
-      {flows.map((flow) => {
-        const duration = flowDurationSeconds(flow.intensity);
-        if (!Number.isFinite(duration)) return null;
-        return (
-          <path
-            key={flow.id}
-            d={flowPath(flow.id, flow.pool)}
-            className="flow-dash fill-none stroke-accent"
-            strokeWidth={1.5}
-            style={{
-              opacity: 0.14 + 0.42 * flow.intensity,
-              animationDuration: `${duration}s`,
-            }}
-          />
-        );
-      })}
-    </g>
-  );
-}
-
-// --- scene -------------------------------------------------------------------
-
-export const TopologyScene = memo(function TopologyScene({
-  snapshot,
-  flows,
+  now,
+  seerrConfigured,
+  frozen,
+  reducedMotion,
+  debug = false,
   onSelect,
 }: SceneProps) {
-  const poolIo = useMemo(() => {
-    const map = new Map<string, { readBps: number; writeBps: number }>();
-    const disk = snapshot.telemetry.disk;
-    if (disk.status === "available" && disk.value) {
-      for (const p of disk.value.pools) map.set(p.pool, { readBps: p.readBps, writeBps: p.writeBps });
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  const [hovered, setHovered] = useState<string | null>(null);
+
+  const motionEnabled = !frozen && !reducedMotion;
+
+  const model = useMemo(
+    () => buildSceneModel(snapshot, { seerrConfigured, now }),
+    [snapshot, seerrConfigured, now],
+  );
+
+  const aspect = size.h > 0 ? size.w / size.h : 16 / 9;
+  const layout = useMemo(() => computeLayout(model, aspect), [model, aspect]);
+  const background = useMemo(() => buildBackground(), []);
+  const labels = useMemo(() => buildLabels(model, layout, now), [model, layout, now]);
+  const bodies = useMemo(() => hitBodies(model, layout), [model, layout]);
+
+  const camera: Camera = useMemo(() => {
+    const scale = size.h > 0 ? Math.min(size.w / layout.world.w, size.h / layout.world.h) : 1;
+    return {
+      w: size.w,
+      h: size.h,
+      scale,
+      ox: (size.w - layout.world.w * scale) / 2,
+      oy: (size.h - layout.world.h * scale) / 2,
+    };
+  }, [size, layout]);
+
+  // Long-lived render state, mutated outside React.
+  const motionRef = useRef<SceneMotion | null>(null);
+  if (motionRef.current === null) motionRef.current = new SceneMotion();
+  const geomCache = useRef<Map<string, FlowGeom | null>>(new Map());
+  const stateRef = useRef({ model, layout, hovered, debug });
+
+  useEffect(() => {
+    stateRef.current = { model, layout, hovered, debug };
+    motionRef.current!.applyModel(model);
+    geomCacheForLayout(geomCache.current, layout);
+  }, [model, layout, hovered, debug]);
+
+  // Routing cache: layout identity changes invalidate all geoms.
+  const layoutIdRef = useRef<SceneLayout | null>(null);
+  function geomCacheForLayout(cache: Map<string, FlowGeom | null>, l: SceneLayout) {
+    if (layoutIdRef.current !== l) {
+      cache.clear();
+      layoutIdRef.current = l;
     }
-    return map;
-  }, [snapshot.telemetry.disk]);
+  }
+
+  // Size tracking.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const apply = () => {
+      const rect = host.getBoundingClientRect();
+      setSize((prev) =>
+        prev.w === Math.round(rect.width) && prev.h === Math.round(rect.height)
+          ? prev
+          : { w: Math.round(rect.width), h: Math.round(rect.height) },
+      );
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, []);
+
+  const drawFrame = useCallback(
+    (tSeconds: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas || size.w === 0 || size.h === 0) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      if (canvas.width !== Math.round(size.w * dpr) || canvas.height !== Math.round(size.h * dpr)) {
+        canvas.width = Math.round(size.w * dpr);
+        canvas.height = Math.round(size.h * dpr);
+      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const { model: m, layout: l, hovered: hov, debug: dbg } = stateRef.current;
+      const motion = motionRef.current!;
+      const nowMs = frozen ? snapshot.generatedAt : Date.now();
+      if (motionEnabled) motion.advance(nowMs);
+      else motion.snapToTargets(nowMs);
+
+      const cache = geomCache.current;
+      const flows: LiveFlowGeom[] = [];
+      for (const lf of motion.liveFlows()) {
+        let geom = cache.get(lf.flow.id);
+        if (geom === undefined) {
+          geom = routeFlow(l, lf.flow);
+          cache.set(lf.flow.id, geom);
+        }
+        if (geom) flows.push({ geom, intensity: lf.intensity });
+      }
+
+      const cam: Camera = {
+        w: size.w * dpr,
+        h: size.h * dpr,
+        scale: camera.scale * dpr,
+        ox: camera.ox * dpr,
+        oy: camera.oy * dpr,
+      };
+      const state = {
+        model: m,
+        layout: l,
+        flows,
+        motion,
+        background,
+        hovered: hov,
+        t: motionEnabled ? tSeconds : 120, // fixed, non-zero ambient phase
+        motionEnabled,
+      };
+      renderScene(ctx, cam, state);
+      if (dbg && process.env.NODE_ENV !== "production") {
+        drawDebug(
+          ctx,
+          state,
+          buildLabels(m, l, now).map((lb) => ({
+            x: lb.anchor.x - lb.box.w / 2,
+            y: lb.anchor.y,
+            w: lb.box.w,
+            h: lb.box.h,
+          })),
+        );
+      }
+    },
+    [size, camera, background, frozen, motionEnabled, snapshot.generatedAt, now],
+  );
+
+  // The render loop.
+  useEffect(() => {
+    if (!motionEnabled) {
+      // Static mode: exactly one frame per data/size change.
+      drawFrame(120);
+      return;
+    }
+    let raf = 0;
+    let last = 0;
+    const t0 = performance.now();
+    const loop = (ts: number) => {
+      raf = requestAnimationFrame(loop);
+      const hasFlows = motionRef.current!.liveFlows().length > 0;
+      const budget = hasFlows ? ACTIVE_FRAME_MS : IDLE_FRAME_MS;
+      if (ts - last < budget) return;
+      last = ts;
+      drawFrame((ts - t0) / 1000);
+    };
+    const start = () => {
+      if (!raf) raf = requestAnimationFrame(loop);
+    };
+    const stop = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else start();
+    };
+    start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [motionEnabled, drawFrame]);
+
+  const project = useCallback(
+    (x: number, y: number) => ({
+      x: camera.ox + x * camera.scale,
+      y: camera.oy + y * camera.scale,
+    }),
+    [camera],
+  );
 
   return (
-    <svg
-      viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`}
-      preserveAspectRatio="xMidYMid meet"
-      className="h-full w-full select-none"
-      aria-label="Live homelab topology"
-    >
-      <FlowLayer flows={flows} />
-      <NetworkEdge snapshot={snapshot} />
-      <ServiceOrbit snapshot={snapshot} onSelect={onSelect} />
-      <ContainerCluster snapshot={snapshot} onSelect={onSelect} />
-      <MemoryHalo snapshot={snapshot} />
-      <ComputeCore snapshot={snapshot} onSelect={onSelect} />
-      {snapshot.zfs.pools.map((pool, i) => {
-        const io = poolIo.get(pool.name) ?? { readBps: 0, writeBps: 0 };
-        return (
-          <StorageBody
-            key={pool.name}
-            pool={pool}
-            index={i}
-            readBps={io.readBps}
-            writeBps={io.writeBps}
-            onSelect={onSelect}
-          />
-        );
-      })}
-      {snapshot.zfs.pools.length === 0 && (
-        <text
-          x={1245}
-          y={430}
-          textAnchor="middle"
-          className="fill-faint text-[12px]"
-        >
-          storage not configured
-        </text>
-      )}
-    </svg>
+    <div ref={hostRef} className="relative h-full w-full select-none overflow-hidden">
+      <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" aria-hidden />
+      {/* Typography overlay: real text, projected from world coordinates. */}
+      <div className="pointer-events-none absolute inset-0" aria-hidden>
+        {labels.map((lb) => {
+          const p = project(lb.anchor.x, lb.anchor.y);
+          return (
+            <div
+              key={lb.id}
+              className="absolute -translate-x-1/2 text-center leading-tight"
+              style={{ left: p.x, top: p.y }}
+            >
+              <div
+                className={LABEL_TONE_CLASS[lb.primaryTone]}
+                style={{ fontSize: LABEL_PRIMARY_PX * camera.scale }}
+              >
+                {lb.primary}
+              </div>
+              {lb.secondary && (
+                <div
+                  className={`tnum ${LABEL_TONE_CLASS[lb.secondaryTone]}`}
+                  style={{ fontSize: LABEL_SECONDARY_PX * camera.scale }}
+                >
+                  {lb.secondary}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {/* Interaction overlay: semantic, keyboard-reachable hit areas. */}
+      <div className="absolute inset-0" role="group" aria-label="Live homelab topology">
+        {bodies.map((b) => {
+          const p = project(b.cx, b.cy);
+          const rPx = b.r * camera.scale;
+          return (
+            <button
+              key={b.id}
+              type="button"
+              aria-label={b.label}
+              onClick={() => onSelect(b.selection)}
+              onMouseEnter={() => setHovered(b.id)}
+              onMouseLeave={() => setHovered((h) => (h === b.id ? null : h))}
+              onFocus={() => setHovered(b.id)}
+              onBlur={() => setHovered((h) => (h === b.id ? null : h))}
+              className="absolute cursor-pointer rounded-full outline-none focus-visible:ring-1 focus-visible:ring-accent/70"
+              style={{
+                left: p.x - rPx,
+                top: p.y - rPx,
+                width: rPx * 2,
+                height: rPx * 2,
+              }}
+            />
+          );
+        })}
+      </div>
+    </div>
   );
-});
+}

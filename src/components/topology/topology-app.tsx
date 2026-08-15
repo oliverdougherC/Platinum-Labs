@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { CommandPalette } from "@/components/command-palette";
 import { MediaSearch } from "@/components/media-search";
 import { DetailDrawer } from "@/components/topology/detail-drawer";
@@ -12,12 +12,11 @@ import {
 } from "@/components/topology/notification-center";
 import { TopologyScene, type TopologySelection } from "@/components/topology/scene";
 import { useLiveData } from "@/components/topology/use-live-data";
-import { deriveFlows } from "@/lib/topology/activity";
 import { appConfig } from "@/lib/config";
 import { formatRelativeTime } from "@/lib/utils";
 import type { QuickLink } from "@/lib/quicklinks";
 import type { DashboardSnapshot } from "@/lib/types";
-import type { ServiceId } from "@/lib/topology/layout";
+import type { ServiceId } from "@/lib/scene/model";
 
 /**
  * V2 app shell (PLA-263): one 100dvh composition — thin top chrome, the
@@ -102,10 +101,13 @@ export function TopologyApp({
   }, []);
 
   const referenceNow = frozen ? snapshot.generatedAt : receivedAt;
-  const flows = useMemo(
-    () => deriveFlows(snapshot, referenceNow),
-    [snapshot, referenceNow],
-  );
+
+  // Dev-only geometry debug overlay (?debug=geometry). Never in production.
+  const [debugGeometry] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    if (process.env.NODE_ENV === "production") return false;
+    return new URLSearchParams(window.location.search).get("debug") === "geometry";
+  });
 
   const notifications = useNotificationCenter(snapshot.attention, frozen);
   const activeCount = notifications.groups.reduce((sum, g) => sum + g.items.length, 0);
@@ -177,7 +179,15 @@ export function TopologyApp({
       </header>
 
       <main className="relative min-h-0 flex-1">
-        <TopologyScene snapshot={snapshot} flows={flows} onSelect={onSelect} />
+        <TopologyScene
+          snapshot={snapshot}
+          now={referenceNow}
+          seerrConfigured={seerr.search}
+          frozen={frozen}
+          reducedMotion={reducedMotion}
+          debug={debugGeometry}
+          onSelect={onSelect}
+        />
       </main>
 
       <MetricsRail snapshot={snapshot} />

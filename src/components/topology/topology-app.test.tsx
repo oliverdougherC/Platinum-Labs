@@ -3,9 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { TopologyApp } from "@/components/topology/topology-app";
 import { TopologyScene } from "@/components/topology/scene";
 import { MetricsRail } from "@/components/topology/metrics-rail";
-import { deriveFlows } from "@/lib/topology/activity";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
-import { FAKE_CORE_COUNT } from "@/lib/fake/telemetry";
 
 const NOW = 1_754_000_000_000;
 
@@ -20,6 +18,15 @@ beforeAll(() => {
         addEventListener: () => {},
         removeEventListener: () => {},
       }) as unknown as MediaQueryList,
+  );
+  // jsdom lacks ResizeObserver; the scene only needs construct/observe/disconnect.
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
   );
 });
 
@@ -41,15 +48,10 @@ describe("TopologyApp — frozen/reduced-motion and composition", () => {
     expect(container.querySelector('[data-motion="off"]')).not.toBeNull();
   });
 
-  it("renders exactly one spoke per real logical CPU (never padded)", () => {
-    const { container } = renderApp("idle");
-    expect(container.querySelectorAll(".cpu-spoke")).toHaveLength(FAKE_CORE_COUNT);
-  });
-
   it("renders every pool as a storage body with LOGICAL capacity", () => {
     renderApp("idle");
     expect(screen.getByText("DataStore")).toBeInTheDocument();
-    // 41.8/69.6 TB logical — never the 96.0 TB raw physical size.
+    // 41.8/69.6 TB logical — never the 96.0 TB zpool allocation size.
     expect(screen.getByText(/41\.8 \/ 69\.6 TB/)).toBeInTheDocument();
     expect(screen.queryByText(/96\.0 TB/)).not.toBeInTheDocument();
   });
@@ -63,19 +65,34 @@ describe("TopologyApp — frozen/reduced-motion and composition", () => {
   });
 });
 
-describe("scene flows", () => {
-  it("idle renders zero flow paths; active renders real ones", () => {
-    const idle = makeFakeSnapshot("idle", NOW);
-    const { container: idleC } = render(
-      <TopologyScene snapshot={idle} flows={deriveFlows(idle, NOW)} onSelect={() => {}} />,
+describe("scene overlay — semantics without pixels", () => {
+  function renderScene(scenario: Parameters<typeof makeFakeSnapshot>[0]) {
+    const snapshot = makeFakeSnapshot(scenario, NOW);
+    return render(
+      <TopologyScene
+        snapshot={snapshot}
+        now={NOW}
+        seerrConfigured={false}
+        frozen
+        reducedMotion={false}
+        onSelect={() => {}}
+      />,
     );
-    expect(idleC.querySelectorAll(".flow-dash")).toHaveLength(0);
+  }
 
-    const active = makeFakeSnapshot("active", NOW);
-    const { container: activeC } = render(
-      <TopologyScene snapshot={active} flows={deriveFlows(active, NOW)} onSelect={() => {}} />,
-    );
-    expect(activeC.querySelectorAll(".flow-dash").length).toBeGreaterThan(0);
+  it("every meaningful body is a keyboard-reachable, labeled control", () => {
+    renderScene("idle");
+    expect(screen.getByRole("button", { name: "Host compute detail" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "DataStore storage detail" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Jellyfin detail" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "qBittorrent detail" })).toBeInTheDocument();
+  });
+
+  it("an unconfigured Requests integration reads 'not set up', never healthy", () => {
+    renderScene("idle");
+    expect(screen.getByText("Requests")).toBeInTheDocument();
+    // seerrConfigured=false → the label carries the truthful state.
+    expect(screen.getAllByText(/not set up/).length).toBeGreaterThanOrEqual(1);
   });
 });
 

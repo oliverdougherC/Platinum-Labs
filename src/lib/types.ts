@@ -478,4 +478,11 @@ export interface DashboardSnapshot {
   activityAvailable?: boolean;
   /** Chart history windows (optional; present in aggregate responses). */
   history?: DashboardHistory;
+  /**
+   * Operator-declared media pool name (HOMELAB_MEDIA_POOL), or null/absent.
+   * The topology may attach import/playback flows to this pool ONLY — never to
+   * a pool inferred from dominant I/O (PLA-275). Null means the flows end at a
+   * generic storage endpoint.
+   */
+  mediaPool?: string | null;
 }

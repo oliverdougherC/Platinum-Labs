@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo } from "react";
 import type { TopologySelection } from "@/components/topology/scene";
-import { SERVICE_NODES } from "@/lib/topology/layout";
+import { SERVICE_LABELS } from "@/lib/scene/model";
 import { appConfig } from "@/lib/config";
 import { formatBytes, formatRate } from "@/lib/format/bytes";
 import {
@@ -586,7 +586,7 @@ export function DetailDrawer({
       case "pool":
         return `Pool · ${selection.name}`;
       case "service":
-        return SERVICE_NODES.find((s) => s.id === selection.id)?.label ?? selection.id;
+        return SERVICE_LABELS[selection.id] ?? selection.id;
       case "docker":
         return "Docker";
     }

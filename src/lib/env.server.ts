@@ -96,6 +96,13 @@ const envSchema = z.object({
    * server-side connector base URLs (PLA-191). Invalid JSON is ignored.
    */
   HOMELAB_QUICK_LINKS: z.string().optional(),
+  /**
+   * Name of the ZFS pool that holds the media library (e.g. "DataStore").
+   * Used ONLY to attach import/playback flow endpoints to a pool the operator
+   * has explicitly declared. Unset ⇒ flows target a generic "storage" endpoint
+   * rather than guessing from I/O activity (PLA-275).
+   */
+  HOMELAB_MEDIA_POOL: z.string().optional(),
 });
 
 export type ServerEnv = z.infer<typeof envSchema>;

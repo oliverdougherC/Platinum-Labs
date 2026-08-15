@@ -2,6 +2,7 @@ import importlib.util
 import os
 import pathlib
 import subprocess
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -216,6 +217,138 @@ class ZfsCollectorTests(unittest.TestCase):
 
         section = zfs_collector._section(boom)
         self.assertEqual(section, {"status": "unavailable"})
+
+
+FAKE_CPU = {"total": [1, 2, 3, 4, 5, 6, 7, 8], "cores": [[1, 2, 3, 4, 5, 6, 7, 8]], "load": [0.1, 0.2, 0.3]}
+FAKE_MEMORY = {"totalBytes": 100, "availableBytes": 50, "swapTotalBytes": None, "swapUsedBytes": None}
+UNAVAILABLE = {"status": "unavailable"}
+
+
+class BackgroundCacheTests(unittest.TestCase):
+    """PLA-272: /v1/host must never block on slow optional providers."""
+
+    def _hanging_fetch(self):
+        """A fetch that blocks until the test tears down (simulated hang)."""
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def fetch():
+            release.wait()
+            return None  # even once released, never publish a value
+
+        return fetch
+
+    def _instant_cache(self, value):
+        return zfs_collector._BackgroundCache(60.0, lambda: value, UNAVAILABLE, stale_after=180.0)
+
+    def _collect_host_fast(self, docker_cache, gpu_cache):
+        pool_cache = zfs_collector._BackgroundCache(60.0, lambda: {}, {})
+        with patch.object(zfs_collector, "DOCKER_CACHE", docker_cache), \
+             patch.object(zfs_collector, "GPU_CACHE", gpu_cache), \
+             patch.object(zfs_collector, "POOL_DEVICES_CACHE", pool_cache), \
+             patch.object(zfs_collector, "_read_cpu", lambda: FAKE_CPU), \
+             patch.object(zfs_collector, "_read_memory", lambda: FAKE_MEMORY):
+            started = time.monotonic()
+            payload = zfs_collector._collect_host()
+            elapsed = time.monotonic() - started
+        # A hanging provider must not push /v1/host anywhere near the
+        # dashboard's ~2 s deadline; the collection itself is procfs-fast.
+        self.assertLess(elapsed, 1.0)
+        return payload
+
+    def test_hanging_docker_fetch_does_not_delay_host_endpoint(self):
+        docker_cache = zfs_collector._BackgroundCache(
+            60.0, self._hanging_fetch(), UNAVAILABLE, stale_after=15.0,
+        )
+        payload = self._collect_host_fast(docker_cache, self._instant_cache({"status": "not-configured"}))
+        self.assertEqual(payload["docker"], UNAVAILABLE)
+        self.assertEqual(payload["cpu"]["status"], "ok")
+        self.assertEqual(payload["memory"]["status"], "ok")
+
+    def test_hanging_gpu_fetch_does_not_delay_host_endpoint(self):
+        gpu_cache = zfs_collector._BackgroundCache(
+            60.0, self._hanging_fetch(), UNAVAILABLE, stale_after=15.0,
+        )
+        payload = self._collect_host_fast(self._instant_cache({"status": "not-configured"}), gpu_cache)
+        self.assertEqual(payload["gpu"], UNAVAILABLE)
+        self.assertEqual(payload["cpu"]["status"], "ok")
+        self.assertEqual(payload["memory"]["status"], "ok")
+
+    def test_completed_background_fetch_is_served_from_cache(self):
+        calls = []
+        value = {"status": "ok", "containers": []}
+
+        def fetch():
+            calls.append(1)
+            return value
+
+        cache = zfs_collector._BackgroundCache(60.0, fetch, UNAVAILABLE, stale_after=180.0)
+        deadline = time.monotonic() + 5.0
+        while cache.get() == UNAVAILABLE and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(cache.get(), value)
+        # 60 s cadence: repeated get() calls serve the cache, they never
+        # trigger a synchronous re-fetch.
+        self.assertEqual(len(calls), 1)
+
+    def test_stale_cache_reports_unavailable_instead_of_old_data(self):
+        clock = [1000.0]
+        cache = zfs_collector._BackgroundCache(
+            2.0, self._hanging_fetch(), UNAVAILABLE,
+            stale_after=15.0, now=lambda: clock[0],
+        )
+        with cache.lock:
+            cache.value = {"status": "ok", "containers": []}
+            cache.at = clock[0]
+        self.assertEqual(cache.get()["status"], "ok")
+        clock[0] += 14.9  # still inside the stale bound
+        self.assertEqual(cache.get()["status"], "ok")
+        clock[0] += 0.2  # now past it: old data must not be served as fresh
+        self.assertEqual(cache.get(), UNAVAILABLE)
+
+    def test_stale_bound_is_three_intervals_with_a_fifteen_second_floor(self):
+        self.assertEqual(zfs_collector._stale_bound(zfs_collector.GPU_CACHE_SECONDS), 15.0)
+        self.assertEqual(zfs_collector._stale_bound(zfs_collector.DOCKER_CACHE_SECONDS), 15.0)
+        self.assertEqual(zfs_collector._stale_bound(30.0), 90.0)
+
+    def test_docker_refresh_deadline_skips_remaining_stats_calls(self):
+        clock = [0.0]
+        listing = [
+            {"Id": "aaa111", "Names": ["/one"], "State": "running", "Status": "Up 2 hours (healthy)"},
+            {"Id": "bbb222", "Names": ["/two"], "State": "running", "Status": "Up 2 hours"},
+            {"Id": "ccc333", "Names": ["/three"], "State": "exited", "Status": "Exited (0)"},
+        ]
+        stats_calls = []
+
+        def fake_docker_get(path):
+            if path.startswith("/containers/json"):
+                return listing
+            stats_calls.append(path)
+            # The first stats call alone blows the whole refresh budget.
+            clock[0] += zfs_collector.DOCKER_REFRESH_DEADLINE + 1.0
+            return {
+                "cpu_stats": {"cpu_usage": {"total_usage": 111}, "system_cpu_usage": 222},
+                "memory_stats": {"usage": 1000, "stats": {"inactive_file": 100}},
+            }
+
+        with patch.object(zfs_collector, "DOCKER_PROXY_URL", "http://proxy"), \
+             patch.object(zfs_collector, "_docker_get", fake_docker_get):
+            payload = zfs_collector._fetch_docker(now=lambda: clock[0])
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(len(stats_calls), 1)  # second running container skipped
+        by_name = {c["name"]: c for c in payload["containers"]}
+        self.assertEqual(set(by_name), {"one", "two", "three"})
+        self.assertEqual(by_name["one"]["cpuTotalNs"], 111)
+        self.assertEqual(by_name["one"]["systemCpuNs"], 222)
+        self.assertEqual(by_name["one"]["memoryBytes"], 900)
+        self.assertEqual(by_name["one"]["health"], "healthy")
+        # List-derived fields survive for the skipped container; stats stay null.
+        self.assertEqual(by_name["two"]["state"], "running")
+        self.assertIsNone(by_name["two"]["cpuTotalNs"])
+        self.assertIsNone(by_name["two"]["systemCpuNs"])
+        self.assertIsNone(by_name["two"]["memoryBytes"])
+        self.assertIsNone(by_name["three"]["cpuTotalNs"])
 
 
 if __name__ == "__main__":

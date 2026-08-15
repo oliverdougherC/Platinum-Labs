@@ -1,20 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  deriveFlows,
-  dominantReadPool,
-  dominantWritePool,
-} from "@/lib/topology/activity";
-import {
-  arcPath,
-  CANVAS_H,
-  CANVAS_W,
-  CONTAINER_CLUSTER,
-  flowPath,
-  NETWORK_EDGE,
-  SERVICE_NODES,
-  STORAGE_BODIES,
-  storageBodyFor,
-} from "@/lib/topology/layout";
+import { deriveFlows, mediaStorageEndpoint } from "@/lib/topology/activity";
 import {
   deadband,
   Ema,
@@ -22,6 +7,7 @@ import {
   intensityFromRate,
 } from "@/lib/topology/smoothing";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
+import type { DashboardSnapshot, PoolIoTelemetry } from "@/lib/types";
 
 const NOW = 1_754_000_000_000;
 
@@ -78,61 +64,58 @@ describe("intensity mapping", () => {
   });
 });
 
-describe("layout geometry", () => {
-  it("keeps every node inside the canvas", () => {
-    for (const node of [...SERVICE_NODES.map((s) => ({ c: s.center, r: s.r })), ...STORAGE_BODIES.map((b) => ({ c: b.center, r: b.r }))]) {
-      expect(node.c.x - node.r).toBeGreaterThan(0);
-      expect(node.c.x + node.r).toBeLessThan(CANVAS_W);
-      expect(node.c.y - node.r).toBeGreaterThan(0);
-      expect(node.c.y + node.r).toBeLessThan(CANVAS_H);
-    }
-    expect(CONTAINER_CLUSTER.y).toBeLessThan(CANVAS_H);
-    expect(NETWORK_EDGE.yBottom).toBeLessThan(CANVAS_H);
-  });
+// --- helpers for adversarial states ------------------------------------------
 
-  it("produces a valid path for every flow id", () => {
-    for (const id of [
-      "ingress-qbittorrent",
-      "qbittorrent-sonarr",
-      "qbittorrent-radarr",
-      "import-datastore",
-      "storage-jellyfin",
-      "jellyfin-egress",
-    ] as const) {
-      const d = flowPath(id, "DataStore");
-      expect(d).toMatch(/^M /);
-      expect(d).toContain("C");
-    }
-  });
+function withStale(snap: DashboardSnapshot, id: string): DashboardSnapshot {
+  return {
+    ...snap,
+    health: snap.health.map((h) =>
+      h.id === id ? { ...h, lastSuccessAt: NOW - 10 * 60_000 } : h,
+    ),
+  };
+}
 
-  it("falls back gracefully for unknown pools", () => {
-    const body = storageBodyFor("weirdpool", 0);
-    expect(body.r).toBeGreaterThan(0);
-    expect(flowPath("import-datastore", "weirdpool")).toMatch(/^M /);
-  });
+function withPoolIo(
+  snap: DashboardSnapshot,
+  pools: PoolIoTelemetry[],
+): DashboardSnapshot {
+  const disk = snap.telemetry.disk;
+  return {
+    ...snap,
+    telemetry: {
+      ...snap.telemetry,
+      disk: {
+        status: "available",
+        updatedAt: NOW,
+        value: {
+          readBps: pools.reduce((s, p) => s + p.readBps, 0),
+          writeBps: pools.reduce((s, p) => s + p.writeBps, 0),
+          pools,
+        },
+      },
+    },
+  };
+  void disk;
+}
 
-  it("arcPath renders fractions and empty for zero", () => {
-    expect(arcPath({ x: 0, y: 0 }, 10, 0)).toBe("");
-    expect(arcPath({ x: 0, y: 0 }, 10, 0.5)).toContain("A 10 10");
-    // Full circle stays a valid single arc (fraction clamped below 1).
-    expect(arcPath({ x: 0, y: 0 }, 10, 1)).toContain("A 10 10");
-  });
-});
+const ids = (snap: DashboardSnapshot) => deriveFlows(snap, NOW).map((f) => f.id);
 
 describe("deriveFlows — motion only from real state (PLA-267)", () => {
   it("idle scenario produces NO flows", () => {
     expect(deriveFlows(makeFakeSnapshot("idle", NOW), NOW)).toEqual([]);
   });
 
-  it("downloads scenario produces acquisition + import flows, no playback", () => {
+  it("downloads scenario renders the real pipeline: network → qb → arr → storage", () => {
     const flows = deriveFlows(makeFakeSnapshot("downloads", NOW), NOW);
-    const ids = flows.map((f) => f.id);
-    expect(ids).toContain("ingress-qbittorrent");
-    expect(ids).toContain("qbittorrent-sonarr");
-    expect(ids).toContain("qbittorrent-radarr");
-    expect(ids).toContain("import-datastore");
-    expect(ids).not.toContain("storage-jellyfin");
-    expect(ids).not.toContain("jellyfin-egress");
+    const flowIds = flows.map((f) => f.id);
+    expect(flowIds).toContain("download:network->qbittorrent");
+    expect(flowIds).toContain("handoff:qbittorrent->sonarr");
+    expect(flowIds).toContain("handoff:qbittorrent->radarr");
+    // Only Sonarr is importing in this fixture — and the import edge starts at
+    // SONARR, never at the downloader (PLA-275).
+    expect(flowIds).toContain("import:sonarr->pool:DataStore");
+    expect(flowIds.filter((id) => id.startsWith("import:radarr"))).toHaveLength(0);
+    expect(flowIds.some((id) => id.startsWith("playback"))).toBe(false);
     for (const f of flows) {
       expect(f.intensity).toBeGreaterThan(0);
       expect(f.intensity).toBeLessThanOrEqual(1);
@@ -141,15 +124,14 @@ describe("deriveFlows — motion only from real state (PLA-267)", () => {
 
   it("playback scenario produces storage→jellyfin→egress, no acquisition", () => {
     const flows = deriveFlows(makeFakeSnapshot("direct-play", NOW), NOW);
-    const ids = flows.map((f) => f.id);
-    expect(ids).toEqual(["storage-jellyfin", "jellyfin-egress"]);
-    // Playback reads from the pool actually serving reads (DataStore profile).
-    expect(flows[0]!.pool).toBe("DataStore");
+    expect(flows.map((f) => f.id)).toEqual([
+      "playback:pool:DataStore->jellyfin",
+      "egress:jellyfin->network",
+    ]);
   });
 
   it("a stalled-only queue does not fake download motion", () => {
     const snap = makeFakeSnapshot("stalled", NOW);
-    // Remove the one active download, leaving only stalled/failed items.
     const items = snap.acquisition.items.filter((i) => i.state !== "downloading");
     const stalledOnly = {
       ...snap,
@@ -158,20 +140,17 @@ describe("deriveFlows — motion only from real state (PLA-267)", () => {
         rollup: { ...snap.acquisition.rollup, downloading: 0, aggregateRateBps: 0 },
       },
     };
-    const ids = deriveFlows(stalledOnly, NOW).map((f) => f.id);
-    expect(ids).not.toContain("ingress-qbittorrent");
+    expect(ids(stalledOnly).some((id) => id.startsWith("download"))).toBe(false);
   });
 
-  it("suppresses flows from stale sources", () => {
-    const snap = makeFakeSnapshot("downloads", NOW);
-    const staleHealth = snap.health.map((h) =>
-      h.id === "qbittorrent" ? { ...h, lastSuccessAt: NOW - 10 * 60_000 } : h,
-    );
-    const flows = deriveFlows({ ...snap, health: staleHealth }, NOW);
-    expect(flows.map((f) => f.id)).not.toContain("ingress-qbittorrent");
+  it("suppresses download + handoffs when qBittorrent is stale", () => {
+    const snap = withStale(makeFakeSnapshot("downloads", NOW), "qbittorrent");
+    const flowIds = ids(snap);
+    expect(flowIds.some((id) => id.startsWith("download"))).toBe(false);
+    expect(flowIds.some((id) => id.startsWith("handoff"))).toBe(false);
   });
 
-  it("unavailable telemetry does not zero out real imports", () => {
+  it("unavailable disk telemetry does not zero out real imports", () => {
     const snap = makeFakeSnapshot("downloads", NOW);
     const noDisk = {
       ...snap,
@@ -180,21 +159,82 @@ describe("deriveFlows — motion only from real state (PLA-267)", () => {
         disk: { status: "unavailable" as const, updatedAt: null, value: null },
       },
     };
-    const importFlow = deriveFlows(noDisk, NOW).find((f) => f.id === "import-datastore");
+    const importFlow = deriveFlows(noDisk, NOW).find((f) => f.kind === "import");
     expect(importFlow).toBeDefined();
-    expect(importFlow!.intensity).toBeGreaterThan(0);
+    expect(importFlow!.intensity).toBeGreaterThanOrEqual(0.25);
   });
 });
 
-describe("dominant pool helpers", () => {
-  it("returns null when disk telemetry is unavailable", () => {
-    const snap = makeFakeSnapshot("unconfigured", NOW);
-    expect(dominantWritePool(snap)).toBeNull();
-    expect(dominantReadPool(snap)).toBeNull();
+describe("deriveFlows — honest correlations (PLA-275)", () => {
+  it("a stale Sonarr suppresses ONLY Sonarr's edges while Radarr stays live", () => {
+    const snap = withStale(makeFakeSnapshot("downloads", NOW), "sonarr");
+    const flowIds = ids(snap);
+    // Sonarr edges gone — including its import, even though items say importing.
+    expect(flowIds.some((id) => id.includes("sonarr"))).toBe(false);
+    // Radarr's handoff is untouched; the shared download edge is untouched.
+    expect(flowIds).toContain("handoff:qbittorrent->radarr");
+    expect(flowIds).toContain("download:network->qbittorrent");
   });
 
-  it("picks the busiest pool under load", () => {
+  it("a Radarr-only import creates exactly one import edge, from Radarr", () => {
     const snap = makeFakeSnapshot("downloads", NOW);
-    expect(dominantWritePool(snap)).toBe("DataStore");
+    const items = snap.acquisition.items.map((i) =>
+      i.state === "importing" ? { ...i, source: "radarr" as const } : i,
+    );
+    const flows = deriveFlows(
+      { ...snap, acquisition: { ...snap.acquisition, items } },
+      NOW,
+    );
+    const imports = flows.filter((f) => f.kind === "import");
+    expect(imports).toHaveLength(1);
+    expect(imports[0]!.id).toBe("import:radarr->pool:DataStore");
+  });
+
+  it("unrelated writes on another pool cannot redirect the import target", () => {
+    // NVME gets hammered by something unrelated; media pool is DataStore.
+    const snap = withPoolIo(makeFakeSnapshot("downloads", NOW), [
+      { pool: "DataStore", readBps: 0, writeBps: 1_000_000 },
+      { pool: "NVME", readBps: 0, writeBps: 500_000_000 },
+    ]);
+    const imports = deriveFlows(snap, NOW).filter((f) => f.kind === "import");
+    expect(imports).toHaveLength(1);
+    expect(imports[0]!.to).toEqual({ kind: "pool", name: "DataStore" });
+  });
+
+  it("unrelated reads on another pool cannot redirect the playback source", () => {
+    const snap = withPoolIo(makeFakeSnapshot("direct-play", NOW), [
+      { pool: "DataStore", readBps: 2_000_000, writeBps: 0 },
+      { pool: "eSATA", readBps: 800_000_000, writeBps: 0 },
+    ]);
+    const playback = deriveFlows(snap, NOW).find((f) => f.kind === "playback");
+    expect(playback).toBeDefined();
+    expect(playback!.from).toEqual({ kind: "pool", name: "DataStore" });
+  });
+
+  it("no declared media pool ⇒ generic storage endpoint, never a guessed pool", () => {
+    const snap = { ...makeFakeSnapshot("downloads", NOW), mediaPool: null };
+    const heavyIo = withPoolIo(snap, [
+      { pool: "NVME", readBps: 0, writeBps: 500_000_000 },
+    ]);
+    expect(mediaStorageEndpoint(heavyIo)).toEqual({ kind: "storage" });
+    const imports = deriveFlows(heavyIo, NOW).filter((f) => f.kind === "import");
+    expect(imports).toHaveLength(1);
+    expect(imports[0]!.to).toEqual({ kind: "storage" });
+  });
+
+  it("a declared pool that does not exist degrades to generic storage", () => {
+    const snap = { ...makeFakeSnapshot("direct-play", NOW), mediaPool: "Ghost" };
+    expect(mediaStorageEndpoint(snap)).toEqual({ kind: "storage" });
+  });
+
+  it("multiple simultaneous workflows stay one flow per edge", () => {
+    const snap = makeFakeSnapshot("active", NOW);
+    const flows = deriveFlows(snap, NOW);
+    const unique = new Set(flows.map((f) => f.id));
+    expect(unique.size).toBe(flows.length);
+    // Every flow's endpoints are semantically justified kinds.
+    for (const f of flows) {
+      expect(["download", "handoff", "import", "playback", "egress"]).toContain(f.kind);
+    }
   });
 });

@@ -463,6 +463,9 @@ function compose(
     attention: parts.attention ?? [],
     activity: parts.activity ?? baseActivity(now),
     history: fakeHistory(now, parts.acquisition, parts.zfs),
+    // The fake universe declares its media pool explicitly, mirroring the
+    // HOMELAB_MEDIA_POOL contract (PLA-275) so demo flows attach to a pool.
+    mediaPool: "DataStore",
   };
 }
 
