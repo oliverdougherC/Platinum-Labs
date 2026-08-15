@@ -64,6 +64,17 @@ describe("normalizeSearch", () => {
     });
   });
 
+  it("normalizes DELETED media as requestable and BLOCKLISTED as blocklisted", () => {
+    const [deleted, blocklisted] = normalizeSearch(
+      searchPage([
+        { ...movie, mediaInfo: { status: MEDIA_STATUS.DELETED } },
+        { ...tv, mediaInfo: { status: MEDIA_STATUS.BLOCKLISTED } },
+      ]),
+    );
+    expect(deleted!.state).toBe("requestable");
+    expect(blocklisted!.state).toBe("blocklisted");
+  });
+
   it("drops person results entirely", () => {
     const results = normalizeSearch(searchPage([person, movie]));
     expect(results).toHaveLength(1);
@@ -114,10 +125,17 @@ describe("mapMediaStatus", () => {
     expect(mapMediaStatus(MEDIA_STATUS.PROCESSING)).toBe("processing");
     expect(mapMediaStatus(MEDIA_STATUS.PARTIALLY_AVAILABLE)).toBe("partial");
     expect(mapMediaStatus(MEDIA_STATUS.AVAILABLE)).toBe("available");
+    expect(mapMediaStatus(MEDIA_STATUS.BLOCKLISTED)).toBe("blocklisted");
+    expect(mapMediaStatus(MEDIA_STATUS.DELETED)).toBe("requestable");
+  });
+
+  it("REGRESSION: DELETED media is requestable again, BLOCKLISTED is not", () => {
+    expect(mapMediaStatus(MEDIA_STATUS.DELETED)).toBe("requestable");
+    expect(mapMediaStatus(MEDIA_STATUS.BLOCKLISTED)).not.toBe("requestable");
   });
 
   it("maps unrecognized future statuses to a non-requestable state", () => {
-    expect(mapMediaStatus(6)).toBe("processing");
+    expect(mapMediaStatus(8)).toBe("processing");
     expect(mapMediaStatus(99)).toBe("processing");
   });
 });
@@ -160,6 +178,26 @@ describe("missingSeasonNumbers", () => {
         ),
       ),
     ).toEqual([3]);
+  });
+
+  it("counts DELETED seasons as missing but never BLOCKLISTED or unknown future statuses", () => {
+    expect(
+      missingSeasonNumbers(
+        details(
+          [
+            { seasonNumber: 1, episodeCount: 10 },
+            { seasonNumber: 2, episodeCount: 8 },
+            { seasonNumber: 3, episodeCount: 8 },
+            { seasonNumber: 4, episodeCount: 8 },
+          ],
+          [
+            { seasonNumber: 1, status: MEDIA_STATUS.DELETED },
+            { seasonNumber: 2, status: MEDIA_STATUS.BLOCKLISTED },
+            { seasonNumber: 3, status: 99 },
+          ],
+        ),
+      ),
+    ).toEqual([1, 4]);
   });
 
   it("excludes specials and empty placeholder seasons", () => {

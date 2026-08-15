@@ -110,6 +110,20 @@ describe("MediaSearch — searching", () => {
     expect(calls[0]!.url).toBe("/api/seerr/search?q=mar");
   });
 
+  it("shows a truthful Blocklisted badge and never a request control", async () => {
+    scriptFetch(() =>
+      searchResponse([{ ...martian, state: "blocklisted" }]),
+    );
+    renderSearch();
+
+    await typeQuery("mar");
+    expect(await screen.findByText("The Martian")).toBeInTheDocument();
+    expect(screen.getByText("Blocklisted")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Request" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("does not query below the minimum length", async () => {
     const calls = scriptFetch(() => searchResponse([]));
     renderSearch();

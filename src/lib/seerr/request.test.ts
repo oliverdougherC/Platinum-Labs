@@ -162,6 +162,43 @@ describe("performSeerrRequest — movie", () => {
     expect(createRequest).not.toHaveBeenCalled();
   });
 
+  it("REGRESSION: a DELETED movie can be re-requested", async () => {
+    const createRequest = vi.fn(async () => request(REQUEST_STATUS.APPROVED));
+    const client = stubClient({
+      movieDetails: async () => movieDetails(MEDIA_STATUS.DELETED),
+      createRequest,
+    });
+
+    const outcome = await performSeerrRequest(client, {
+      mediaType: "movie",
+      mediaId: 101,
+    });
+
+    expect(outcome).toEqual({ ok: true, outcome: "approved", title: "The Martian" });
+    expect(createRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("REGRESSION: a BLOCKLISTED movie is never requested", async () => {
+    const createRequest = vi.fn();
+    const client = stubClient({
+      movieDetails: async () => movieDetails(MEDIA_STATUS.BLOCKLISTED),
+      createRequest: createRequest as unknown as SeerrClient["createRequest"],
+    });
+
+    const outcome = await performSeerrRequest(client, {
+      mediaType: "movie",
+      mediaId: 101,
+    });
+
+    expect(outcome).toEqual({
+      ok: true,
+      outcome: "already-requested",
+      state: "blocklisted",
+      title: "The Martian",
+    });
+    expect(createRequest).not.toHaveBeenCalled();
+  });
+
   it("collapses an upstream duplicate (409) into a stable already-requested state", async () => {
     const client = stubClient({
       movieDetails: async () => movieDetails(),
@@ -320,6 +357,65 @@ describe("performSeerrRequest — tv", () => {
       mediaId: 111,
       seasons: [2, 3],
     });
+  });
+
+  it("REGRESSION: DELETED seasons count as missing and are re-requested", async () => {
+    const createRequest = vi.fn(async () => request(REQUEST_STATUS.APPROVED));
+    const client = stubClient({
+      tvDetails: async () =>
+        tvDetails({
+          seasons: [
+            { seasonNumber: 1, episodeCount: 10 },
+            { seasonNumber: 2, episodeCount: 10 },
+            { seasonNumber: 3, episodeCount: 10 },
+          ],
+          tracked: [
+            { seasonNumber: 1, status: MEDIA_STATUS.AVAILABLE },
+            { seasonNumber: 2, status: MEDIA_STATUS.DELETED },
+          ],
+        }),
+      createRequest,
+    });
+
+    const outcome = await performSeerrRequest(client, {
+      mediaType: "tv",
+      mediaId: 111,
+    });
+
+    expect(outcome).toMatchObject({ ok: true, outcome: "approved" });
+    expect(createRequest).toHaveBeenCalledWith({
+      mediaType: "tv",
+      mediaId: 111,
+      seasons: [2, 3],
+    });
+  });
+
+  it("REGRESSION: BLOCKLISTED seasons are never re-requested", async () => {
+    const createRequest = vi.fn();
+    const client = stubClient({
+      tvDetails: async () =>
+        tvDetails({
+          status: MEDIA_STATUS.BLOCKLISTED,
+          tracked: [
+            { seasonNumber: 1, status: MEDIA_STATUS.BLOCKLISTED },
+            { seasonNumber: 2, status: MEDIA_STATUS.BLOCKLISTED },
+          ],
+        }),
+      createRequest: createRequest as unknown as SeerrClient["createRequest"],
+    });
+
+    const outcome = await performSeerrRequest(client, {
+      mediaType: "tv",
+      mediaId: 111,
+    });
+
+    expect(outcome).toEqual({
+      ok: true,
+      outcome: "already-requested",
+      state: "blocklisted",
+      title: "Foundation",
+    });
+    expect(createRequest).not.toHaveBeenCalled();
   });
 
   it("returns already-requested when every season is already tracked", async () => {

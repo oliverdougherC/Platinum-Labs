@@ -24,7 +24,8 @@ export type SeerrMediaState =
   | "pending"
   | "processing"
   | "partial"
-  | "available";
+  | "available"
+  | "blocklisted";
 
 export interface SeerrSearchResult {
   /** TMDB id — the `mediaId` a request action submits back. */
@@ -70,6 +71,8 @@ export const MEDIA_STATUS = {
   PROCESSING: 3,
   PARTIALLY_AVAILABLE: 4,
   AVAILABLE: 5,
+  BLOCKLISTED: 6,
+  DELETED: 7,
 } as const;
 
 /** Seerr MediaRequest.status values (`/api/v1` MediaRequestStatus). */
@@ -81,8 +84,10 @@ export const REQUEST_STATUS = {
 } as const;
 
 /**
- * Map Seerr `mediaInfo.status` to the dashboard state. A missing mediaInfo or
- * UNKNOWN means never requested. Unrecognized future values map to
+ * Map Seerr `mediaInfo.status` to the dashboard state. A missing mediaInfo,
+ * UNKNOWN, or DELETED (removed from the library, eligible for re-request)
+ * means requestable. BLOCKLISTED is deliberately excluded from requests — the
+ * operator blocked it in Seerr. Unrecognized future values map to
  * `processing` (non-requestable) so the dashboard can never double-request
  * media in a state it does not understand.
  */
@@ -90,6 +95,7 @@ export function mapMediaStatus(status: number | undefined): SeerrMediaState {
   switch (status) {
     case undefined:
     case MEDIA_STATUS.UNKNOWN:
+    case MEDIA_STATUS.DELETED:
       return "requestable";
     case MEDIA_STATUS.PENDING:
       return "pending";
@@ -99,6 +105,8 @@ export function mapMediaStatus(status: number | undefined): SeerrMediaState {
       return "partial";
     case MEDIA_STATUS.AVAILABLE:
       return "available";
+    case MEDIA_STATUS.BLOCKLISTED:
+      return "blocklisted";
     default:
       return "processing";
   }
@@ -227,6 +235,8 @@ export function normalizeSearch(data: unknown): SeerrSearchResult[] {
 /**
  * Season numbers of a TV series that Seerr does not already track (no request
  * and no library entry): the safe set for a duplicate-free one-click request.
+ * DELETED seasons were removed from the library and count as missing again;
+ * BLOCKLISTED seasons (and unrecognized future statuses) stay excluded.
  * Specials (season 0) and empty placeholder seasons are excluded, matching
  * Seerr's own default request surface.
  */
@@ -240,7 +250,11 @@ export function missingSeasonNumbers(details: SeerrTvDetails): number[] {
     .map((s) => s.seasonNumber)
     .filter((n) => {
       const status = tracked.get(n);
-      return status === undefined || status === MEDIA_STATUS.UNKNOWN;
+      return (
+        status === undefined ||
+        status === MEDIA_STATUS.UNKNOWN ||
+        status === MEDIA_STATUS.DELETED
+      );
     });
 }
 

@@ -51,6 +51,7 @@ const STATE_BADGE: Record<
   processing: { label: "Processing", tone: "info" },
   partial: null, // partial TV keeps an explicit "Request missing" action
   available: { label: "Available", tone: "ok" },
+  blocklisted: { label: "Blocklisted", tone: "neutral" },
   approved: { label: "Approved", tone: "ok" },
 };
 
