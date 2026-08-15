@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { AmbientBackground } from "@/components/ambient/ambient-background";
 
 export const metadata: Metadata = {
   title: "Homelab",
@@ -22,10 +21,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
-        <AmbientBackground />
-        {children}
-      </body>
+      {/* V2: the topology itself is the visual interest — the background stays
+          a flat near-black with only a faint vignette (globals.css). */}
+      <body className="topology-ground">{children}</body>
     </html>
   );
 }

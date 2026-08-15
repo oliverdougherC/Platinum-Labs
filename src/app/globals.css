@@ -262,3 +262,93 @@
     }
   }
 }
+
+/* --- V2 Living Topology (PLA-266/267) --------------------------------------- */
+
+/* Flat matte ground with a barely-there center lift; no orbs, no gradients that
+   announce themselves. */
+.topology-ground {
+  background:
+    radial-gradient(
+      120% 90% at 50% 42%,
+      rgb(var(--color-surface) / 0.55) 0%,
+      rgb(var(--color-bg)) 62%
+    ),
+    rgb(var(--color-bg));
+  overflow: hidden;
+}
+
+/* CPU spokes breathe: telemetry updates every ~2s, the transition interpolates. */
+.cpu-spoke {
+  transition:
+    transform 1.9s cubic-bezier(0.4, 0, 0.6, 1),
+    opacity 1.9s linear;
+}
+
+.memory-arc {
+  transition: opacity 1.6s linear;
+}
+
+/* Real activity marches slowly along real paths (12px dash cycle). */
+.flow-dash {
+  animation: flow-march linear infinite;
+}
+@keyframes flow-march {
+  to {
+    stroke-dashoffset: -120;
+  }
+}
+
+/* Pool I/O + scrub rings turn gently while work is happening. */
+.io-ring {
+  animation: ring-turn linear infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+@keyframes ring-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Frozen screenshots + reduced motion: information stays, motion stops. */
+[data-motion="off"] .flow-dash,
+[data-motion="off"] .io-ring {
+  animation: none;
+}
+[data-motion="off"] .cpu-spoke,
+[data-motion="off"] .memory-arc {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .flow-dash,
+  .io-ring {
+    animation: none;
+  }
+  .cpu-spoke,
+  .memory-arc {
+    transition: none;
+  }
+}
+
+/* Ambient idle life: a barely-perceptible structural rotation (12 min/rev for
+   the CPU corona, 20 min counter-rotation for the halo stipple). Purely
+   structural — it never claims network/disk/playback work that isn't real. */
+.core-rotate {
+  animation: ring-turn 720s linear infinite;
+}
+.halo-stipple {
+  animation: ring-turn 1200s linear infinite reverse;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+[data-motion="off"] .core-rotate,
+[data-motion="off"] .halo-stipple {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .core-rotate,
+  .halo-stipple {
+    animation: none;
+  }
+}

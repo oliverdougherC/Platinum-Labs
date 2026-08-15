@@ -165,7 +165,7 @@ export function CommandPalette({
                     onClick={() => execute(s)}
                     className={cn(
                       "block w-full px-4 py-2 text-left text-meta capitalize",
-                      i === selected ? "bg-panel text-fg" : "text-muted",
+                      i === selected ? "bg-surface-2 text-fg" : "text-muted",
                     )}
                   >
                     {s}

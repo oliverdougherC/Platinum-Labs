@@ -186,7 +186,9 @@ export function makeFakeTelemetry(
 
   const perCore: number[] = [];
   for (let core = 0; core < FAKE_CORE_COUNT; core++) {
-    const hot = core < profile.hotCores;
+    // Scatter hot cores around the ring (real schedulers do not fill cores in
+    // order, and a contiguous hot cluster makes the corona lopsided).
+    const hot = (core * 7) % FAKE_CORE_COUNT < profile.hotCores;
     const base = hot ? profile.cpu * 1.9 : profile.cpu * 0.35;
     const wobble = wave(now, 18_000 + core * 700, core);
     perCore.push(clamp(base * (0.55 + 0.9 * wobble), 0.004, 0.98));
