@@ -85,6 +85,42 @@ describe("runCommand — queries operate on normalized state", () => {
   });
 });
 
+describe("runCommand — media search handoff (PLA-259)", () => {
+  const enabled = (): CommandContext => ({ ...ctx(), mediaSearchEnabled: true });
+
+  it("opens media search with a seeded query via 'request <title>'", () => {
+    expect(runCommand("request dune part two", enabled())).toEqual({
+      kind: "media-search",
+      query: "dune part two",
+    });
+  });
+
+  it("strips the media noun from 'find movie <title>'", () => {
+    expect(runCommand("find movie interstellar", enabled())).toEqual({
+      kind: "media-search",
+      query: "interstellar",
+    });
+  });
+
+  it("opens an unseeded search for the bare command", () => {
+    expect(runCommand("request media", enabled())).toEqual({
+      kind: "media-search",
+      query: "",
+    });
+  });
+
+  it("falls back to suggestions when the surface is not enabled", () => {
+    const r = runCommand("request dune", ctx());
+    expect(r.kind).toBe("suggestions");
+    if (r.kind === "suggestions") expect(r.message).toMatch(/not configured/i);
+  });
+
+  it("advertises the command only when enabled", () => {
+    expect(suggestions(enabled())).toContain("request media");
+    expect(suggestions(ctx())).not.toContain("request media");
+  });
+});
+
 describe("runCommand — graceful fallback", () => {
   it("empty input returns the suggestion list", () => {
     const r = runCommand("", ctx());

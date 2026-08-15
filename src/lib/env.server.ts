@@ -54,6 +54,21 @@ const envSchema = z.object({
   QBITTORRENT_USERNAME: optionalSecret,
   QBITTORRENT_PASSWORD: optionalSecret,
 
+  // --- Seerr / Jellyseerr (interactive media search + requests, PLA-256) ---
+  SEERR_URL: optionalUrl,
+  SEERR_API_KEY: optionalSecret,
+  /**
+   * Legacy aliases for operators still on a compatible Jellyseerr instance.
+   * `SEERR_*` wins when both are set; normalized to Seerr naming internally.
+   */
+  JELLYSEERR_URL: optionalUrl,
+  JELLYSEERR_API_KEY: optionalSecret,
+  /** Disable the request action while keeping search (defaults to enabled). */
+  SEERR_REQUESTS_ENABLED: z
+    .enum(["0", "1", "true", "false"])
+    .optional()
+    .transform((v) => v !== "0" && v !== "false"),
+
   // --- ZFS collector ---
   // URL of a narrow, read-only host-side collector (see PLA-184). The dashboard
   // never shells out to `zpool` directly from browser-originated input.

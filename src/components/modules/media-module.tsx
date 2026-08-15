@@ -35,9 +35,12 @@ import type {
 export function MediaModule({
   snapshot,
   now,
+  searchSlot,
 }: {
   snapshot: DashboardSnapshot;
   now: number;
+  /** Optional Search / Request affordance (PLA-259), quiet in the header. */
+  searchSlot?: React.ReactNode;
 }) {
   const state = mediaVisualState(snapshot);
   const jf = healthById(snapshot.health, "jellyfin");
@@ -49,9 +52,10 @@ export function MediaModule({
         title="Media"
         id="media-heading"
         trailing={
-          jfPresentation === "stale" ? (
-            <Badge tone="warn">stale</Badge>
-          ) : null
+          <span className="flex items-center gap-2">
+            {jfPresentation === "stale" ? <Badge tone="warn">stale</Badge> : null}
+            {searchSlot}
+          </span>
         }
       />
 

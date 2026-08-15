@@ -16,12 +16,16 @@ export interface CommandContext {
   snapshot: DashboardSnapshot;
   links: QuickLink[];
   now: number;
+  /** Whether the Seerr media search surface is available (PLA-256/259). */
+  mediaSearchEnabled?: boolean;
 }
 
 export type CommandResult =
   | { kind: "navigate"; label: string; href: string }
   | { kind: "answer"; title: string; lines: string[] }
-  | { kind: "suggestions"; message: string; suggestions: string[] };
+  | { kind: "suggestions"; message: string; suggestions: string[] }
+  /** Open the media search overlay, optionally seeded with a query. */
+  | { kind: "media-search"; query: string };
 
 const DAY = 86_400_000;
 
@@ -35,7 +39,11 @@ const QUERY_SUGGESTIONS = [
 
 /** Canonical suggestion list for the empty palette (opens + queries). */
 export function suggestions(ctx: CommandContext): string[] {
-  return [...ctx.links.map((l) => `open ${l.label.toLowerCase()}`), ...QUERY_SUGGESTIONS];
+  return [
+    ...ctx.links.map((l) => `open ${l.label.toLowerCase()}`),
+    ...(ctx.mediaSearchEnabled ? ["request media"] : []),
+    ...QUERY_SUGGESTIONS,
+  ];
 }
 
 function norm(s: string): string {
@@ -51,6 +59,22 @@ export function runCommand(input: string, ctx: CommandContext): CommandResult {
   const q = norm(input);
   if (!q) {
     return { kind: "suggestions", message: "Try one of these", suggestions: suggestions(ctx) };
+  }
+
+  // request/find media — opens the Seerr search overlay (PLA-259), optionally
+  // seeded with the rest of the input as the query.
+  const mediaMatch = q.match(
+    /^(?:request|find)(?:\s+(?:a\s+)?(?:movie|show|series|tv|media))?(?:\s+(.+))?$/,
+  );
+  if (mediaMatch) {
+    if (ctx.mediaSearchEnabled) {
+      return { kind: "media-search", query: mediaMatch[1]?.trim() ?? "" };
+    }
+    return {
+      kind: "suggestions",
+      message: "Media search is not configured.",
+      suggestions: suggestions(ctx),
+    };
   }
 
   // open <service> — or a bare service name that matches a quick link.
