@@ -9,8 +9,10 @@ import { ActivityFeed } from "@/components/modules/activity-feed";
 import { QuickAccess } from "@/components/modules/quick-access";
 import { ConnectorHealthBar } from "@/components/modules/connector-health-bar";
 import { CommandPalette } from "@/components/command-palette";
+import { MediaSearch, MediaSearchLauncher } from "@/components/media-search";
 import { cn } from "@/lib/utils";
 import type { QuickLink } from "@/lib/quicklinks";
+import type { SeerrAvailability } from "@/lib/seerr/api";
 import type { DashboardSnapshot } from "@/lib/types";
 
 /**
@@ -29,17 +31,33 @@ export function LiveDashboard({
   initial,
   scenario,
   quickLinks = [],
+  seerr = { search: false, requests: false },
   pollMs = 7_000,
 }: {
   initial: DashboardSnapshot;
   scenario?: string;
   quickLinks?: QuickLink[];
+  /** Seerr media search/request availability, resolved server-side (PLA-256). */
+  seerr?: SeerrAvailability;
   pollMs?: number;
 }) {
   const [snapshot, setSnapshot] = useState(initial);
   const [lastUpdated, setLastUpdated] = useState<number>(initial.generatedAt);
   const [stale, setStale] = useState(false);
+  const [mediaSearch, setMediaSearch] = useState<{ open: boolean; seed: string }>({
+    open: false,
+    seed: "",
+  });
   const abortRef = useRef<AbortController | null>(null);
+
+  const openMediaSearch = useCallback(
+    (seed = "") => setMediaSearch({ open: true, seed }),
+    [],
+  );
+  const closeMediaSearch = useCallback(
+    () => setMediaSearch((s) => ({ ...s, open: false })),
+    [],
+  );
 
   const poll = useCallback(async () => {
     abortRef.current?.abort();
@@ -96,7 +114,15 @@ export function LiveDashboard({
       <AttentionSummary snapshot={snapshot} now={now} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <MediaModule snapshot={snapshot} now={now} />
+        <MediaModule
+          snapshot={snapshot}
+          now={now}
+          searchSlot={
+            seerr.search ? (
+              <MediaSearchLauncher onOpen={() => openMediaSearch()} />
+            ) : undefined
+          }
+        />
         <div className="flex flex-col gap-6">
           <StorageModule snapshot={snapshot} now={now} />
           <ActivityFeed snapshot={snapshot} now={now} />
@@ -106,10 +132,24 @@ export function LiveDashboard({
       <div className="mt-auto flex flex-col gap-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <QuickAccess links={quickLinks} />
-          <CommandPalette snapshot={snapshot} links={quickLinks} now={now} />
+          <CommandPalette
+            snapshot={snapshot}
+            links={quickLinks}
+            now={now}
+            onMediaSearch={seerr.search ? openMediaSearch : undefined}
+          />
         </div>
         <ConnectorHealthBar snapshot={snapshot} now={now} />
       </div>
+
+      {seerr.search ? (
+        <MediaSearch
+          open={mediaSearch.open}
+          initialQuery={mediaSearch.seed}
+          requestsEnabled={seerr.requests}
+          onClose={closeMediaSearch}
+        />
+      ) : null}
     </>
   );
 }

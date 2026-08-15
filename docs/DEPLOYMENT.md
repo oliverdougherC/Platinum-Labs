@@ -61,6 +61,37 @@ the full, commented list. Key points:
   from the backend connector URLs the server uses.
 - Never commit `.env`. On the deployment host, keep it `chmod 600`.
 
+### Seerr / Jellyseerr media requests (optional)
+
+```env
+SEERR_URL=http://jellyseerr:5055     # Docker DNS on the media network, like the other connectors
+SEERR_API_KEY=<Settings → General → API Key>
+SEERR_REQUESTS_ENABLED=1             # 0 = search stays available, requests are disabled
+```
+
+- The API key is **administrator-level for Seerr** (it can approve requests).
+  It never leaves the server — not in dashboard state, browser responses,
+  errors, or logs — but rotate it from Seerr's Settings → General if the `.env`
+  is ever exposed, and keep the file `chmod 600`.
+- **Approval guarantee**: every dashboard-created request must reach `APPROVED`
+  before the UI reports success. If Seerr returns the new request as pending,
+  the backend explicitly calls `POST /api/v1/request/{id}/approve` and verifies
+  the result; an unconfirmable approval is surfaced as a failure, never as a
+  silently pending request.
+- **Downstream behavior is yours**: whether an approved request triggers an
+  automatic Radarr/Sonarr search or download is controlled by your existing
+  Seerr/Radarr/Sonarr settings. The dashboard does not require, force, or check
+  `Enable Automatic Search`, and it reports success at `Approved`, not
+  `Downloading`.
+- Migrating from Jellyseerr to Seerr v3: the legacy `JELLYSEERR_URL` /
+  `JELLYSEERR_API_KEY` names are accepted as per-field aliases and `SEERR_*`
+  wins when both are set. The integration targets the Seerr v3 `/api/v1`
+  contract (Jellyseerr ≥ 2.x is compatible); smoke-test search + one request
+  after upgrading either side.
+- Poster artwork is proxied through the dashboard origin (`/api/seerr/poster`),
+  which only fetches validated TMDB poster paths — the browser makes no
+  third-party requests and no extra metadata API key is needed.
+
 ## Network topology
 
 The production override is designed for **Docker DNS first**. Set the connector

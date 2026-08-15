@@ -19,18 +19,27 @@ export function CommandPalette({
   snapshot,
   links,
   now,
+  onMediaSearch,
 }: {
   snapshot: DashboardSnapshot;
   links: QuickLink[];
   now: number;
+  /** Present when the Seerr media search surface is available (PLA-259). */
+  onMediaSearch?: (query: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
-  const [result, setResult] = useState<Exclude<CommandResult, { kind: "navigate" }> | null>(null);
+  const [result, setResult] = useState<Exclude<
+    CommandResult,
+    { kind: "navigate" } | { kind: "media-search" }
+  > | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const ctx = useMemo(() => ({ snapshot, links, now }), [snapshot, links, now]);
+  const ctx = useMemo(
+    () => ({ snapshot, links, now, mediaSearchEnabled: Boolean(onMediaSearch) }),
+    [snapshot, links, now, onMediaSearch],
+  );
   const allSuggestions = useMemo(() => suggestions(ctx), [ctx]);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -53,9 +62,16 @@ export function CommandPalette({
         close();
         return;
       }
+      if (r.kind === "media-search") {
+        // Hand off to the media search overlay (runCommand only returns this
+        // when the context reports the surface as enabled).
+        close();
+        onMediaSearch?.(r.query);
+        return;
+      }
       setResult(r);
     },
-    [ctx, close],
+    [ctx, close, onMediaSearch],
   );
 
   // Global Cmd/Ctrl+K toggle.

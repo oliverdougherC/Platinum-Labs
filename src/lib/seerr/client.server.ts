@@ -1,0 +1,129 @@
+import "server-only";
+
+import { ConnectorError } from "@/lib/connectors/connector";
+import type { SeerrConfig } from "@/lib/seerr/config.server";
+
+/**
+ * Narrow, server-only Seerr HTTP client (PLA-257/258).
+ *
+ * This is the ONLY module that talks to Seerr and the only place the API key is
+ * used. It deliberately exposes a handful of fixed operations rather than any
+ * generic path/method forwarding, so no browser input can ever steer the server
+ * to an arbitrary Seerr endpoint.
+ *
+ * Boundary rules (matching connectors/http.ts):
+ *  - every call runs under its own AbortController timeout,
+ *  - errors are sanitized `ConnectorError`s — no URLs, headers, or bodies that
+ *    could echo the key,
+ *  - responses are returned as `unknown` so callers must validate with Zod.
+ */
+
+/** Interactive calls stay snappy; Seerr search is normally sub-second. */
+const DEFAULT_TIMEOUT_MS = 8_000;
+
+/**
+ * Sanitized upstream failure that preserves the HTTP status so callers can
+ * map specific statuses (e.g. 409 duplicate request) to stable states.
+ */
+export class SeerrHttpError extends ConnectorError {
+  constructor(readonly status: number) {
+    super(`Seerr returned HTTP ${status}`);
+    this.name = "SeerrHttpError";
+  }
+}
+
+export interface SeerrRequestPayload {
+  mediaType: "movie" | "tv";
+  mediaId: number;
+  /** TV only: explicit season list or "all". Computed server-side, never client input. */
+  seasons?: number[] | "all";
+}
+
+/** The narrow operation surface the dashboard needs — nothing more. */
+export interface SeerrClient {
+  search(query: string, page: number): Promise<unknown>;
+  movieDetails(mediaId: number): Promise<unknown>;
+  tvDetails(mediaId: number): Promise<unknown>;
+  createRequest(payload: SeerrRequestPayload): Promise<unknown>;
+  approveRequest(requestId: number): Promise<unknown>;
+}
+
+export function makeSeerrClient(
+  cfg: Pick<SeerrConfig, "url" | "apiKey">,
+  opts: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): SeerrClient {
+  const base = cfg.url.replace(/\/$/, "");
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const headers = {
+    "X-Api-Key": cfg.apiKey,
+    Accept: "application/json",
+  };
+
+  async function call(
+    path: string,
+    init: { method?: string; body?: unknown } = {},
+  ): Promise<unknown> {
+    // Resolved per call (not captured at construction) so the process-cached
+    // client always uses the current global fetch.
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    let res: Response;
+    try {
+      res = await fetchImpl(`${base}/api/v1${path}`, {
+        method: init.method ?? "GET",
+        headers:
+          init.body !== undefined
+            ? { ...headers, "Content-Type": "application/json" }
+            : headers,
+        body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+        signal: ac.signal,
+        cache: "no-store",
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new ConnectorError(`Seerr request timed out after ${timeoutMs}ms`);
+      }
+      // Network failure — never include the URL (it may sit behind a proxy
+      // whose hostname the operator considers private).
+      throw new ConnectorError("Seerr request failed");
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res.ok) {
+      // Status is safe; the body may echo request details, so it is dropped.
+      throw new SeerrHttpError(res.status);
+    }
+    try {
+      return (await res.json()) as unknown;
+    } catch {
+      throw new ConnectorError("Seerr returned non-JSON body");
+    }
+  }
+
+  return {
+    search: (query, page) =>
+      call(`/search?query=${encodeURIComponent(query)}&page=${page}`),
+    movieDetails: (mediaId) => call(`/movie/${mediaId}`),
+    tvDetails: (mediaId) => call(`/tv/${mediaId}`),
+    createRequest: (payload) =>
+      call("/request", { method: "POST", body: payload }),
+    approveRequest: (requestId) =>
+      call(`/request/${requestId}/approve`, { method: "POST" }),
+  };
+}
+
+/** Cached client for the resolved live config (one per process). */
+let cachedClient: SeerrClient | null = null;
+let cachedKeyOfConfig: string | null = null;
+
+export function getSeerrClient(cfg: Pick<SeerrConfig, "url" | "apiKey">): SeerrClient {
+  // Key the cache on the config identity so env changes in dev/tests rebuild.
+  const key = `${cfg.url} | ${cfg.apiKey}`;
+  if (!cachedClient || cachedKeyOfConfig !== key) {
+    cachedClient = makeSeerrClient(cfg);
+    cachedKeyOfConfig = key;
+  }
+  return cachedClient;
+}

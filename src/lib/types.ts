@@ -195,16 +195,25 @@ export type EventKind =
   | "connector.lost"
   | "connector.recovered"
   | "alert.opened"
-  | "alert.resolved";
+  | "alert.resolved"
+  | "request.approved"
+  | "request.failed";
 
 export type Severity = "info" | "warning" | "critical";
+
+/**
+ * Services that can emit activity events. Seerr is interactive (search/request
+ * on demand), not a polled connector, so it extends the event vocabulary
+ * without joining the `ConnectorId` health/polling system (PLA-256).
+ */
+export type ActivitySource = ConnectorId | "seerr";
 
 export interface ActivityEvent {
   id: string;
   at: number;
   kind: EventKind;
   severity: Severity;
-  source: ConnectorId;
+  source: ActivitySource;
   message: string;
   /**
    * Optional structured subject (session id, queue-item id, pool or connector

@@ -5,6 +5,7 @@ import {
   shouldShowDevControls,
 } from "@/lib/snapshot.server";
 import { getDataMode } from "@/lib/env.server";
+import { getSeerrAvailability } from "@/lib/seerr/config.server";
 import { LiveDashboard } from "@/components/live-dashboard";
 import { ScenarioSwitcher } from "@/components/dev/scenario-switcher";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,7 @@ export default async function HomePage({
         initial={initial}
         scenario={devControls ? scenarioParam : undefined}
         quickLinks={getQuickLinks()}
+        seerr={getSeerrAvailability()}
       />
       {devControls ? <ScenarioSwitcher current={currentScenario} /> : null}
     </main>

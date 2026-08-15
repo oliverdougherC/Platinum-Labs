@@ -66,6 +66,8 @@ full annotated list. Highlights:
 | `SONARR_URL` / `SONARR_API_KEY` | Sonarr connector |
 | `RADARR_URL` / `RADARR_API_KEY` | Radarr connector |
 | `QBITTORRENT_URL` / `_USERNAME` / `_PASSWORD` | qBittorrent connector |
+| `SEERR_URL` / `SEERR_API_KEY` | Seerr/Jellyseerr media search + requests |
+| `SEERR_REQUESTS_ENABLED` | Set `0` to keep Seerr search read-only |
 | `ZFS_COLLECTOR_URL` / `_TOKEN` | ZFS helper-API mode |
 | `HOMELAB_ZFS_COMMAND` | ZFS direct-command mode (`1`) |
 
@@ -91,7 +93,39 @@ HOMELAB_QUICK_LINKS=[{"label":"Jellyfin","href":"https://jellyfin.example.lan"},
 Press **⌘K / Ctrl+K** for a deterministic command palette (no LLM). It operates
 only on the already-normalized snapshot: `open <service>`, `who is watching`,
 `downloads`, `storage`, `issues`, `what was added today`. Unsupported input
-returns helpful suggestions.
+returns helpful suggestions. With Seerr configured, `request <title>` /
+`find movie <title>` hands off to the media search overlay.
+
+## Media requests (Seerr / Jellyseerr)
+
+With `SEERR_URL` + `SEERR_API_KEY` set, a quiet **Request media** affordance
+appears on the media panel: search movies/TV (server-side via Seerr's
+`/api/v1/search`), see truthful request/library state (`Available`,
+`Pending approval`, `Processing`, partial TV), and request anything requestable
+with one click (all seasons for an untracked series; only the missing seasons
+for a partially tracked one).
+
+**The approval contract is a hard postcondition**: the UI reports success only
+after the backend has confirmed the Seerr request is `APPROVED`. If the create
+call returns a pending request, the backend explicitly invokes Seerr's approval
+endpoint and re-verifies; if approval cannot be confirmed, the request is
+reported as **failed** — a dashboard-created request can never silently sit
+waiting for a human administrator. What happens *after* approval (automatic
+Radarr/Sonarr search, downloading) is your existing Seerr/Radarr/Sonarr
+configuration's business; the dashboard neither requires nor triggers it, and it
+only ever shows downloading/import state through the normal acquisition
+connectors when they actually observe it.
+
+The write path goes through the safe-action registry (`seerr.request`): the
+browser supplies only `{ mediaType, mediaId }` — never Seerr routing parameters
+(server/profile/root folder/user), never paths or headers — duplicate
+submissions are deduped in-flight, and each outcome is audited plus surfaced in
+the activity feed (`Requested and approved: …`). Posters are served through a
+narrow same-origin proxy (`/api/seerr/poster`) that accepts only validated TMDB
+poster paths, so the strict CSP and no-third-party-requests posture hold.
+Legacy `JELLYSEERR_URL` / `JELLYSEERR_API_KEY` are accepted as aliases
+(`SEERR_*` wins per-field); operators on Jellyseerr should be on a version
+compatible with the Seerr v3 `/api/v1` contract.
 
 ## Persistence, attention & activity
 
