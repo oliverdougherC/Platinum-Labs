@@ -21,7 +21,9 @@
     "verify": "npm run typecheck && npm run lint && npm run test && npm run build",
     "deploy": "scripts/deploy-production.sh",
     "soak": "node scripts/soak.mjs",
-    "compose:prod:config": "HOMEPAGE_ENV_FILE=.env.example MEDIA_NETWORK_NAME=media_default JELLYFIN_NETWORK_NAME=jellyfin_default HOMEPAGE_BIND_ADDRESS=127.0.0.1 HOMEPAGE_PORT=3000 HOMEPAGE_VOLUME_NAME=homelab-homepage-data ZFS_COLLECTOR_TOKEN=placeholder docker compose -f docker-compose.yml -f docker-compose.production.yml --profile zfs-sidecar config"
+    "compose:prod:config": "HOMEPAGE_ENV_FILE=.env.example MEDIA_NETWORK_NAME=media_default JELLYFIN_NETWORK_NAME=jellyfin_default HOMEPAGE_BIND_ADDRESS=127.0.0.1 HOMEPAGE_PORT=3000 HOMEPAGE_VOLUME_NAME=homelab-homepage-data ZFS_COLLECTOR_TOKEN=placeholder docker compose -f docker-compose.yml -f docker-compose.production.yml --profile zfs-sidecar config",
+    "screenshots": "node scripts/screenshots.mjs",
+    "screenshots:motion": "node scripts/screenshots.mjs --motion"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
@@ -45,6 +47,7 @@
     "eslint": "^8.57.1",
     "eslint-config-next": "^15.1.6",
     "jsdom": "^25.0.1",
+    "playwright": "^1.54.2",
     "postcss": "^8.5.1",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.3",
