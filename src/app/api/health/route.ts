@@ -21,6 +21,10 @@ export function GET() {
       status: "ok",
       mode: safeMode(),
       uptimeSeconds: Math.round((Date.now() - START) / 1000),
+      // Deployment provenance: the git SHA baked in at image build time
+      // (GIT_SHA build arg), so "what commit is production running?" is
+      // answerable from the health endpoint alone.
+      revision: process.env.GIT_SHA || "unknown",
     },
     { headers: { "Cache-Control": "no-store" } },
   );

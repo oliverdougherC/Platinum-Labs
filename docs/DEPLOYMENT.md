@@ -9,7 +9,8 @@ production override that keeps the app on private networks by default.
 - [Configuration](#configuration)
 - [Network topology](#network-topology)
 - [ZFS collector](#zfs-collector)
-- [Update / rollback / backup](#update--rollback--backup)
+- [Routine redeploy (the normal path)](#routine-redeploy-the-normal-path)
+- [Update / rollback / backup (manual reference)](#update--rollback--backup-manual-reference)
 - [Health endpoint](#health-endpoint)
 - [Security & trust model](#security--trust-model)
 - [24-hour soak](#24-hour-soak)
@@ -150,7 +151,59 @@ Direct command mode (`HOMELAB_ZFS_COMMAND=1`) is only for a bare-metal/native
 deploy running **on** the ZFS host. Do not combine it with the containerized
 dashboard.
 
-## Update / rollback / backup
+## Routine redeploy (the normal path)
+
+Day-to-day deployments go through the canonical deploy script — everything
+below this section is the manual/emergency reference, not the routine path.
+
+```bash
+npm run deploy                    # deploy the tip of finish-v1 (current production ref)
+npm run deploy -- <branch|tag>    # deploy another pushed ref
+npm run deploy -- <full-40-sha>   # deploy/roll back to an exact commit
+```
+
+Or, after an intentional commit on the production branch:
+
+```bash
+./scripts/push-and-deploy.sh      # requires clean tree; pushes, then deploys that exact SHA
+```
+
+The script ([scripts/deploy-production.sh](../scripts/deploy-production.sh))
+resolves the ref on the GitHub remote, refuses local modifications on the
+server checkout, backs up the SQLite DB (WAL checkpoint + `/data` copy,
+labelled `backups/<prev-sha>-<stamp>/`), checks out the exact SHA, rebuilds
+through the server's existing Compose stack, waits for `/api/health`, smoke
+checks `/` and `/api/dashboard`, and prints the previous SHA / new SHA /
+backup path. Any failure exits non-zero. `/api/health` reports the deployed
+SHA as `revision`.
+
+**Rollback** is the same command with the previous SHA (printed by every
+deploy):
+
+```bash
+npm run deploy -- <previous-sha>
+```
+
+Restore the DB backup only when required by schema compatibility — see
+[Schema-aware rollback](#schema-aware-rollback).
+
+### Server layout (current production host)
+
+`ofhd@100.99.6.59`, stack at `/mnt/NVME/docker/compose/platinum-homepage/`:
+a server-owned `compose.yaml` (Dockge convention) + server-owned `.env`
+(authoritative, mode 600) + `src/` (git checkout of this repo, build context)
++ `backups/`. One-time bootstrap for a new host of this shape:
+
+```bash
+cd <stack-dir>
+git clone https://github.com/oliverdougherC/Platinum-Labs.git src
+# author compose.yaml + .env, then run the deploy script from a dev machine
+```
+
+Override targets per invocation with `DEPLOY_HOST`, `DEPLOY_DIR`,
+`DEPLOY_REF`, `DEPLOY_PORT` (see the script header).
+
+## Update / rollback / backup (manual reference)
 
 Use the production override for every lifecycle command so the same topology,
 volume name, and profile wiring are preserved:

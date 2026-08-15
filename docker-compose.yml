@@ -10,7 +10,11 @@
 
 services:
   homepage:
-    build: .
+    build:
+      context: .
+      args:
+        # Deployment provenance — /api/health reports this as `revision`.
+        GIT_SHA: "${GIT_SHA:-unknown}"
     # Or pin a published image instead of building:
     # image: ghcr.io/oliverdougherc/platinum-labs:latest
     restart: unless-stopped
