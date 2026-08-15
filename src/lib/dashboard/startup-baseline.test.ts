@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { deriveEvents } from "@/lib/pipeline/events";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
+import { testTelemetry } from "@/lib/test/factories";
 import type { DashboardSnapshot } from "@/lib/types";
 
 /**
@@ -30,6 +31,7 @@ describe("startup event baseline — no false events on boot", () => {
       jellyfin: { serverAvailable: false, version: null, sessions: [], lastPlaybackAt: null },
       acquisition: { items: [], rollup: { downloading: 0, importing: 0, failedOrStalled: 0, aggregateRateBps: 0 } },
       zfs: { pools: [] },
+      telemetry: testTelemetry(),
       attention: [],
       activity: [],
     };
@@ -84,7 +86,7 @@ describe("live registry init — clean boot with no connectors configured", () =
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("boots to a valid partial snapshot representing all five connectors, with no activity", async () => {
+  it("boots to a valid partial snapshot representing all six connectors, with no activity", async () => {
     const { resetServerEnvCache } = await import("@/lib/env.server");
     resetServerEnvCache();
     const { getLiveSnapshot } = await import("@/lib/dashboard/registry.server");
@@ -92,7 +94,7 @@ describe("live registry init — clean boot with no connectors configured", () =
     const snap = await getLiveSnapshot();
     expect(snap.mode).toBe("live");
     expect(snap.health.map((h) => h.id).sort()).toEqual(
-      ["jellyfin", "qbittorrent", "radarr", "sonarr", "zfs"],
+      ["host", "jellyfin", "qbittorrent", "radarr", "sonarr", "zfs"],
     );
     // No connectors configured → every record is not-configured, none "healthy".
     expect(snap.health.every((h) => h.configured === false)).toBe(true);

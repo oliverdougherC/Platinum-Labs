@@ -47,8 +47,21 @@ services:
       ZFS_COLLECTOR_TOKEN: ${ZFS_COLLECTOR_TOKEN:?set ZFS_COLLECTOR_TOKEN when enabling the zfs-sidecar profile}
       ZFS_COLLECTOR_BIND: 0.0.0.0
       ZFS_COLLECTOR_PORT: 9797
+      # Host telemetry (PLA-265): host procfs mounted read-only below. Network
+      # counters are read from /host/proc/1/net/dev (host netns via pid 1);
+      # without the mount the network section reports "unavailable" (never 0).
+      HOST_PROC: /host/proc
+      # Optional: aggregate only these interfaces (comma-separated). Default:
+      # physical-looking interfaces (en*/eth*/bond*), excluding veth/br/tailscale.
+      HOST_NET_INTERFACES: ${HOST_NET_INTERFACES:-}
+      # Optional: read-only Docker socket proxy URL (GET-only endpoints used).
+      # Leave empty to report the docker section as "not-configured".
+      DOCKER_PROXY_URL: ${DOCKER_PROXY_URL:-}
     devices:
       - "/dev/zfs:/dev/zfs"
+    volumes:
+      # Read-only host procfs for CPU/memory/disk/network counters (PLA-265).
+      - /proc:/host/proc:ro
     expose:
       - "9797"
     hostname: zfs-collector

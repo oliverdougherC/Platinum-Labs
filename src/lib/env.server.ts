@@ -77,6 +77,12 @@ const envSchema = z.object({
   /** Opt into direct fixed-argv `zpool`/`zfs` execution on the ZFS host. */
   HOMELAB_ZFS_COMMAND: boolFlag,
 
+  // --- Host telemetry collector (PLA-265) ---
+  // The `/v1/host` endpoint of the collector sidecar (usually the same process
+  // as the ZFS collector). Token defaults to ZFS_COLLECTOR_TOKEN when unset.
+  HOST_COLLECTOR_URL: optionalUrl,
+  HOST_COLLECTOR_TOKEN: optionalSecret,
+
   // --- Operational / non-secret runtime config (previously read ad hoc) ---
   /** SQLite database file path. */
   HOMELAB_DB_PATH: z.string().min(1).default("./data/homelab.db"),

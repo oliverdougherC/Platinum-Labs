@@ -36,12 +36,18 @@ export type ZfsConfig =
   | { mode: "helper"; url: string; token: string | undefined }
   | { mode: "command" };
 
+export interface HostConfig {
+  url: string;
+  token: string | undefined;
+}
+
 export interface ResolvedConnectors {
   jellyfin: ConnectorConfig<HttpServiceConfig>;
   sonarr: ConnectorConfig<HttpServiceConfig>;
   radarr: ConnectorConfig<HttpServiceConfig>;
   qbittorrent: ConnectorConfig<QbConfig>;
   zfs: ConnectorConfig<ZfsConfig>;
+  host: ConnectorConfig<HostConfig>;
 }
 
 /** Classify a fixed set of required, named fields. */
@@ -109,7 +115,23 @@ export function resolveConnectors(env: ServerEnv): ResolvedConnectors {
       }),
     ),
     zfs: resolveZfs(env),
+    host: resolveHost(env),
   };
+}
+
+/**
+ * Host telemetry collector (PLA-265). Reuses the ZFS collector token when no
+ * dedicated one is set — the sidecar serves both endpoints behind one token.
+ */
+function resolveHost(env: ServerEnv): ConnectorConfig<HostConfig> {
+  const token = env.HOST_COLLECTOR_TOKEN ?? env.ZFS_COLLECTOR_TOKEN;
+  return classify<HostConfig>(
+    [
+      { name: "HOST_COLLECTOR_URL", value: env.HOST_COLLECTOR_URL },
+      { name: "HOST_COLLECTOR_TOKEN (or ZFS_COLLECTOR_TOKEN)", value: token },
+    ],
+    () => ({ url: env.HOST_COLLECTOR_URL!, token }),
+  );
 }
 
 export const CORE_CONNECTOR_IDS: ConnectorId[] = [
@@ -118,4 +140,5 @@ export const CORE_CONNECTOR_IDS: ConnectorId[] = [
   "radarr",
   "qbittorrent",
   "zfs",
+  "host",
 ];

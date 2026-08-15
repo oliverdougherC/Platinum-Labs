@@ -15,7 +15,8 @@ export type ConnectorId =
   | "sonarr"
   | "radarr"
   | "qbittorrent"
-  | "zfs";
+  | "zfs"
+  | "host";
 
 /** Health of a single connector. Never encodes status by color alone in the UI. */
 export type ConnectorStatus = "healthy" | "degraded" | "unavailable";
@@ -156,6 +157,39 @@ export interface AcquisitionSnapshot {
 export type PoolHealth = "ONLINE" | "DEGRADED" | "FAULTED" | "OFFLINE" | "UNAVAIL";
 
 /**
+ * Physical (`zpool list`) capacity view: raw pool bytes including RAIDZ parity,
+ * padding, and slop. This is what the *pool* consumes on spindles — it is NOT
+ * the space files can use, and must never be presented as such (PLA-264).
+ */
+export interface ZfsPoolPhysical {
+  /** zpool SIZE — raw pool size in bytes. */
+  sizeBytes: number;
+  /** zpool ALLOC — physically allocated bytes (includes parity/overhead). */
+  allocBytes: number;
+  /** zpool FREE — physically unallocated bytes. */
+  freeBytes: number;
+  /** ALLOC/SIZE, 0..1. Matches `zpool list` CAP. */
+  capFraction: number;
+  /** zpool FRAG percentage, when reported. */
+  fragPercent: number | null;
+}
+
+/**
+ * Logical (root dataset, `zfs list`) capacity view: what files/datasets can
+ * actually consume. USED+AVAIL is the user-facing usable total.
+ */
+export interface ZfsPoolLogical {
+  /** Root dataset USED in bytes. */
+  usedBytes: number;
+  /** Root dataset AVAIL in bytes. */
+  availBytes: number;
+  /** USED + AVAIL. */
+  totalBytes: number;
+  /** USED / (USED+AVAIL), 0..1. */
+  usedFraction: number;
+}
+
+/**
  * Current pool scan state. `finished` + `scrubErrors > 0` represents a scrub
  * that completed with errors (a "failed" scrub); `resilvering` covers an
  * in-progress resilver. Preserved from `zpool status` without exposing raw
@@ -165,10 +199,21 @@ export type ZfsScanState = "none" | "scrubbing" | "resilvering" | "finished";
 
 export interface ZfsPool {
   name: string;
+  /**
+   * Headline capacity used for display, trends, and history. Logical (root
+   * dataset USED / USED+AVAIL) whenever the collector reports datasets;
+   * physical zpool values only as a labeled fallback for old collectors.
+   * `capacityBasis` says which one this is — the UI must label accordingly.
+   */
   usedBytes: number;
   totalBytes: number;
   /** 0..1 fraction used (derived, but carried explicitly for display). */
   capacityFraction: number;
+  capacityBasis: "logical" | "physical";
+  /** Raw `zpool list` physical view — always present. */
+  physical: ZfsPoolPhysical;
+  /** Root-dataset logical view — null when the collector predates PLA-264. */
+  logical: ZfsPoolLogical | null;
   health: PoolHealth;
   /** Current scan/scrub/resilver state. */
   scan: ZfsScanState;
@@ -178,6 +223,145 @@ export interface ZfsPool {
 
 export interface ZfsSnapshot {
   pools: ZfsPool[];
+}
+
+// --- Host performance telemetry (PLA-265) -----------------------------------
+
+/**
+ * Per-domain availability. Missing telemetry is NEVER serialized as zero:
+ * a domain that cannot be collected is `unavailable` (collector failed),
+ * `not-configured` (intentionally absent, e.g. no GPU provider), or `stale`
+ * (last-known-good older than its freshness window). `value` holds the
+ * last-known-good sample for `available`/`stale`, null otherwise.
+ */
+export type TelemetryStatus =
+  | "available"
+  | "stale"
+  | "unavailable"
+  | "not-configured";
+
+export interface TelemetryDomain<T> {
+  status: TelemetryStatus;
+  /** Epoch ms of the sample in `value`, or null when there has never been one. */
+  updatedAt: number | null;
+  value: T | null;
+}
+
+export interface CpuTelemetry {
+  /** 0..1 total utilization across all logical CPUs. */
+  totalFraction: number;
+  /** 0..1 utilization per logical CPU, index = kernel cpuN order. Length is the real core count — never padded or truncated. */
+  perCore: number[];
+  load1: number;
+  load5: number;
+  load15: number;
+}
+
+export interface MemoryTelemetry {
+  totalBytes: number;
+  /** total - available (the kernel's own reclaimable-aware estimate). */
+  usedBytes: number;
+  availableBytes: number;
+  swapTotalBytes: number;
+  swapUsedBytes: number;
+}
+
+export interface GpuTelemetry {
+  name: string;
+  /** 0..1 GPU utilization. */
+  utilizationFraction: number;
+  vramUsedBytes: number;
+  vramTotalBytes: number;
+  temperatureC: number | null;
+  powerWatts: number | null;
+}
+
+export interface NetworkTelemetry {
+  /** Aggregate receive rate across selected physical interfaces, bytes/sec. */
+  rxBps: number;
+  /** Aggregate transmit rate, bytes/sec. */
+  txBps: number;
+  /** Interfaces aggregated into the totals (informational). */
+  interfaces: string[];
+}
+
+export interface PoolIoTelemetry {
+  /** Pool name matching `ZfsPool.name`, or "other" for unpooled devices. */
+  pool: string;
+  readBps: number;
+  writeBps: number;
+}
+
+export interface DiskIoTelemetry {
+  /** Aggregate read throughput across physical block devices, bytes/sec. */
+  readBps: number;
+  writeBps: number;
+  /** Per-pool aggregation when the collector can map devices to pools. */
+  pools: PoolIoTelemetry[];
+}
+
+export type ContainerState =
+  | "running"
+  | "paused"
+  | "restarting"
+  | "exited"
+  | "dead"
+  | "created";
+
+export interface DockerContainerTelemetry {
+  name: string;
+  state: ContainerState;
+  /** Docker health status when a healthcheck exists. */
+  health: "healthy" | "unhealthy" | "starting" | null;
+  restartCount: number;
+  /** 0..1 of one core (can exceed 1 for multi-core usage); null when stats were not sampled. */
+  cpuFraction: number | null;
+  memoryBytes: number | null;
+}
+
+export interface DockerTelemetry {
+  total: number;
+  running: number;
+  healthy: number;
+  unhealthy: number;
+  restarting: number;
+  containers: DockerContainerTelemetry[];
+}
+
+export interface ArcTelemetry {
+  sizeBytes: number;
+  targetBytes: number;
+  /** 0..1 lifetime hit ratio, when derivable. */
+  hitRatio: number | null;
+}
+
+/** One normalized host-telemetry snapshot. Every domain is independently available. */
+export interface HostTelemetrySnapshot {
+  cpu: TelemetryDomain<CpuTelemetry>;
+  memory: TelemetryDomain<MemoryTelemetry>;
+  gpu: TelemetryDomain<GpuTelemetry>;
+  network: TelemetryDomain<NetworkTelemetry>;
+  disk: TelemetryDomain<DiskIoTelemetry>;
+  docker: TelemetryDomain<DockerTelemetry>;
+  arc: TelemetryDomain<ArcTelemetry>;
+}
+
+/** A single point in a bounded telemetry history series. */
+export interface TelemetryHistoryPoint {
+  t: number;
+  v: number;
+}
+
+/**
+ * Short bounded rolling histories for rail sparklines and flow smoothing.
+ * Server-side memory only — never persisted, always length-capped.
+ */
+export interface TelemetryHistory {
+  cpuTotal: TelemetryHistoryPoint[];
+  netRx: TelemetryHistoryPoint[];
+  netTx: TelemetryHistoryPoint[];
+  diskRead: TelemetryHistoryPoint[];
+  diskWrite: TelemetryHistoryPoint[];
 }
 
 export type EventKind =
@@ -272,6 +456,10 @@ export interface DashboardSnapshot {
   jellyfin: JellyfinSnapshot;
   acquisition: AcquisitionSnapshot;
   zfs: ZfsSnapshot;
+  /** Host performance telemetry (PLA-265). */
+  telemetry: HostTelemetrySnapshot;
+  /** Bounded rolling telemetry histories for rail sparklines. */
+  telemetryHistory?: TelemetryHistory;
   attention: AttentionItem[];
   activity: ActivityEvent[];
   /**

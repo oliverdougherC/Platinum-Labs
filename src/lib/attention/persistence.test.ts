@@ -1,12 +1,12 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { testPool } from "@/lib/test/factories";
 import { migrate } from "@/lib/db/migrate";
 import { activeAlerts, resolveAlert, upsertAlert } from "@/lib/db/repository";
 import { evaluate, type AlertState } from "@/lib/attention/engine";
 import { detectConditions, ruleTimings, type AttentionInputs } from "@/lib/attention/rules";
 import { appConfig } from "@/lib/config";
 import type { DB } from "@/lib/db/types";
-import type { ZfsPool } from "@/lib/types";
 
 /**
  * End-to-end attention persistence: rules -> engine -> alerts table. Proves the
@@ -23,12 +23,7 @@ beforeEach(() => {
 });
 afterEach(() => db.close());
 
-function pool(overrides: Partial<ZfsPool>): ZfsPool {
-  return {
-    name: "tank", usedBytes: 95, totalBytes: 100, capacityFraction: 0.95,
-    health: "ONLINE", scan: "none", lastScrubAt: null, scrubErrors: 0, ...overrides,
-  };
-}
+const pool = testPool;
 
 /** Mirror the registry's persist step for alert lifecycle. */
 function persist(states: Map<string, AlertState>, resolved: AlertState[], now: number) {

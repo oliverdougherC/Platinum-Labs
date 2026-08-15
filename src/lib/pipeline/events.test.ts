@@ -5,6 +5,7 @@ import { makeFakeSnapshot } from "@/lib/fake/snapshot";
 import { migrate } from "@/lib/db/migrate";
 import { countRows, insertActivityEvent } from "@/lib/db/repository";
 import type { DashboardSnapshot } from "@/lib/types";
+import { testPool } from "@/lib/test/factories";
 
 const NOW = 1_754_000_000_000;
 
@@ -118,16 +119,12 @@ describe("deriveEvents — 24h simulation stays duplicate-free", () => {
 });
 
 function pool(name: string, health: "ONLINE" | "DEGRADED", lastScrubAt: number) {
-  const total = 20 * 1024 ** 4;
-  const used = 12 * 1024 ** 4;
-  return {
+  return testPool({
     name,
-    usedBytes: used,
-    totalBytes: total,
-    capacityFraction: used / total,
-    health: health as import("@/lib/types").PoolHealth,
-    scan: "finished" as const,
+    usedBytes: 12 * 1024 ** 4,
+    totalBytes: 20 * 1024 ** 4,
+    health,
+    scan: "finished",
     lastScrubAt,
-    scrubErrors: 0,
-  };
+  });
 }

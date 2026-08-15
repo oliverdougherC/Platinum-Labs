@@ -9,17 +9,18 @@ import {
   opaqueId,
 } from "@/lib/utils";
 
-describe("formatBytes", () => {
+describe("formatBytes (re-exported decimal layer, PLA-264)", () => {
   it("formats zero and small values", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(512)).toBe("512 B");
   });
 
-  it("scales into KB/MB/GB/TB", () => {
-    expect(formatBytes(1536)).toBe("1.5 KB");
-    expect(formatBytes(1024 ** 2)).toBe("1.0 MB");
-    expect(formatBytes(1024 ** 3)).toBe("1.0 GB");
-    expect(formatBytes(2 * 1024 ** 4)).toBe("2.0 TB");
+  it("scales with DECIMAL divisors matching the decimal labels", () => {
+    expect(formatBytes(1500)).toBe("1.5 kB");
+    expect(formatBytes(1e6)).toBe("1.0 MB");
+    expect(formatBytes(1e9)).toBe("1.0 GB");
+    // 2 TiB in bytes is 2.2 decimal TB — the V1 bug printed "2.0 TB" here.
+    expect(formatBytes(2 * 1024 ** 4)).toBe("2.2 TB");
   });
 
   it("returns an em dash for invalid input", () => {
@@ -29,8 +30,8 @@ describe("formatBytes", () => {
 });
 
 describe("formatRate", () => {
-  it("appends /s", () => {
-    expect(formatRate(1024 ** 2)).toBe("1.0 MB/s");
+  it("appends /s with decimal scaling", () => {
+    expect(formatRate(1e6)).toBe("1.0 MB/s");
   });
 });
 

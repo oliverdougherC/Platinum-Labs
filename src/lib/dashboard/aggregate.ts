@@ -8,6 +8,7 @@
  * the API can always return 200 with whatever is healthy.
  */
 
+import { emptyTelemetry, notConfiguredTelemetry } from "@/lib/telemetry/normalize";
 import type {
   AcquisitionItem,
   AcquisitionSnapshot,
@@ -18,17 +19,20 @@ import type {
   ConnectorId,
   DashboardHistory,
   DashboardSnapshot,
+  HostTelemetrySnapshot,
   JellyfinSnapshot,
+  TelemetryHistory,
   ZfsSnapshot,
 } from "@/lib/types";
 
-/** The five core connectors that must always appear in `health`. */
+/** The core connectors that must always appear in `health`. */
 export const CORE_CONNECTORS: ConnectorId[] = [
   "jellyfin",
   "sonarr",
   "radarr",
   "qbittorrent",
   "zfs",
+  "host",
 ];
 
 /** Config classification for a connector that has no live runtime. */
@@ -76,6 +80,11 @@ export interface AggregateParts {
   radarr: AcquisitionItem[] | null;
   qbittorrent: AcquisitionSnapshot | null;
   zfs: ZfsSnapshot | null;
+  /** Host telemetry; null when the collector has never produced a snapshot. */
+  telemetry?: HostTelemetrySnapshot | null;
+  /** True when no host collector is configured at all (vs. failing). */
+  telemetryNotConfigured?: boolean;
+  telemetryHistory?: TelemetryHistory;
   attention?: AttentionItem[];
   activity?: ActivityEvent[];
   history?: DashboardHistory;
@@ -225,6 +234,10 @@ export function assembleSnapshot(parts: AggregateParts): DashboardSnapshot {
     jellyfin: parts.jellyfin ?? JELLYFIN_UNAVAILABLE,
     acquisition: mergeAcquisition(parts.sonarr, parts.radarr, parts.qbittorrent),
     zfs: parts.zfs ?? { pools: [] },
+    telemetry:
+      parts.telemetry ??
+      (parts.telemetryNotConfigured ? notConfiguredTelemetry() : emptyTelemetry()),
+    telemetryHistory: parts.telemetryHistory,
     attention: parts.attention ?? [],
     activity: parts.activity ?? [],
     history: parts.history,

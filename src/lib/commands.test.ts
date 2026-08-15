@@ -64,7 +64,7 @@ describe("runCommand — queries operate on normalized state", () => {
   });
   it("storage", () => {
     const r = runCommand("storage", ctx("idle"));
-    if (r.kind === "answer") expect(r.lines.join(" ")).toMatch(/tank/);
+    if (r.kind === "answer") expect(r.lines.join(" ")).toMatch(/DataStore/);
   });
   it("issues (healthy vs attention)", () => {
     const healthy = runCommand("issues", ctx("idle"));

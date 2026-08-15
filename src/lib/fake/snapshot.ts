@@ -16,6 +16,11 @@ import {
   throughputSeries,
   type ActivityLevel,
 } from "@/lib/fake/series";
+import {
+  makeFakeTelemetry,
+  makeFakeTelemetryHistory,
+  type TelemetryProfileName,
+} from "@/lib/fake/telemetry";
 import type {
   AcquisitionItem,
   AcquisitionSnapshot,
@@ -28,7 +33,6 @@ import type {
   DashboardSnapshot,
   JellyfinSession,
   JellyfinSnapshot,
-  PoolHealth,
   ZfsPool,
   ZfsSnapshot,
 } from "@/lib/types";
@@ -36,7 +40,9 @@ import type {
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
-const TiB = 1024 ** 4;
+/** Decimal terabyte — storage fixtures use decimal semantics (PLA-264). */
+const TB = 1e12;
+const GB = 1e9;
 
 const CONNECTOR_IDS: ConnectorId[] = [
   "jellyfin",
@@ -44,6 +50,7 @@ const CONNECTOR_IDS: ConnectorId[] = [
   "radarr",
   "qbittorrent",
   "zfs",
+  "host",
 ];
 
 // --- health helpers ---------------------------------------------------------
@@ -196,20 +203,46 @@ function acquisitionStalled(): AcquisitionSnapshot {
   return { items, rollup: rollup(items) };
 }
 
-function pool(
-  overrides: Partial<Omit<ZfsPool, "capacityFraction">> & { name: string },
-): ZfsPool {
-  const usedBytes = overrides.usedBytes ?? 12.4 * TiB;
-  const totalBytes = overrides.totalBytes ?? 20 * TiB;
+interface PoolSpec {
+  name: string;
+  /** Logical root-dataset values (decimal-byte fixtures). */
+  logicalUsed: number;
+  logicalTotal: number;
+  /** Physical zpool values. */
+  physicalSize: number;
+  physicalAlloc: number;
+  fragPercent?: number;
+  health?: ZfsPool["health"];
+  scan?: ZfsPool["scan"];
+  lastScrubAt?: number | null;
+  scrubErrors?: number;
+}
+
+function pool(spec: PoolSpec): ZfsPool {
+  const logical = {
+    usedBytes: spec.logicalUsed,
+    availBytes: spec.logicalTotal - spec.logicalUsed,
+    totalBytes: spec.logicalTotal,
+    usedFraction: spec.logicalTotal > 0 ? spec.logicalUsed / spec.logicalTotal : 0,
+  };
   return {
-    name: overrides.name,
-    usedBytes,
-    totalBytes,
-    capacityFraction: usedBytes / totalBytes, // always derived, never drifts
-    health: overrides.health ?? "ONLINE",
-    scan: overrides.scan ?? "finished",
-    lastScrubAt: overrides.lastScrubAt ?? null,
-    scrubErrors: overrides.scrubErrors ?? 0,
+    name: spec.name,
+    usedBytes: logical.usedBytes,
+    totalBytes: logical.totalBytes,
+    capacityFraction: logical.usedFraction, // always derived, never drifts
+    capacityBasis: "logical",
+    physical: {
+      sizeBytes: spec.physicalSize,
+      allocBytes: spec.physicalAlloc,
+      freeBytes: spec.physicalSize - spec.physicalAlloc,
+      capFraction: spec.physicalSize > 0 ? spec.physicalAlloc / spec.physicalSize : 0,
+      fragPercent: spec.fragPercent ?? null,
+    },
+    logical,
+    health: spec.health ?? "ONLINE",
+    scan: spec.scan ?? "finished",
+    lastScrubAt: spec.lastScrubAt ?? null,
+    scrubErrors: spec.scrubErrors ?? 0,
   };
 }
 
@@ -220,20 +253,69 @@ function scrubDay(now: number, daysAgo: number): number {
   return Math.floor((now - daysAgo * DAY) / DAY) * DAY;
 }
 
+/**
+ * The demo topology mirrors the audited p910 pools (PLA-264): DataStore
+ * (4×24 TB RAIDZ1 — 96 TB raw / 69.6 TB logical), NVME (2×2 TB mirror),
+ * eSATA (8×4 TB RAIDZ1 — 32 TB raw / 27.7 TB logical, empty).
+ */
+function nvmePool(now: number): ZfsPool {
+  return pool({
+    name: "NVME",
+    logicalUsed: 365.6 * GB,
+    logicalTotal: 1.931 * TB,
+    physicalSize: 1.993 * TB,
+    physicalAlloc: 347.7 * GB,
+    fragPercent: 5,
+    lastScrubAt: scrubDay(now, 7),
+  });
+}
+
+function esataPool(now: number, overrides: Partial<PoolSpec> = {}): ZfsPool {
+  return pool({
+    name: "eSATA",
+    logicalUsed: 0.5 * GB,
+    logicalTotal: 27.68 * TB,
+    physicalSize: 32.006 * TB,
+    physicalAlloc: 0.6 * GB,
+    fragPercent: 0,
+    lastScrubAt: scrubDay(now, 7),
+    ...overrides,
+  });
+}
+
 function zfsHealthy(now: number): ZfsSnapshot {
   return {
     pools: [
-      pool({ name: "tank", usedBytes: 12.4 * TiB, totalBytes: 20 * TiB, lastScrubAt: scrubDay(now, 6) }),
-      pool({ name: "backup", usedBytes: 3.1 * TiB, totalBytes: 8 * TiB, lastScrubAt: scrubDay(now, 20) }),
+      pool({
+        name: "DataStore",
+        logicalUsed: 41.8 * TB,
+        logicalTotal: 69.6 * TB,
+        physicalSize: 95.98 * TB,
+        physicalAlloc: 57.6 * TB,
+        fragPercent: 18,
+        lastScrubAt: scrubDay(now, 3),
+      }),
+      nvmePool(now),
+      esataPool(now),
     ],
   };
 }
 
+/** The audited live values: DataStore at 86.8% logical / 86% physical CAP. */
 function zfsWarning(now: number): ZfsSnapshot {
   return {
     pools: [
-      pool({ name: "tank", usedBytes: 16.6 * TiB, totalBytes: 20 * TiB, lastScrubAt: scrubDay(now, 6) }),
-      pool({ name: "backup", usedBytes: 3.1 * TiB, totalBytes: 8 * TiB, lastScrubAt: scrubDay(now, 20) }),
+      pool({
+        name: "DataStore",
+        logicalUsed: 60.406 * TB,
+        logicalTotal: 69.601 * TB,
+        physicalSize: 95.984 * TB,
+        physicalAlloc: 83.139 * TB,
+        fragPercent: 25,
+        lastScrubAt: scrubDay(now, 3),
+      }),
+      nvmePool(now),
+      esataPool(now),
     ],
   };
 }
@@ -241,12 +323,18 @@ function zfsWarning(now: number): ZfsSnapshot {
 function zfsDegraded(now: number): ZfsSnapshot {
   return {
     pools: [
-      pool({ name: "tank", usedBytes: 17.6 * TiB, totalBytes: 20 * TiB, lastScrubAt: scrubDay(now, 6) }),
       pool({
-        name: "backup",
-        usedBytes: 3.1 * TiB,
-        totalBytes: 8 * TiB,
-        health: "DEGRADED" as PoolHealth,
+        name: "DataStore",
+        logicalUsed: 60.406 * TB,
+        logicalTotal: 69.601 * TB,
+        physicalSize: 95.984 * TB,
+        physicalAlloc: 83.139 * TB,
+        fragPercent: 25,
+        lastScrubAt: scrubDay(now, 3),
+      }),
+      nvmePool(now),
+      esataPool(now, {
+        health: "DEGRADED",
         lastScrubAt: scrubDay(now, 20),
         scrubErrors: 4,
       }),
@@ -270,7 +358,7 @@ function baseActivity(now: number): ActivityEvent[] {
       kind: "zfs.scrub.completed",
       severity: "info",
       source: "zfs",
-      message: "Scrub of tank completed with 0 errors",
+      message: "Scrub of DataStore completed with 0 errors",
     },
   ];
 }
@@ -357,10 +445,12 @@ function compose(
     jellyfin: JellyfinSnapshot;
     acquisition: AcquisitionSnapshot;
     zfs: ZfsSnapshot;
+    telemetryProfile?: TelemetryProfileName;
     attention?: AttentionItem[];
     activity?: ActivityEvent[];
   },
 ): DashboardSnapshot {
+  const profile = parts.telemetryProfile ?? "idle";
   return {
     mode: "fake",
     generatedAt: now,
@@ -368,6 +458,8 @@ function compose(
     jellyfin: parts.jellyfin,
     acquisition: parts.acquisition,
     zfs: parts.zfs,
+    telemetry: makeFakeTelemetry(profile, now),
+    telemetryHistory: makeFakeTelemetryHistory(profile, now),
     attention: parts.attention ?? [],
     activity: parts.activity ?? baseActivity(now),
     history: fakeHistory(now, parts.acquisition, parts.zfs),
@@ -391,12 +483,12 @@ const stalledAttention = (now: number): AttentionItem[] => [
 const degradedAttention = (now: number): AttentionItem[] => [
   {
     ruleId: "zfs.pool.degraded",
-    alertId: "zfs.pool.degraded:backup",
+    alertId: "zfs.pool.degraded:eSATA",
     severity: "critical",
     title: "Pool degraded",
-    detail: "Pool backup is DEGRADED.",
+    detail: "Pool eSATA is DEGRADED.",
     source: "zfs",
-    subject: "backup",
+    subject: "eSATA",
     firstSeenAt: now - 40 * MINUTE,
     lastSeenAt: now,
   },
@@ -408,6 +500,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       jellyfin: jellyfinIdle(now),
       acquisition: acquisitionEmpty(),
       zfs: zfsHealthy(now),
+      telemetryProfile: "idle",
     }),
 
   "direct-play": (now) =>
@@ -420,6 +513,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       },
       acquisition: acquisitionEmpty(),
       zfs: zfsHealthy(now),
+      telemetryProfile: "playback",
     }),
 
   transcode: (now) =>
@@ -442,6 +536,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       },
       acquisition: acquisitionEmpty(),
       zfs: zfsHealthy(now),
+      telemetryProfile: "transcode",
     }),
 
   "multi-session": (now) =>
@@ -466,6 +561,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       },
       acquisition: acquisitionEmpty(),
       zfs: zfsHealthy(now),
+      telemetryProfile: "transcode",
     }),
 
   downloads: (now) =>
@@ -473,6 +569,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       jellyfin: jellyfinIdle(now),
       acquisition: acquisitionActive(),
       zfs: zfsHealthy(now),
+      telemetryProfile: "downloads",
     }),
 
   stalled: (now) =>
@@ -480,6 +577,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       jellyfin: jellyfinIdle(now),
       acquisition: acquisitionStalled(),
       zfs: zfsHealthy(now),
+      telemetryProfile: "downloads",
       attention: stalledAttention(now),
       activity: [
         {
@@ -502,6 +600,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       jellyfin: jellyfinUnavailable(),
       acquisition: acquisitionActive(),
       zfs: zfsHealthy(now),
+      telemetryProfile: "downloads",
       attention: [
         {
           ruleId: "connector.unavailable",
@@ -535,6 +634,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       },
       acquisition: acquisitionActive(),
       zfs: zfsHealthy(now),
+      telemetryProfile: "downloads",
     }),
 
   "zfs-warning": (now) =>
@@ -542,15 +642,16 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       jellyfin: jellyfinIdle(now),
       acquisition: acquisitionEmpty(),
       zfs: zfsWarning(now),
+      telemetryProfile: "idle",
       attention: [
         {
           ruleId: "zfs.capacity.warning",
-          alertId: "zfs.capacity.warning:tank",
+          alertId: "zfs.capacity.warning:DataStore",
           severity: "warning",
           title: "Pool filling",
-          detail: "tank is at 83% and filling faster than its 30-day baseline.",
+          detail: "DataStore is 87% logically full (86% physical allocation).",
           source: "zfs",
-          subject: "tank",
+          subject: "DataStore",
           firstSeenAt: now - 2 * HOUR,
           lastSeenAt: now,
         },
@@ -562,6 +663,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       jellyfin: jellyfinIdle(now),
       acquisition: acquisitionEmpty(),
       zfs: zfsDegraded(now),
+      telemetryProfile: "idle",
       attention: degradedAttention(now),
       activity: [
         {
@@ -570,7 +672,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
           kind: "zfs.scrub.completed",
           severity: "warning",
           source: "zfs",
-          message: "Scrub of backup completed with 4 errors",
+          message: "Scrub of eSATA completed with 4 errors",
         },
         ...baseActivity(now),
       ],
@@ -590,6 +692,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       jellyfin: jellyfinUnavailable(),
       acquisition: acquisitionEmpty(),
       zfs: { pools: [] },
+      telemetryProfile: "unconfigured",
       activity: [],
     }),
 
@@ -604,6 +707,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       },
       acquisition: acquisitionActive(),
       zfs: zfsHealthy(now),
+      telemetryProfile: "active",
       activity: [
         {
           id: "ev-1",
@@ -625,6 +729,7 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       jellyfin: jellyfinIdle(now),
       acquisition: acquisitionStalled(),
       zfs: zfsDegraded(now),
+      telemetryProfile: "idle",
       attention: [...degradedAttention(now), ...stalledAttention(now)],
     }),
 };

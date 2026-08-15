@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { interpretHealth, healthHeadline } from "@/lib/dashboard/health-interpretation";
+import { testPool, testTelemetry } from "@/lib/test/factories";
 import type {
   AttentionItem,
   ConnectorHealth,
@@ -27,17 +28,7 @@ function health(
 }
 
 function pool(overrides: Partial<ZfsPool> = {}): ZfsPool {
-  return {
-    name: "tank",
-    usedBytes: 10,
-    totalBytes: 20,
-    capacityFraction: 0.5,
-    health: "ONLINE",
-    scan: "none",
-    lastScrubAt: null,
-    scrubErrors: 0,
-    ...overrides,
-  };
+  return testPool({ usedBytes: 10, totalBytes: 20, ...overrides });
 }
 
 function snapshot(overrides: Partial<DashboardSnapshot> = {}): DashboardSnapshot {
@@ -48,6 +39,7 @@ function snapshot(overrides: Partial<DashboardSnapshot> = {}): DashboardSnapshot
     jellyfin: { serverAvailable: true, version: "10.9", sessions: [], lastPlaybackAt: null },
     acquisition: { items: [], rollup: { downloading: 0, importing: 0, failedOrStalled: 0, aggregateRateBps: 0 } },
     zfs: { pools: [pool()] },
+    telemetry: testTelemetry(),
     attention: [],
     activity: [],
     ...overrides,
