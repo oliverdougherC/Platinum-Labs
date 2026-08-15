@@ -157,6 +157,56 @@ describe("MediaSearch — searching", () => {
   });
 });
 
+describe("MediaSearch — stale queries (PLA-256 remediation)", () => {
+  it("REGRESSION: Enter after the query changes can never request a stale row", async () => {
+    const calls = scriptFetch((url) => {
+      if (url.startsWith("/api/seerr/search?q=mar")) {
+        return searchResponse([martian]);
+      }
+      // Query B (and anything else) stays pending for the whole test.
+      return new Promise<Response>(() => {});
+    });
+    renderSearch();
+    await typeQuery("mar");
+    await screen.findByText("The Martian");
+
+    await typeQuery("dune");
+    // The old query's rows are cleared the moment the input changes — before
+    // the debounce fires — so they are no longer rendered or actionable.
+    expect(screen.queryByText("The Martian")).not.toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByLabelText("Search movies and TV"), {
+      key: "Enter",
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(calls.filter((c) => c.url.includes("actions"))).toHaveLength(0);
+  });
+
+  it("REGRESSION: an out-of-order stale response never overwrites the current query", async () => {
+    let releaseA!: (r: Response) => void;
+    const gateA = new Promise<Response>((resolve) => (releaseA = resolve));
+    scriptFetch((url) => {
+      // Query A hangs (and, like a real network race, ignores its abort);
+      // query B responds immediately.
+      if (url.startsWith("/api/seerr/search?q=old")) return gateA;
+      return searchResponse([dune]);
+    });
+    renderSearch();
+    await typeQuery("old");
+    // Let A's debounce elapse so its fetch is actually in flight.
+    await new Promise((r) => setTimeout(r, 350));
+
+    await typeQuery("dune");
+    expect(await screen.findByText("Dune: Part Two")).toBeInTheDocument();
+
+    // A resolves only now, after B became current: it must be discarded.
+    releaseA(searchResponse([martian]));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText("The Martian")).not.toBeInTheDocument();
+    expect(screen.getByText("Dune: Part Two")).toBeInTheDocument();
+  });
+});
+
 describe("MediaSearch — requesting", () => {
   function scriptSearchAndRequest(outcome: () => Response) {
     return scriptFetch((url, init) => {

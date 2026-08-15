@@ -92,6 +92,10 @@ export function MediaSearch({
   const [requests, setRequests] = useState<Record<string, RequestPhase>>({});
   const inputRef = useRef<HTMLInputElement>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
+  // Monotonic search generation. Bumped the instant the query changes, so a
+  // response can only apply its results while its generation is still current —
+  // an out-of-order response from a superseded query can never repopulate rows.
+  const searchGenRef = useRef(0);
 
   // Sync the (possibly palette-seeded) query each time the overlay opens.
   useEffect(() => {
@@ -105,7 +109,7 @@ export function MediaSearch({
     }
   }, [open, initialQuery]);
 
-  const runSearch = useCallback(async (q: string) => {
+  const runSearch = useCallback(async (q: string, gen: number) => {
     searchAbortRef.current?.abort();
     const ac = new AbortController();
     searchAbortRef.current = ac;
@@ -117,6 +121,7 @@ export function MediaSearch({
       const body = (await res.json().catch(() => null)) as
         | { results?: SeerrSearchResult[]; error?: string }
         | null;
+      if (gen !== searchGenRef.current) return; // superseded by a newer query
       if (!res.ok || !body?.results) {
         setPhase("error");
         setSearchError(body?.error ?? "Search failed");
@@ -128,24 +133,32 @@ export function MediaSearch({
       setSearchError(null);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
+      if (gen !== searchGenRef.current) return;
       setPhase("error");
       setSearchError("Search failed");
     }
   }, []);
 
-  // Debounced search; no query below the minimum length.
+  // Debounced search; no query below the minimum length. The moment the query
+  // changes, anything on screen belongs to a previous query: invalidate the
+  // generation, abort the in-flight request, and clear the rows immediately so
+  // a stale result can never be activated (Enter or click) while the
+  // replacement search is debouncing or pending.
   useEffect(() => {
     if (!open) return;
+    searchGenRef.current += 1;
+    const gen = searchGenRef.current;
+    searchAbortRef.current?.abort();
+    setResults([]);
+    setSelected(0);
     const q = query.trim();
     if (q.length < MIN_QUERY_CHARS) {
-      searchAbortRef.current?.abort();
-      setResults([]);
       setPhase("idle");
       setSearchError(null);
       return;
     }
     setPhase("loading");
-    const timer = setTimeout(() => void runSearch(q), DEBOUNCE_MS);
+    const timer = setTimeout(() => void runSearch(q, gen), DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [open, query, runSearch]);
 
@@ -274,7 +287,7 @@ export function MediaSearch({
               <p className="text-meta text-warn">{searchError}</p>
               <button
                 type="button"
-                onClick={() => void runSearch(trimmed)}
+                onClick={() => void runSearch(trimmed, searchGenRef.current)}
                 className="rounded-lg px-2.5 py-1 text-meta text-muted ring-1 ring-hairline hover:text-fg"
               >
                 Retry

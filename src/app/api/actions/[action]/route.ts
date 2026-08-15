@@ -16,10 +16,74 @@ const limiter = makeRateLimiter({ windowMs: 60_000, max: 12 });
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
+/**
+ * Lightweight cross-site (CSRF) defense for this privileged write boundary.
+ * The dashboard has no cookie session to steal, but the route drives an
+ * administrator-capable server-side credential, so browser-originated
+ * cross-site invocations are rejected before anything executes:
+ *
+ *  - the body must be declared `application/json`, so a hostile page cannot
+ *    reach the handler with a CORS-safelisted `text/plain` simple request;
+ *  - `Sec-Fetch-Site: cross-site` (fetch metadata, sent by modern browsers) is
+ *    rejected outright — same-origin/same-site values pass, and the header is
+ *    deliberately not *required* because non-browser clients omit it;
+ *  - when a browser supplies `Origin`, its host must match the request's own
+ *    `Host` (both travel through the same reverse proxy, so this holds for the
+ *    production deployment without trusting extra forwarded headers; only the
+ *    host is compared because TLS may terminate upstream of the app).
+ */
+function rejectCrossSite(req: NextRequest): Response | null {
+  const contentType = (req.headers.get("content-type") ?? "")
+    .split(";")[0]!
+    .trim()
+    .toLowerCase();
+  if (contentType !== "application/json") {
+    return Response.json(
+      {
+        ok: false,
+        code: "invalid-content-type",
+        message: "Actions require Content-Type: application/json",
+      },
+      { status: 415, headers: NO_STORE },
+    );
+  }
+
+  const forbidden = () =>
+    Response.json(
+      {
+        ok: false,
+        code: "forbidden",
+        message: "Cross-site action requests are not allowed",
+      },
+      { status: 403, headers: NO_STORE },
+    );
+
+  if (req.headers.get("sec-fetch-site")?.toLowerCase() === "cross-site") {
+    return forbidden();
+  }
+
+  const origin = req.headers.get("origin");
+  if (origin !== null) {
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      return forbidden(); // includes the opaque "null" origin
+    }
+    const selfHost = req.headers.get("host") ?? req.nextUrl.host;
+    if (originHost !== selfHost) return forbidden();
+  }
+
+  return null;
+}
+
 export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ action: string }> },
 ) {
+  const rejected = rejectCrossSite(req);
+  if (rejected) return rejected;
+
   if (!limiter.tryAcquire()) {
     return Response.json(
       { ok: false, code: "rate-limited", message: "Too many actions — slow down" },

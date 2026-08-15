@@ -1,13 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { POST } from "@/app/api/actions/[action]/route";
-import { __resetActionRegistryForTests } from "@/lib/actions/actions.server";
+import {
+  __resetActionRegistryForTests,
+  getActionRegistry,
+} from "@/lib/actions/actions.server";
 import { resetServerEnvCache } from "@/lib/env.server";
 
-function post(action: string, body?: unknown): Promise<Response> {
+function post(
+  action: string,
+  body?: unknown,
+  headers?: Record<string, string>,
+): Promise<Response> {
   return POST(
     new NextRequest(`http://localhost/api/actions/${action}`, {
       method: "POST",
+      // Matches the browser client: fetch with an explicit JSON content type.
+      headers: { "content-type": "application/json", ...headers },
       body: body === undefined ? "not json" : JSON.stringify(body),
     }),
     { params: Promise.resolve({ action }) },
@@ -80,6 +89,62 @@ describe("/api/actions/[action]", () => {
       code: "disabled",
       message: "Seerr is not configured",
     });
+  });
+
+  it("accepts a same-origin browser JSON POST (fetch metadata + matching Origin)", async () => {
+    const res = await post(
+      "seerr.request",
+      { mediaType: "movie", mediaId: 101 },
+      {
+        "content-type": "application/json; charset=utf-8",
+        "sec-fetch-site": "same-origin",
+        origin: "http://localhost",
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, outcome: "approved" });
+  });
+
+  it("rejects a text/plain body without invoking any action handler", async () => {
+    const execute = vi.spyOn(getActionRegistry(), "execute");
+    const res = await post(
+      "seerr.request",
+      { mediaType: "movie", mediaId: 101 },
+      { "content-type": "text/plain" },
+    );
+    expect(res.status).toBe(415);
+    expect(await res.json()).toMatchObject({ ok: false, code: "invalid-content-type" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects Sec-Fetch-Site: cross-site without invoking any action handler", async () => {
+    const execute = vi.spyOn(getActionRegistry(), "execute");
+    const res = await post(
+      "seerr.request",
+      { mediaType: "movie", mediaId: 101 },
+      { "sec-fetch-site": "cross-site" },
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      ok: false,
+      code: "forbidden",
+      message: "Cross-site action requests are not allowed",
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects a mismatched or opaque Origin without invoking any action handler", async () => {
+    const execute = vi.spyOn(getActionRegistry(), "execute");
+    for (const origin of ["https://evil.example", "null"]) {
+      const res = await post(
+        "seerr.request",
+        { mediaType: "movie", mediaId: 101 },
+        { origin },
+      );
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { code: string }).code).toBe("forbidden");
+    }
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("refuses the action when requests are disabled by the flag", async () => {
