@@ -3,6 +3,7 @@
 import { useEffect, useMemo } from "react";
 import type { TopologySelection } from "@/components/topology/scene";
 import { SERVICE_NODES } from "@/lib/topology/layout";
+import { appConfig } from "@/lib/config";
 import { formatBytes, formatRate } from "@/lib/format/bytes";
 import {
   formatDuration,
@@ -18,8 +19,8 @@ import type {
 
 /**
  * Contextual detail drawer (PLA-269). The topology stays artistic; this is
- * where conventional, readable UI lives: exact per-core values, physical vs
- * logical storage, queue contents, sessions, per-container stats, and the
+ * where conventional, readable UI lives: exact per-core values, logical vs
+ * pool-allocation storage, queue contents, sessions, per-container stats, and the
  * relevant slice of recent activity. Opens as a fixed overlay — the primary
  * composition never reflows.
  */
@@ -144,7 +145,9 @@ function HostDetail({ snapshot, now }: { snapshot: DashboardSnapshot; now: numbe
               <Row label="Total" value={formatPercent(cpu.totalFraction)} />
               <Row
                 label="Load 1 / 5 / 15"
-                value={`${cpu.load1.toFixed(2)} / ${cpu.load5.toFixed(2)} / ${cpu.load15.toFixed(2)}`}
+                value={[cpu.load1, cpu.load5, cpu.load15]
+                  .map((v) => (v === null ? "—" : v.toFixed(2)))
+                  .join(" / ")}
               />
             </dl>
             <div className="mt-2 grid grid-cols-8 gap-1" aria-label="Per-core utilization">
@@ -175,7 +178,11 @@ function HostDetail({ snapshot, now }: { snapshot: DashboardSnapshot; now: numbe
             <Row label="Available" value={formatBytes(mem.availableBytes, { system: "binary" })} />
             <Row
               label="Swap"
-              value={`${formatBytes(mem.swapUsedBytes, { system: "binary" })} / ${formatBytes(mem.swapTotalBytes, { system: "binary" })}`}
+              value={
+                mem.swapTotalBytes === null || mem.swapUsedBytes === null
+                  ? "not reported"
+                  : `${formatBytes(mem.swapUsedBytes, { system: "binary" })} / ${formatBytes(mem.swapTotalBytes, { system: "binary" })}`
+              }
             />
           </dl>
         ) : (
@@ -232,7 +239,7 @@ function HostDetail({ snapshot, now }: { snapshot: DashboardSnapshot; now: numbe
           <dl>
             <Row
               label="Size / target"
-              value={`${formatBytes(arc.sizeBytes, { system: "binary" })} / ${formatBytes(arc.targetBytes, { system: "binary" })}`}
+              value={`${formatBytes(arc.sizeBytes, { system: "binary" })} / ${arc.targetBytes === null ? "—" : formatBytes(arc.targetBytes, { system: "binary" })}`}
             />
             {arc.hitRatio !== null && <Row label="Hit ratio" value={formatPercent(arc.hitRatio, 1)} />}
           </dl>
@@ -277,29 +284,48 @@ function PoolDetail({
             <Row
               label="Occupancy"
               value={formatPercent(pool.logical.usedFraction, 1)}
-              tone={pool.logical.usedFraction >= 0.9 ? "danger" : pool.logical.usedFraction >= 0.8 ? "warn" : undefined}
+              tone={
+                pool.logical.usedFraction >= appConfig.thresholds.storageCriticalFraction
+                  ? "danger"
+                  : pool.logical.usedFraction >= appConfig.thresholds.storageWarnFraction
+                    ? "warn"
+                    : undefined
+              }
             />
           </dl>
         ) : (
           <p className="text-[12px] text-faint">
-            The collector predates PLA-264 and reports physical values only.
+            The collector predates PLA-264 and reports zpool allocation values only.
           </p>
         )}
       </Section>
-      <Section title="Physical pool (raw, incl. RAIDZ parity)">
+      {/* zpool SIZE/ALLOC/FREE describe the pool's allocation space after vdev
+          replication (a 2×2 TB mirror shows ~2 TB) — neither usable file space
+          nor installed raw device capacity (PLA-274). */}
+      <Section title="Pool allocation space (zpool)">
         <dl>
-          <Row label="Size" value={`${formatBytes(pool.physical.sizeBytes)} (${formatBytes(pool.physical.sizeBytes, { system: "binary" })})`} />
-          <Row label="Allocated" value={formatBytes(pool.physical.allocBytes)} />
-          <Row label="Free" value={formatBytes(pool.physical.freeBytes)} />
+          <Row label="Allocation size" value={`${formatBytes(pool.allocation.sizeBytes)} (${formatBytes(pool.allocation.sizeBytes, { system: "binary" })})`} />
+          <Row label="Allocated" value={formatBytes(pool.allocation.allocBytes)} />
+          <Row label="Unallocated" value={formatBytes(pool.allocation.freeBytes)} />
           <Row
-            label="Capacity (zpool CAP)"
-            value={formatPercent(pool.physical.capFraction, 1)}
-            tone={pool.physical.capFraction >= 0.9 ? "danger" : pool.physical.capFraction >= 0.8 ? "warn" : undefined}
+            label="Allocation used (zpool CAP)"
+            value={formatPercent(pool.allocation.capFraction, 1)}
+            tone={
+              pool.allocation.capFraction >= appConfig.thresholds.storageCriticalFraction
+                ? "danger"
+                : pool.allocation.capFraction >= appConfig.thresholds.storageWarnFraction
+                  ? "warn"
+                  : undefined
+            }
           />
-          {pool.physical.fragPercent !== null && (
-            <Row label="Fragmentation" value={`${pool.physical.fragPercent}%`} />
+          {pool.allocation.fragPercent !== null && (
+            <Row label="Fragmentation" value={`${pool.allocation.fragPercent}%`} />
           )}
         </dl>
+        <p className="mt-1 text-[11px] text-faint">
+          Space the pool manages after mirror/RAIDZ topology — not file-usable
+          space and not installed disk capacity.
+        </p>
       </Section>
       <Section title="Health">
         <dl>
@@ -423,7 +449,10 @@ function ServiceDetail({
             {container.memoryBytes !== null && (
               <Row label="Memory" value={formatBytes(container.memoryBytes, { system: "binary" })} />
             )}
-            <Row label="Restarts" value={String(container.restartCount)} />
+            <Row
+              label="Restarts"
+              value={container.restartCount === null ? "—" : String(container.restartCount)}
+            />
           </dl>
         </Section>
       )}

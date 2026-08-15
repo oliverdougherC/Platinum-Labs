@@ -12,6 +12,17 @@
  *    `unavailable` (value null), not zero;
  *  - a counter that went backwards (reboot/reset) invalidates that delta — the
  *    domain keeps its previous value and is marked stale for the tick.
+ *
+ * DELIBERATE ZERO/NULL AUDIT (PLA-273). The only places a zero may appear
+ * without the source reporting one:
+ *  - `usedBytes = max(0, total - available)`: a clamp on real reported values;
+ *  - Docker rollup counts (`running`, `unhealthy`, …): counting a really
+ *    empty/healthy container list — zero is the true count;
+ *  - network/disk aggregate sums: start at 0 but only over interfaces/devices
+ *    present in BOTH samples; when none match the domain holds stale instead.
+ * Everything else that the source can omit is `number | null` end to end:
+ * load1/5/15, swap, GPU temperature/power, ARC target/hit ratio, container
+ * restartCount/cpuFraction/memoryBytes.
  */
 
 import { z } from "zod";
@@ -141,20 +152,29 @@ function holdStale<T>(prev: TelemetryDomain<T> | undefined): TelemetryDomain<T> 
   return unavailable<T>();
 }
 
-/** Busy fraction from two cumulative jiffy vectors [user..steal]. Null when the window is invalid. */
+/**
+ * Busy fraction from two cumulative jiffy vectors [user..steal]. Null when the
+ * window is invalid. Vectors shorter than 5 columns (missing iowait) are
+ * malformed source data and invalidate the window rather than being guessed at.
+ */
 export function cpuFractionFromJiffies(
   prev: number[],
   curr: number[],
 ): number | null {
-  if (prev.length < 4 || curr.length < 4) return null;
+  if (prev.length < 5 || curr.length < 5) return null;
   const sum = (v: number[]) => v.reduce((a, b) => a + b, 0);
   const totalDelta = sum(curr) - sum(prev);
   if (totalDelta <= 0) return null;
   // idle + iowait are the non-busy columns (indexes 3 and 4).
-  const idlePrev = prev[3]! + (prev[4] ?? 0);
-  const idleCurr = curr[3]! + (curr[4] ?? 0);
+  const idlePrev = prev[3]! + prev[4]!;
+  const idleCurr = curr[3]! + curr[4]!;
   const idleDelta = idleCurr - idlePrev;
   return clamp((totalDelta - idleDelta) / totalDelta, 0, 1);
+}
+
+/** A finite number from the wire, or null — never a fabricated zero (PLA-273). */
+function finiteOrNull(v: number | null | undefined): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
 // --- normalization -----------------------------------------------------------
@@ -165,7 +185,7 @@ function normalizeCpu(
   prevDomain: TelemetryDomain<CpuTelemetry> | undefined,
 ): TelemetryDomain<CpuTelemetry> {
   const raw = curr.cpu;
-  if (raw.status !== "ok" || !raw.total || !raw.cores || !raw.load) {
+  if (raw.status !== "ok" || !raw.total || !raw.cores) {
     return raw.status === "not-configured" ? notConfigured() : unavailable();
   }
   const prev = prevRaw?.cpu;
@@ -187,9 +207,11 @@ function normalizeCpu(
     {
       totalFraction,
       perCore,
-      load1: raw.load[0] ?? 0,
-      load5: raw.load[1] ?? 0,
-      load15: raw.load[2] ?? 0,
+      // Load is reported only when the source actually provided it — a missing
+      // loadavg tuple renders as unknown, never as a fabricated 0.00 (PLA-273).
+      load1: finiteOrNull(raw.load?.[0]),
+      load5: finiteOrNull(raw.load?.[1]),
+      load15: finiteOrNull(raw.load?.[2]),
     },
     curr.sampledAt,
   );
@@ -210,8 +232,9 @@ function normalizeMemory(curr: RawHostSample): TelemetryDomain<MemoryTelemetry> 
       totalBytes: raw.totalBytes,
       availableBytes: raw.availableBytes,
       usedBytes: Math.max(0, raw.totalBytes - raw.availableBytes),
-      swapTotalBytes: raw.swapTotalBytes ?? 0,
-      swapUsedBytes: raw.swapUsedBytes ?? 0,
+      // Unknown swap stays null: 0 would claim a real swapless host (PLA-273).
+      swapTotalBytes: finiteOrNull(raw.swapTotalBytes),
+      swapUsedBytes: finiteOrNull(raw.swapUsedBytes),
     },
     curr.sampledAt,
   );
@@ -388,7 +411,8 @@ function normalizeDocker(
       name: c.name,
       state,
       health: c.health ?? null,
-      restartCount: c.restartCount ?? 0,
+      // `/containers/json` does not know restart counts; unknown is null (PLA-273).
+      restartCount: finiteOrNull(c.restartCount),
       cpuFraction,
       memoryBytes: typeof c.memoryBytes === "number" ? c.memoryBytes : null,
     };
@@ -419,7 +443,7 @@ function normalizeArc(curr: RawHostSample): TelemetryDomain<ArcTelemetry> {
     "available",
     {
       sizeBytes: raw.sizeBytes,
-      targetBytes: raw.targetBytes ?? raw.sizeBytes,
+      targetBytes: finiteOrNull(raw.targetBytes),
       hitRatio: lookups && lookups > 0 ? clamp(hits! / lookups, 0, 1) : null,
     },
     curr.sampledAt,

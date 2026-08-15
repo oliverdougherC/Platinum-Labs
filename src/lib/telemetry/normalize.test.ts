@@ -226,6 +226,83 @@ describe("normalizeHostTelemetry", () => {
     expect(broken.state).toBe("exited");
   });
 
+  it("keeps unknown restart counts null instead of fabricating 0 (PLA-273)", () => {
+    const withUnknownRestarts = (at: number) =>
+      sample(at, {
+        docker: {
+          status: "ok",
+          containers: [
+            {
+              name: "jellyfin",
+              state: "running",
+              health: "healthy",
+              // /containers/json does not know restart counts.
+              restartCount: null,
+              cpuTotalNs: null,
+              systemCpuNs: null,
+              memoryBytes: null,
+            },
+          ],
+        },
+      } as Partial<RawHostSample>);
+    const snap = normalizeHostTelemetry(withUnknownRestarts(1000), withUnknownRestarts(3000));
+    expect(snap.docker.value!.containers[0]!.restartCount).toBeNull();
+  });
+
+  it("keeps missing load averages null instead of fabricating 0.00 (PLA-273)", () => {
+    const noLoad = (at: number, cpu: object) =>
+      sample(at, { cpu: { status: "ok", ...cpu } } as Partial<RawHostSample>);
+    const base = {
+      total: jiffies(1000, 3000),
+      cores: [jiffies(500, 1500), jiffies(500, 1500)],
+    };
+    const next = {
+      total: jiffies(1500, 3500),
+      cores: [jiffies(900, 1600), jiffies(600, 1900)],
+    };
+    // Entirely missing tuple → all null; CPU utilization still computed.
+    const missing = normalizeHostTelemetry(
+      noLoad(1000, { ...base, load: null }),
+      noLoad(3000, { ...next, load: null }),
+    );
+    expect(missing.cpu.status).toBe("available");
+    expect(missing.cpu.value!.totalFraction).toBeCloseTo(0.5, 5);
+    expect(missing.cpu.value!.load1).toBeNull();
+    expect(missing.cpu.value!.load15).toBeNull();
+    // Truncated tuple → missing elements null, present ones kept.
+    const truncated = normalizeHostTelemetry(
+      noLoad(1000, { ...base, load: [1.5] }),
+      noLoad(3000, { ...next, load: [2.0] }),
+    );
+    expect(truncated.cpu.value!.load1).toBe(2.0);
+    expect(truncated.cpu.value!.load5).toBeNull();
+  });
+
+  it("keeps unreported swap null instead of claiming a swapless host (PLA-273)", () => {
+    const noSwap = sample(1000, {
+      memory: {
+        status: "ok",
+        totalBytes: 1000,
+        availableBytes: 400,
+        swapTotalBytes: null,
+        swapUsedBytes: null,
+      },
+    } as Partial<RawHostSample>);
+    const snap = normalizeHostTelemetry(null, noSwap);
+    expect(snap.memory.value!.swapTotalBytes).toBeNull();
+    expect(snap.memory.value!.swapUsedBytes).toBeNull();
+  });
+
+  it("keeps a missing ARC target null instead of echoing size (PLA-273)", () => {
+    const noTarget = sample(1000, {
+      arc: { status: "ok", sizeBytes: 42, targetBytes: null, hits: null, misses: null },
+    } as Partial<RawHostSample>);
+    const snap = normalizeHostTelemetry(null, noTarget);
+    expect(snap.arc.value!.sizeBytes).toBe(42);
+    expect(snap.arc.value!.targetBytes).toBeNull();
+    expect(snap.arc.value!.hitRatio).toBeNull();
+  });
+
   it("computes memory used from total - available and ARC hit ratio", () => {
     const snap = normalizeHostTelemetry(null, sample(1000));
     expect(snap.memory.value!.usedBytes).toBe(135_050_678_272 - 81_880_268_800);

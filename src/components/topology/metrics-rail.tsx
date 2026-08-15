@@ -91,7 +91,7 @@ export function MetricsRail({ snapshot }: { snapshot: DashboardSnapshot }) {
         status={t.cpu.status}
         value={
           t.cpu.value
-            ? `${formatPercent(t.cpu.value.totalFraction)} · load ${t.cpu.value.load1.toFixed(2)}`
+            ? `${formatPercent(t.cpu.value.totalFraction)}${t.cpu.value.load1 === null ? "" : ` · load ${t.cpu.value.load1.toFixed(2)}`}`
             : null
         }
         spark={h ? <Spark points={h.cpuTotal} max={1} /> : undefined}

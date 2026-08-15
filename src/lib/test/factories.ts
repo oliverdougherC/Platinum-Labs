@@ -25,7 +25,7 @@ export function testPool(
     totalBytes,
     capacityFraction,
     capacityBasis: "logical",
-    physical: {
+    allocation: {
       sizeBytes: totalBytes,
       allocBytes: usedBytes,
       freeBytes: totalBytes - usedBytes,

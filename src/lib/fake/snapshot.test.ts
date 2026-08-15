@@ -105,7 +105,7 @@ describe("required scenario characteristics", () => {
     // Headline capacity is LOGICAL (root dataset), never raw physical (PLA-264).
     expect(datastore.capacityBasis).toBe("logical");
     expect(datastore.logical).not.toBeNull();
-    expect(datastore.physical.sizeBytes).toBeGreaterThan(datastore.logical!.totalBytes);
+    expect(datastore.allocation.sizeBytes).toBeGreaterThan(datastore.logical!.totalBytes);
     expect(datastore.health).toBe("ONLINE");
   });
 

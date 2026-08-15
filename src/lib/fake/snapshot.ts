@@ -231,7 +231,7 @@ function pool(spec: PoolSpec): ZfsPool {
     totalBytes: logical.totalBytes,
     capacityFraction: logical.usedFraction, // always derived, never drifts
     capacityBasis: "logical",
-    physical: {
+    allocation: {
       sizeBytes: spec.physicalSize,
       allocBytes: spec.physicalAlloc,
       freeBytes: spec.physicalSize - spec.physicalAlloc,

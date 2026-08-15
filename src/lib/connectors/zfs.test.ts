@@ -185,9 +185,9 @@ describe("PLA-264 — physical vs logical capacity on the live topology", () => 
     expect(ds.usedBytes).toBe(60_405_816_351_744);
     expect(ds.capacityFraction).toBeCloseTo(0.8679, 3);
     // Physical view preserved for the detail drawer.
-    expect(ds.physical.sizeBytes).toBe(95_983_929_131_008);
-    expect(ds.physical.capFraction).toBeCloseTo(0.8662, 3);
-    expect(ds.physical.fragPercent).toBe(25);
+    expect(ds.allocation.sizeBytes).toBe(95_983_929_131_008);
+    expect(ds.allocation.capFraction).toBeCloseTo(0.8662, 3);
+    expect(ds.allocation.fragPercent).toBe(25);
   });
 
   it("degrades to labeled physical when the collector has no dataset info", () => {
@@ -200,7 +200,7 @@ describe("PLA-264 — physical vs logical capacity on the live topology", () => 
       frag: null,
     };
     const pool = composeZfsPool(raw, undefined, undefined);
-    expect(pool.capacityBasis).toBe("physical");
+    expect(pool.capacityBasis).toBe("pool-allocation");
     expect(pool.logical).toBeNull();
     expect(pool.totalBytes).toBe(95_983_929_131_008);
   });
@@ -226,7 +226,7 @@ describe("PLA-264 — physical vs logical capacity on the live topology", () => 
     const pool = snap.pools[0]!;
     expect(pool.capacityBasis).toBe("logical");
     expect(pool.totalBytes).toBe(437_880 + 27_680_359_141_768);
-    expect(pool.physical.sizeBytes).toBe(32_006_096_289_792);
+    expect(pool.allocation.sizeBytes).toBe(32_006_096_289_792);
     expect(pool.scan).toBe("finished");
   });
 
@@ -236,7 +236,7 @@ describe("PLA-264 — physical vs logical capacity on the live topology", () => 
         { name: "DataStore", size: 100, alloc: 87, free: 13, health: "ONLINE" },
       ],
     });
-    expect(snap.pools[0]!.capacityBasis).toBe("physical");
+    expect(snap.pools[0]!.capacityBasis).toBe("pool-allocation");
     expect(snap.pools[0]!.logical).toBeNull();
   });
 });

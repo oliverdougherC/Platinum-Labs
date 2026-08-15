@@ -157,16 +157,19 @@ export interface AcquisitionSnapshot {
 export type PoolHealth = "ONLINE" | "DEGRADED" | "FAULTED" | "OFFLINE" | "UNAVAIL";
 
 /**
- * Physical (`zpool list`) capacity view: raw pool bytes including RAIDZ parity,
- * padding, and slop. This is what the *pool* consumes on spindles — it is NOT
- * the space files can use, and must never be presented as such (PLA-264).
+ * Pool-allocation (`zpool list`) view: the space the pool manages AFTER vdev
+ * replication topology. On a mirror, SIZE is one side (~2 TB for a 2×2 TB
+ * mirror); on RAIDZ it includes parity. It is NOT the space files can use
+ * (PLA-264) and it is NOT installed raw device capacity (PLA-274) — never
+ * label these values as either. Installed device capacity would need per-leaf
+ * device sizes, which the collector does not gather today.
  */
-export interface ZfsPoolPhysical {
-  /** zpool SIZE — raw pool size in bytes. */
+export interface ZfsPoolAllocation {
+  /** zpool SIZE — pool allocation size in bytes. */
   sizeBytes: number;
-  /** zpool ALLOC — physically allocated bytes (includes parity/overhead). */
+  /** zpool ALLOC — allocated bytes within the pool's allocation space. */
   allocBytes: number;
-  /** zpool FREE — physically unallocated bytes. */
+  /** zpool FREE — unallocated bytes within the pool's allocation space. */
   freeBytes: number;
   /** ALLOC/SIZE, 0..1. Matches `zpool list` CAP. */
   capFraction: number;
@@ -202,16 +205,16 @@ export interface ZfsPool {
   /**
    * Headline capacity used for display, trends, and history. Logical (root
    * dataset USED / USED+AVAIL) whenever the collector reports datasets;
-   * physical zpool values only as a labeled fallback for old collectors.
+   * zpool allocation values only as a labeled fallback for old collectors.
    * `capacityBasis` says which one this is — the UI must label accordingly.
    */
   usedBytes: number;
   totalBytes: number;
   /** 0..1 fraction used (derived, but carried explicitly for display). */
   capacityFraction: number;
-  capacityBasis: "logical" | "physical";
-  /** Raw `zpool list` physical view — always present. */
-  physical: ZfsPoolPhysical;
+  capacityBasis: "logical" | "pool-allocation";
+  /** `zpool list` allocation-space view — always present. */
+  allocation: ZfsPoolAllocation;
   /** Root-dataset logical view — null when the collector predates PLA-264. */
   logical: ZfsPoolLogical | null;
   health: PoolHealth;
@@ -252,9 +255,10 @@ export interface CpuTelemetry {
   totalFraction: number;
   /** 0..1 utilization per logical CPU, index = kernel cpuN order. Length is the real core count — never padded or truncated. */
   perCore: number[];
-  load1: number;
-  load5: number;
-  load15: number;
+  /** Load averages; null when the source did not report them (never fabricated as 0). */
+  load1: number | null;
+  load5: number | null;
+  load15: number | null;
 }
 
 export interface MemoryTelemetry {
@@ -262,8 +266,9 @@ export interface MemoryTelemetry {
   /** total - available (the kernel's own reclaimable-aware estimate). */
   usedBytes: number;
   availableBytes: number;
-  swapTotalBytes: number;
-  swapUsedBytes: number;
+  /** null when the source did not report swap (unknown ≠ "no swap": 0 means a real swapless host). */
+  swapTotalBytes: number | null;
+  swapUsedBytes: number | null;
 }
 
 export interface GpuTelemetry {
@@ -313,7 +318,8 @@ export interface DockerContainerTelemetry {
   state: ContainerState;
   /** Docker health status when a healthcheck exists. */
   health: "healthy" | "unhealthy" | "starting" | null;
-  restartCount: number;
+  /** null when the source endpoint does not know it (`/containers/json` does not) — renders "—", never 0. */
+  restartCount: number | null;
   /** 0..1 of one core (can exceed 1 for multi-core usage); null when stats were not sampled. */
   cpuFraction: number | null;
   memoryBytes: number | null;
@@ -330,7 +336,8 @@ export interface DockerTelemetry {
 
 export interface ArcTelemetry {
   sizeBytes: number;
-  targetBytes: number;
+  /** ARC target size (arcstats `c`); null when the source did not report it. */
+  targetBytes: number | null;
   /** 0..1 lifetime hit ratio, when derivable. */
   hitRatio: number | null;
 }

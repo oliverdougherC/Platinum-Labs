@@ -168,10 +168,14 @@ function MemoryHalo({ snapshot }: { snapshot: DashboardSnapshot }) {
     mem.status !== "not-configured" && mem.value
       ? mem.value.usedBytes / mem.value.totalBytes
       : null;
-  const swapMeaningful =
+  const swapFraction =
     mem.value !== null &&
-    mem.value.swapTotalBytes > 0 &&
-    mem.value.swapUsedBytes / mem.value.swapTotalBytes > 0.05;
+    mem.value.swapTotalBytes !== null &&
+    mem.value.swapUsedBytes !== null &&
+    mem.value.swapTotalBytes > 0
+      ? mem.value.swapUsedBytes / mem.value.swapTotalBytes
+      : null;
+  const swapMeaningful = swapFraction !== null && swapFraction > 0.05;
   const labelAnchor = pointOnCircle(CORE_CENTER, HALO_R + 18, -Math.PI / 4);
 
   return (
@@ -196,13 +200,9 @@ function MemoryHalo({ snapshot }: { snapshot: DashboardSnapshot }) {
         />
       )}
       {/* swap pressure: a short second arc only when meaningful */}
-      {swapMeaningful && mem.value && (
+      {swapMeaningful && swapFraction !== null && (
         <path
-          d={arcPath(
-            CORE_CENTER,
-            HALO_R + 7,
-            mem.value.swapUsedBytes / mem.value.swapTotalBytes,
-          )}
+          d={arcPath(CORE_CENTER, HALO_R + 7, swapFraction)}
           className="fill-none stroke-warn"
           strokeWidth={1.5}
           style={{ opacity: 0.5 }}
@@ -249,7 +249,7 @@ function StorageBody({
   const ioIntensity = io > 250_000 ? Math.min(1, Math.log10(io / 250_000) / 2.5) : 0;
   const writeDominant = writeBps > readBps;
   const capacityLabel = formatCapacityPair(pool.usedBytes, pool.totalBytes);
-  const basisNote = pool.capacityBasis === "physical" ? " (physical)" : "";
+  const basisNote = pool.capacityBasis === "pool-allocation" ? " (pool alloc)" : "";
 
   return (
     <g

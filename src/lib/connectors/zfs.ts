@@ -165,17 +165,19 @@ export function parseZpoolStatus(stdout: string): Record<string, ScrubInfo> {
 }
 
 /**
- * Compose one normalized pool from the physical listing plus (optionally) the
- * root-dataset logical values. The HEADLINE used/total is logical whenever
- * datasets are known — raw physical size is never presented as usable capacity
- * (PLA-264). Physical stays available under `physical` for detail surfaces.
+ * Compose one normalized pool from the zpool allocation listing plus
+ * (optionally) the root-dataset logical values. The HEADLINE used/total is
+ * logical whenever datasets are known — zpool allocation size is never
+ * presented as usable capacity (PLA-264), and never as installed raw device
+ * capacity either (PLA-274). Allocation stays under `allocation` for detail
+ * surfaces.
  */
 export function composeZfsPool(
   p: RawPool,
   dataset: RawRootDataset | undefined,
   info: ScrubInfo | undefined,
 ): ZfsPool {
-  const physical = {
+  const allocation = {
     sizeBytes: p.size,
     allocBytes: p.alloc,
     freeBytes: p.free,
@@ -195,18 +197,18 @@ export function composeZfsPool(
         }
       : null;
   const headline = logical ?? {
-    usedBytes: physical.allocBytes,
-    availBytes: physical.freeBytes,
-    totalBytes: physical.sizeBytes,
-    usedFraction: physical.capFraction,
+    usedBytes: allocation.allocBytes,
+    availBytes: allocation.freeBytes,
+    totalBytes: allocation.sizeBytes,
+    usedFraction: allocation.capFraction,
   };
   return {
     name: p.name,
     usedBytes: headline.usedBytes,
     totalBytes: headline.totalBytes,
     capacityFraction: headline.usedFraction,
-    capacityBasis: logical ? "logical" : "physical",
-    physical,
+    capacityBasis: logical ? "logical" : "pool-allocation",
+    allocation,
     logical,
     health: mapPoolHealth(p.health),
     scan: toScanState(info?.state),
