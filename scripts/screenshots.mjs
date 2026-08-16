@@ -35,6 +35,9 @@ const SHOTS = [
   { name: "05-notification-drawer-1920x1080", params: `scenario=attention&freeze=${FREEZE_AT}&panel=notifications`, w: 1920, h: 1080 },
   { name: "06-datastore-drawer-1920x1080", params: `scenario=active&freeze=${FREEZE_AT}&drawer=pool:DataStore`, w: 1920, h: 1080 },
   { name: "07-degraded-local-warning-1920x1080", params: `scenario=zfs-degraded&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
+  // Engineering-review frame: geometry debug overlay (dev builds only —
+  // the flag is compiled out of production).
+  { name: "08-renderer-debug-1920x1080", params: `scenario=active&freeze=${FREEZE_AT}&debug=geometry`, w: 1920, h: 1080 },
 ];
 
 function arg(flag, fallback = null) {
@@ -90,6 +93,21 @@ async function main() {
         await page.goto(`${baseUrl}/?${shot.params}`, { waitUntil: "networkidle" });
         // Fonts + SSR hydration settle; frozen mode has no further changes.
         await page.waitForTimeout(1_200);
+        // HARD assertion (PLA-270): the primary surface must never scroll at
+        // the target viewports — enforced here, not merely claimed in the PR.
+        const box = await page.evaluate(() => ({
+          docH: document.documentElement.scrollHeight,
+          docW: document.documentElement.scrollWidth,
+          bodyH: document.body.scrollHeight,
+          winH: window.innerHeight,
+          winW: window.innerWidth,
+        }));
+        if (box.docH > box.winH || box.bodyH > box.winH || box.docW > box.winW) {
+          throw new Error(
+            `page scrolls at ${shot.w}x${shot.h} (${shot.name}): ` +
+              `doc ${box.docW}x${box.docH}, body h ${box.bodyH}, window ${box.winW}x${box.winH}`,
+          );
+        }
         const path = `${OUT_DIR}/${shot.name}.png`;
         await page.screenshot({ path });
         console.log(`captured ${path}`);
@@ -103,8 +121,12 @@ async function main() {
 }
 
 /**
- * Motion capture: a LIVE (unfrozen) fake-mode session transitioning from calm
- * idle into representative activity, so reviewers can judge pace/restraint.
+ * Motion capture (PLA-270): ONE mounted renderer, telemetry changing in
+ * place. The scenario switches through the dev fixture hook
+ * (`window.__homelabSetScenario`) — never via navigation or reload — so the
+ * clip demonstrates the interpolation system itself: calm idle, activity
+ * ramping in (flows appear, the relevant bodies wake, storage I/O lights),
+ * then easing back toward idle.
  */
 async function captureMotion(browser, baseUrl) {
   const context = await browser.newContext({
@@ -112,11 +134,22 @@ async function captureMotion(browser, baseUrl) {
     recordVideo: { dir: OUT_DIR, size: { width: 1280, height: 720 } },
   });
   const page = await context.newPage();
-  console.log("recording motion: 10s idle → 14s active…");
-  await page.goto(`${baseUrl}/?scenario=idle`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(10_000);
-  await page.goto(`${baseUrl}/?scenario=active`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(14_000);
+  console.log("recording motion (same mounted scene): 7s idle → 13s active → 6s easing…");
+  // NOT networkidle: the live page holds an SSE stream open, so the network
+  // never idles. The fixture-hook wait below is the real readiness signal.
+  await page.goto(`${baseUrl}/?scenario=idle&switcher=off`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => typeof window.__homelabSetScenario === "function", {
+    timeout: 15_000,
+  });
+  const url0 = page.url();
+  await page.waitForTimeout(7_000);
+  await page.evaluate(() => window.__homelabSetScenario("active"));
+  await page.waitForTimeout(13_000);
+  await page.evaluate(() => window.__homelabSetScenario("idle"));
+  await page.waitForTimeout(6_000);
+  if (page.url() !== url0) {
+    throw new Error("motion capture navigated — the same-page contract is broken");
+  }
   const video = page.video();
   await page.close();
   await context.close();

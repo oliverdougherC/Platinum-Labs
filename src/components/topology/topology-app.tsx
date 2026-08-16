@@ -72,6 +72,7 @@ export function TopologyApp({
   scenario,
   frozen,
   initialPanels,
+  devControls = false,
 }: {
   initial: DashboardSnapshot;
   seerr: SeerrAvailability;
@@ -80,8 +81,26 @@ export function TopologyApp({
   /** Screenshot-harness mode: no transport, no clock-driven changes, animations paused. */
   frozen: boolean;
   initialPanels?: InitialPanels;
+  /** Enables the same-page scenario hook for the motion harness (dev only). */
+  devControls?: boolean;
 }) {
-  const { snapshot, stale, receivedAt } = useLiveData(initial, { scenario, frozen });
+  // Same-mounted-scene fixture (PLA-270): the motion harness switches the fake
+  // scenario UNDER the live renderer — no navigation, no reload — so the
+  // recording demonstrates the interpolation system, not a page load.
+  const [scenarioOverride, setScenarioOverride] = useState<string | null>(null);
+  useEffect(() => {
+    if (!devControls) return;
+    const w = window as unknown as { __homelabSetScenario?: (s: string) => void };
+    w.__homelabSetScenario = (s: string) => setScenarioOverride(s);
+    return () => {
+      delete w.__homelabSetScenario;
+    };
+  }, [devControls]);
+
+  const { snapshot, stale, receivedAt } = useLiveData(initial, {
+    scenario: scenarioOverride ?? scenario,
+    frozen,
+  });
   const [selection, setSelection] = useState<TopologySelection | null>(
     () => parseDrawer(initialPanels?.drawer) ?? null,
   );

@@ -58,8 +58,10 @@ export default async function HomePage({
         scenario={fake && devControls ? scenarioParam : undefined}
         frozen={frozenAt !== null}
         initialPanels={{ panel, drawer }}
+        devControls={fake && devControls}
       />
-      {devControls && fake && frozenAt === null ? (
+      {/* `switcher=off` keeps the dev control out of motion recordings. */}
+      {devControls && fake && frozenAt === null && one(params.switcher) !== "off" ? (
         <ScenarioSwitcher current={currentScenario} />
       ) : null}
     </>
