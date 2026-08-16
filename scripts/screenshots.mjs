@@ -13,11 +13,13 @@
  * USAGE
  *   node scripts/screenshots.mjs [--base-url http://localhost:3900]
  *                                [--out docs/review/v2-living-topology]
- *                                [--motion] [--only <name-substring>]
+ *                                [--motion] [--lab] [--only <name-substring>]
  *
  * Without --base-url the harness starts `next dev` on port 3911 with
  * HOMELAB fake-mode env and tears it down afterwards. `--motion` records a
  * ~24s idle→active webm (and a GIF when ffmpeg is available) instead of PNGs.
+ * `--lab` captures the flow-design contact sheets (one full-page frame per
+ * tunnel treatment from /dev/flow-lab, at a fixed animation clock).
  */
 
 import { spawn, execFileSync } from "node:child_process";
@@ -31,13 +33,20 @@ const SHOTS = [
   { name: "01-idle-1920x1080", params: `scenario=idle&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
   { name: "02-idle-2560x1440", params: `scenario=idle&freeze=${FREEZE_AT}`, w: 2560, h: 1440 },
   { name: "03-downloads-imports-1920x1080", params: `scenario=downloads&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  { name: "04-jellyfin-playback-1920x1080", params: `scenario=direct-play&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  { name: "05-notification-drawer-1920x1080", params: `scenario=attention&freeze=${FREEZE_AT}&panel=notifications`, w: 1920, h: 1080 },
-  { name: "06-datastore-drawer-1920x1080", params: `scenario=active&freeze=${FREEZE_AT}&drawer=pool:DataStore`, w: 1920, h: 1080 },
-  { name: "07-degraded-local-warning-1920x1080", params: `scenario=zfs-degraded&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
+  { name: "04-download-plus-seed-1920x1080", params: `scenario=seeding&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
+  { name: "05-sonarr-import-organizing-1920x1080", params: `scenario=importing&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
+  { name: "06-jellyfin-direct-play-1920x1080", params: `scenario=direct-play&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
+  { name: "07-jellyfin-transcode-1920x1080", params: `scenario=transcode&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
+  { name: "08-notification-drawer-1920x1080", params: `scenario=attention&freeze=${FREEZE_AT}&panel=notifications`, w: 1920, h: 1080 },
+  { name: "09-datastore-drawer-1920x1080", params: `scenario=active&freeze=${FREEZE_AT}&drawer=pool:DataStore`, w: 1920, h: 1080 },
+  { name: "10-degraded-local-warning-1920x1080", params: `scenario=zfs-degraded&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
+  // Truthfulness states: a stale downloader freezes its flows into ghosts; an
+  // unreachable connector suppresses its flows entirely.
+  { name: "11-stale-telemetry-1920x1080", params: `scenario=stale&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
+  { name: "12-unavailable-connector-1920x1080", params: `scenario=connector-unavailable&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
   // Engineering-review frame: geometry debug overlay (dev builds only —
   // the flag is compiled out of production).
-  { name: "08-renderer-debug-1920x1080", params: `scenario=active&freeze=${FREEZE_AT}&debug=geometry`, w: 1920, h: 1080 },
+  { name: "13-renderer-debug-1920x1080", params: `scenario=active&freeze=${FREEZE_AT}&debug=geometry`, w: 1920, h: 1080 },
 ];
 
 function arg(flag, fallback = null) {
@@ -48,6 +57,7 @@ function arg(flag, fallback = null) {
 const OUT_DIR = arg("--out", "docs/review/v2-living-topology");
 const ONLY = arg("--only");
 const MOTION = process.argv.includes("--motion");
+const LAB = process.argv.includes("--lab");
 const PORT = 3911;
 
 async function waitForServer(url, timeoutMs = 60_000) {
@@ -86,6 +96,21 @@ async function main() {
   try {
     if (MOTION) {
       await captureMotion(browser, baseUrl);
+    } else if (LAB) {
+      // Flow-design study (PLA-266 v2): the ten canonical flow states under
+      // each tunnel treatment, at one fixed animation clock so particle
+      // placement is deterministic. Treatment A is the production choice.
+      for (const treatment of ["A", "B", "C"]) {
+        const page = await browser.newPage({ viewport: { width: 1920, height: 1200 } });
+        await page.goto(`${baseUrl}/dev/flow-lab?treatment=${treatment}&t=11.3`, {
+          waitUntil: "networkidle",
+        });
+        await page.waitForTimeout(1_200);
+        const path = `${OUT_DIR}/12-flow-design-treatment-${treatment}.png`;
+        await page.screenshot({ path, fullPage: true });
+        console.log(`captured ${path}`);
+        await page.close();
+      }
     } else {
       for (const shot of SHOTS) {
         if (ONLY && !shot.name.includes(ONLY)) continue;

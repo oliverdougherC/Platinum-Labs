@@ -487,14 +487,25 @@ function drawStaticDirection(
 }
 
 /**
+ * The minimal drawing environment for one flow — split from RenderState so
+ * the dev flow laboratory can exercise the EXACT production drawing code on
+ * synthetic observations.
+ */
+export interface FlowDrawEnv {
+  t: number;
+  motionEnabled: boolean;
+  hovered: string | null;
+}
+
+/**
  * One data-plane tunnel: structural path → atmospheric glow → translucent
  * body → inner highlight → directional particles → endpoint port glows.
  * The static composition (everything but particles) must be beautiful with
  * animation paused — reduced-motion swaps particles for direction chevrons.
  */
-function drawTunnel(
+export function drawTunnel(
   ctx: CanvasRenderingContext2D,
-  s: RenderState,
+  s: FlowDrawEnv,
   f: LiveFlowGeom,
   style: FlowStyle,
   budget: { left: number },
@@ -600,9 +611,9 @@ function drawTunnel(
  * Control-plane signal: a quiet silver filament with a discrete traveling
  * pulse — deliberately incapable of reading as a data tunnel.
  */
-function drawControlSignal(
+export function drawControlSignal(
   ctx: CanvasRenderingContext2D,
-  s: RenderState,
+  s: FlowDrawEnv,
   f: LiveFlowGeom,
 ): void {
   const { geom, live } = f;
