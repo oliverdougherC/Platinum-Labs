@@ -42,6 +42,21 @@ function isTopOverlay(id: string) {
   return overlayStack.at(-1)?.id === id;
 }
 
+/**
+ * Whether an element can meaningfully receive restored focus: it must still
+ * be in the document, be a real control (not the body fallback that
+ * `document.activeElement` reports), and not sit inside an inert subtree —
+ * focusing an inert node silently fails, leaving focus on <body>.
+ */
+function canRestoreFocusTo(el: HTMLElement | null | undefined): el is HTMLElement {
+  if (!el || !el.isConnected) return false;
+  if (el === document.body || el === document.documentElement) return false;
+  for (let node: HTMLElement | null = el; node; node = node.parentElement) {
+    if (node.inert) return false;
+  }
+  return true;
+}
+
 function focusableElements(root: HTMLElement): HTMLElement[] {
   return Array.from(
     root.querySelectorAll<HTMLElement>(
@@ -64,6 +79,7 @@ export function OverlayShell({
   labelledBy,
   describedBy,
   initialFocusRef,
+  returnFocusRef,
   children,
   kind = "modal",
   panelClassName,
@@ -75,6 +91,16 @@ export function OverlayShell({
   labelledBy?: string;
   describedBy?: string;
   initialFocusRef?: RefObject<HTMLElement | null>;
+  /**
+   * Fallback focus target for close, read at close time. Needed when the
+   * triggering control UNMOUNTS while the overlay is open (the command
+   * palette trigger does): the captured `document.activeElement` is a dead
+   * node by then, and focus must land on the freshly remounted control
+   * instead. The captured element still wins while it remains usable, so a
+   * palette opened via a global shortcut returns focus to whatever control
+   * actually had it.
+   */
+  returnFocusRef?: RefObject<HTMLElement | null>;
   children: ReactNode;
   kind?: "modal" | "drawer";
   panelClassName?: string;
@@ -84,13 +110,13 @@ export function OverlayShell({
   const id = `overlay-${reactId}`;
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const capturedFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open || !rootRef.current || !panelRef.current) return;
-    returnFocusRef.current =
+    capturedFocusRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const unregister = registerOverlay({ id, root: rootRef.current });
     const panel = panelRef.current;
@@ -127,10 +153,18 @@ export function OverlayShell({
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
       unregister();
-      const target = returnFocusRef.current;
-      if (target?.isConnected) target.focus();
+      const captured = capturedFocusRef.current;
+      const target = canRestoreFocusTo(captured)
+        ? captured
+        : canRestoreFocusTo(returnFocusRef?.current)
+          ? returnFocusRef.current
+          : null;
+      // No usable target (e.g. handoff to another overlay that is about to
+      // capture focus itself): better to leave focus alone than to focus an
+      // inert or removed node.
+      if (target) target.focus();
     };
-  }, [id, initialFocusRef, open]);
+  }, [id, initialFocusRef, returnFocusRef, open]);
 
   if (!open || typeof document === "undefined") return null;
 

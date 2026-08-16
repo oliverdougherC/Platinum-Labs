@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSceneModel,
   capacityTone,
+  containerMetricCoverage,
   containerRadius,
   containerResourceScore,
 } from "@/lib/scene/model";
@@ -15,6 +16,7 @@ import { buildLabels, describeFlow, labelsOverlap } from "@/lib/scene/labels";
 import {
   flowOverlayIsLive,
   containerMotionOffset,
+  containerStrokeTreatment,
   tunnelBodyIsBidirectional,
   tunnelEndpointTokens,
 } from "@/lib/scene/render";
@@ -170,6 +172,98 @@ describe("scene model semantics", () => {
   });
 });
 
+describe("container metric coverage — unknown is never confirmed idle (PLA-273)", () => {
+  const metrics = (
+    overrides: Partial<Parameters<typeof containerMetricCoverage>[0]>,
+  ): Parameters<typeof containerMetricCoverage>[0] => ({
+    cpuFraction: 0.2,
+    memoryBytes: 512 * 1024 ** 2,
+    netRxBps: 1_000,
+    netTxBps: 1_000,
+    blockReadBps: 500,
+    blockWriteBps: 500,
+    ...overrides,
+  });
+
+  /** A live container model built straight from the fake snapshot, mutated. */
+  function liveContainer(
+    mutate: (c: import("@/lib/types").DockerContainerTelemetry) => void,
+  ) {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const target = snapshot.telemetry.docker.value!.containers.find(
+      (c) => c.name === "sonarr",
+    )!;
+    mutate(target);
+    return buildSceneModel(snapshot, { seerrConfigured: true, now: NOW })
+      .docker.containers.find((c) => c.name === "sonarr")!;
+  }
+
+  it("a confirmed all-zero sample is complete coverage and a solid quiet body", () => {
+    const container = liveContainer((c) => {
+      c.cpuFraction = 0;
+      c.memoryBytes = 0;
+      c.netRxBps = 0;
+      c.netTxBps = 0;
+      c.blockReadBps = 0;
+      c.blockWriteBps = 0;
+    });
+    expect(container.metricCoverage).toBe("complete");
+    expect(containerStrokeTreatment(container)).toEqual({ token: "fg", dash: null });
+  });
+
+  it("all metrics null (collector refresh-budget skip) is unavailable — dashed, static", () => {
+    const container = liveContainer((c) => {
+      c.cpuFraction = null;
+      c.memoryBytes = null;
+      c.netRxBps = null;
+      c.netTxBps = null;
+      c.blockReadBps = null;
+      c.blockWriteBps = null;
+    });
+    expect(container.metricCoverage).toBe("unavailable");
+    expect(container.state).toBe("running"); // state known, metrics not
+    // Neutral dashed treatment, distinct from unknown-STATE (faint [2,2]).
+    expect(containerStrokeTreatment(container)).toEqual({ token: "muted", dash: [4, 3] });
+    // No metrics ⇒ no motion, even while the docker domain is live.
+    expect(containerMotionOffset(container, 3, true)).toEqual({ x: 0, y: 0 });
+    expect(container.ioIntensity).toBe(0);
+  });
+
+  it("CPU known / memory unknown is partial coverage", () => {
+    expect(containerMetricCoverage(metrics({ memoryBytes: null }))).toBe("partial");
+  });
+
+  it("I/O unknown with known cpu+memory is partial coverage (cgroup v2 blkio case)", () => {
+    expect(
+      containerMetricCoverage(
+        metrics({ netRxBps: null, netTxBps: null, blockReadBps: null, blockWriteBps: null }),
+      ),
+    ).toBe("partial");
+    expect(containerMetricCoverage(metrics({}))).toBe("complete");
+  });
+
+  it("stale last-known-good metrics keep their shape but never animate", () => {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    snapshot.telemetry.docker.status = "stale";
+    const container = buildSceneModel(snapshot, { seerrConfigured: true, now: NOW })
+      .docker.containers.find((c) => c.name === "jellyfin")!;
+    expect(container.freshness).toBe("stale");
+    expect(container.metricCoverage).toBe("complete"); // values retained…
+    expect(container.radius).toBeGreaterThan(3); // …so the body keeps its size
+    expect(containerMotionOffset(container, 3, true)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("unknown-state containers keep their distinct unverified treatment", () => {
+    const container = liveContainer((c) => {
+      c.state = "unknown";
+      c.cpuFraction = null;
+      c.memoryBytes = null;
+    });
+    expect(container.unverified).toBe(true);
+    expect(containerStrokeTreatment(container)).toEqual({ token: "faint", dash: [2, 2] });
+  });
+});
+
 describe("layout determinism and bounds", () => {
   it("same model + same aspect ⇒ identical layout", () => {
     const m = model("active");
@@ -199,6 +293,97 @@ describe("layout determinism and bounds", () => {
     const a = computeLayout(forward, 16 / 9);
     const b = computeLayout(reversed, 16 / 9);
     expect([...a.containerField.entries()]).toEqual([...b.containerField.entries()]);
+  });
+
+  it("container centers depend on identity, not telemetry (PLA-272 stability)", () => {
+    const baseline = makeFakeSnapshot("active", NOW);
+    const centersOf = (snapshot: typeof baseline) => {
+      const layout = computeLayout(
+        buildSceneModel(snapshot, { seerrConfigured: true, now: NOW }),
+        16 / 9,
+      );
+      return new Map(
+        [...layout.containerField.entries()].map(([name, geom]) => [
+          name,
+          `${geom.center.x.toFixed(6)},${geom.center.y.toFixed(6)}`,
+        ]),
+      );
+    };
+    const baselineCenters = centersOf(baseline);
+
+    const mutate = (
+      change: (c: import("@/lib/types").DockerContainerTelemetry) => void,
+      name = "sonarr",
+    ) => {
+      const snapshot = makeFakeSnapshot("active", NOW);
+      change(snapshot.telemetry.docker.value!.containers.find((c) => c.name === name)!);
+      return centersOf(snapshot);
+    };
+
+    // CPU null → confirmed idle → hot: every center identical.
+    expect(mutate((c) => (c.cpuFraction = null))).toEqual(baselineCenters);
+    expect(mutate((c) => (c.cpuFraction = 0))).toEqual(baselineCenters);
+    expect(mutate((c) => (c.cpuFraction = 1.8))).toEqual(baselineCenters);
+    // Memory changing by two orders of magnitude.
+    expect(mutate((c) => (c.memoryBytes = 12 * 1024 ** 3))).toEqual(baselineCenters);
+    // I/O null → very active (halos are not layout obstacles).
+    expect(
+      mutate((c) => {
+        c.netRxBps = 90_000_000;
+        c.netTxBps = 90_000_000;
+        c.blockReadBps = 120_000_000;
+        c.blockWriteBps = 120_000_000;
+      }),
+    ).toEqual(baselineCenters);
+    // Health / state changes.
+    expect(
+      mutate((c) => {
+        c.health = "unhealthy";
+        c.state = "exited";
+      }),
+    ).toEqual(baselineCenters);
+  });
+
+  it("prioritizes unhealthy, unknown, and hot containers over alphabetical order at the budget", () => {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const docker = snapshot.telemetry.docker.value!;
+    const base = docker.containers[0]!;
+    const idle = (index: number): typeof base => ({
+      ...base,
+      name: `container-${String(index).padStart(3, "0")}`,
+      state: "running",
+      health: null,
+      cpuFraction: 0.01,
+      memoryBytes: 128 * 1024 ** 2,
+      netRxBps: 1_000,
+      netTxBps: 1_000,
+      blockReadBps: 0,
+      blockWriteBps: 0,
+    });
+    // 113 idle containers, then three attention-worthy ones whose names sort
+    // LAST — a first-96-alphabetical rule would hide exactly these.
+    docker.containers = [
+      ...Array.from({ length: 113 }, (_, i) => idle(i)),
+      { ...idle(113), name: "zz-exited", state: "exited" as const, health: "unhealthy" as const },
+      { ...idle(114), name: "zz-unknown", state: "unknown" as const },
+      { ...idle(115), name: "zz-hot", cpuFraction: 3.2, memoryBytes: 9 * 1024 ** 3 },
+    ];
+    docker.total = docker.containers.length;
+    docker.running = docker.containers.length - 1;
+
+    const layout = computeLayout(
+      buildSceneModel(snapshot, { seerrConfigured: true, now: NOW }),
+      16 / 9,
+    );
+    expect(layout.containerField.size).toBe(MAX_RENDERED_CONTAINERS);
+    expect(layout.containerOverflowCount).toBe(116 - MAX_RENDERED_CONTAINERS);
+    expect(layout.containerOverflow).not.toBeNull();
+    // The attention-worthy bodies are all rendered despite sorting last.
+    expect(layout.containerField.has("zz-exited")).toBe(true);
+    expect(layout.containerField.has("zz-unknown")).toBe(true);
+    expect(layout.containerField.has("zz-hot")).toBe(true);
+    // …which means some alphabetically-earlier idle container yielded.
+    expect(layout.containerField.has("container-112")).toBe(false);
   });
 
   it("uses a truthful overflow body instead of silently truncating large populations", () => {

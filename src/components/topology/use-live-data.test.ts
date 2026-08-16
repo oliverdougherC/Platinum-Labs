@@ -218,3 +218,212 @@ describe("useLiveData lifecycle", () => {
     expect(result.current.transport.shellState).toBe("healthy");
   });
 });
+
+describe("useLiveData self-healing fallback", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const flush = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  /** Advance fake time in watchdog-sized steps, flushing microtasks between. */
+  const advance = async (ms: number, step = 1_000) => {
+    for (let elapsed = 0; elapsed < ms; elapsed += step) {
+      await act(async () => {
+        vi.advanceTimersByTime(Math.min(step, ms - elapsed));
+        await flush();
+      });
+    }
+  };
+
+  function okFetch(payload: unknown) {
+    return vi.fn().mockResolvedValue({ ok: true, json: async () => payload });
+  }
+
+  it("starts fallback when SSE reports open but never delivers an event", async () => {
+    const initial = makeFakeSnapshot("idle", NOW);
+    const fetchMock = okFetch(makeFakeSnapshot("idle", NOW + 1));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useLiveData(initial, { frozen: false }));
+    const source = FakeEventSource.instances[0]!;
+    act(() => source.onopen?.());
+    expect(result.current.transport.sseState).toBe("open");
+
+    await advance(21_000);
+    expect(fetchMock).toHaveBeenCalled();
+    expect(result.current.transport.pollingState).toBe("active");
+    expect(result.current.transport.lastFallbackSuccessAt).not.toBeNull();
+  });
+
+  it("keeps polling through a heartbeat-only stream of malformed frames", async () => {
+    const initial = makeFakeSnapshot("idle", NOW);
+    const fetchMock = okFetch(makeFakeSnapshot("idle", NOW + 1));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useLiveData(initial, { frozen: false }));
+    const source = FakeEventSource.instances[0]!;
+    act(() => source.onopen?.());
+
+    await advance(21_000);
+    const callsWhenFallbackStarted = fetchMock.mock.calls.length;
+    expect(callsWhenFallbackStarted).toBeGreaterThan(0);
+
+    // Heartbeats / malformed frames are NOT delivery: fallback keeps running.
+    act(() => source.emit("snapshot", "not json"));
+    act(() => source.emit("telemetry", "{broken"));
+    await advance(14_000);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsWhenFallbackStarted);
+    expect(result.current.transport.pollingState).toBe("active");
+  });
+
+  it("stops fallback only after a valid frame is parsed and applied", async () => {
+    const initial = makeFakeSnapshot("idle", NOW);
+    const fetchMock = okFetch(makeFakeSnapshot("idle", NOW + 1));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useLiveData(initial, { frozen: false }));
+    const source = FakeEventSource.instances[0]!;
+    act(() => source.onopen?.());
+    await advance(21_000);
+    expect(result.current.transport.pollingState).toBe("active");
+
+    // Valid SSE delivery resumes → fallback stands down…
+    const next = makeFakeSnapshot("downloads", NOW + 25_000);
+    act(() => source.emit("snapshot", JSON.stringify(next)));
+    expect(result.current.transport.pollingState).toBe("idle");
+
+    // …and stays down while frames keep arriving.
+    const before = fetchMock.mock.calls.length;
+    for (let i = 0; i < 3; i++) {
+      await advance(5_000);
+      act(() =>
+        source.emit("snapshot", JSON.stringify(makeFakeSnapshot("downloads", NOW + 30_000 + i))),
+      );
+    }
+    expect(fetchMock.mock.calls.length).toBe(before);
+  });
+
+  it("times out a slow fallback request instead of letting calls overlap", async () => {
+    const initial = makeFakeSnapshot("idle", NOW);
+    const aborts: number[] = [];
+    const fetchMock = vi.fn().mockImplementation(
+      (_url: string, opts: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          opts.signal.addEventListener("abort", () => {
+            aborts.push(Date.now());
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useLiveData(initial, { frozen: false }));
+    const source = FakeEventSource.instances[0]!;
+    await act(async () => {
+      source.onerror?.();
+      await flush();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The bounded deadline (6s) fires before the next interval tick (7s):
+    // the slow request fails cleanly and the next tick starts fresh.
+    await advance(6_500);
+    expect(aborts).toHaveLength(1);
+    expect(result.current.transport.pollingState).toBe("failed");
+    await advance(1_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("never overlaps fallback calls while one is in flight", async () => {
+    const initial = makeFakeSnapshot("idle", NOW);
+    // A pathological fetch that ignores abort and never settles: the
+    // in-flight guard alone must prevent a second concurrent request.
+    const fetchMock = vi.fn().mockImplementation(() => new Promise(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+    renderHook(() => useLiveData(initial, { frozen: false }));
+    const source = FakeEventSource.instances[0]!;
+    await act(async () => {
+      source.onerror?.();
+      await flush();
+    });
+    await advance(15_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("tears down cleanly with a fallback request in flight", async () => {
+    const initial = makeFakeSnapshot("idle", NOW);
+    let aborted = false;
+    const fetchMock = vi.fn().mockImplementation(
+      (_url: string, opts: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          opts.signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { unmount } = renderHook(() => useLiveData(initial, { frozen: false }));
+    const source = FakeEventSource.instances[0]!;
+    await act(async () => {
+      source.onerror?.();
+      await flush();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(aborted).toBe(true);
+    expect(source.closed).toBe(true);
+    await advance(30_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("repeated SSE errors never create duplicate polling loops", async () => {
+    const initial = makeFakeSnapshot("idle", NOW);
+    const fetchMock = okFetch(makeFakeSnapshot("idle", NOW + 1));
+    vi.stubGlobal("fetch", fetchMock);
+    renderHook(() => useLiveData(initial, { frozen: false }));
+    const source = FakeEventSource.instances[0]!;
+    await act(async () => {
+      source.onerror?.();
+      source.onerror?.();
+      source.onerror?.();
+      await flush();
+    });
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await advance(7_500);
+    // One interval loop: exactly one more call after one interval elapses.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("visibility resume reconnects exactly once and fetches one snapshot", async () => {
+    const initial = makeFakeSnapshot("idle", NOW);
+    const fetchMock = okFetch(makeFakeSnapshot("idle", NOW + 1));
+    vi.stubGlobal("fetch", fetchMock);
+    renderHook(() => useLiveData(initial, { frozen: false }));
+
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(FakeEventSource.instances[0]!.closed).toBe(true);
+
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await flush();
+    });
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[1]!.closed).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

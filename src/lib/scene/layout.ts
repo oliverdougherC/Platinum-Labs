@@ -110,6 +110,55 @@ export const LANE_R = 424;
 export const BELT_R = 456;
 export const MAX_RENDERED_CONTAINERS = 96;
 
+/**
+ * Fixed reserved envelope for every container slot (world units): the maximum
+ * drawn body radius (13, see containerRadius) plus breathing margin. Layout
+ * reserves this NOMINAL envelope instead of the live radius, so a container's
+ * CENTER depends only on stable identity, viewport/aspect, and stable
+ * topology membership — CPU/memory/I/O/health changes let the drawn body
+ * breathe INSIDE its slot without moving it or repositioning neighbours.
+ * I/O halos are decorative atmosphere and never become layout obstacles.
+ */
+export const CONTAINER_SLOT_R = 18;
+
+/**
+ * Which containers get a rendered body when the population exceeds the
+ * visual budget. NEVER the first `max` alphabetically: attention-worthy and
+ * active containers must not vanish into the overflow. Priority order:
+ *   1. unhealthy / stopped (`bad`)
+ *   2. unknown / unverified state
+ *   3. highest live activity/resource score
+ *   4. deterministic name tie-breaker
+ * Populations at or under the budget render in full. The overflow body keeps
+ * a truthful count and the detail drawer lists every container.
+ *
+ * Note: tier 3 follows LIVE activity, so membership near the budget boundary
+ * can change as workloads shift — accepted, because hiding a hot container
+ * would be the greater lie. Within one membership set, positions stay fixed.
+ */
+export function selectRenderedContainers<
+  T extends {
+    name: string;
+    bad: boolean;
+    unverified: boolean;
+    resourceScore: number;
+    ioIntensity: number;
+  },
+>(containers: readonly T[], max: number): T[] {
+  const tier = (c: T) => (c.bad ? 0 : c.unverified ? 1 : 2);
+  return [...containers]
+    .sort((a, b) => {
+      const ta = tier(a);
+      const tb = tier(b);
+      if (ta !== tb) return ta - tb;
+      const sa = Math.max(a.resourceScore, a.ioIntensity);
+      const sb = Math.max(b.resourceScore, b.ioIntensity);
+      if (sa !== sb) return sb - sa;
+      return a.name.localeCompare(b.name);
+    })
+    .slice(0, max);
+}
+
 /** Stable FNV-1a hash used only for deterministic procedural layout. */
 export function containerHash(name: string): number {
   let hash = 0x811c9dc5;
@@ -265,9 +314,12 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
     a1: deg(162),
   };
 
-  const renderedContainers = [...model.docker.containers]
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .slice(0, MAX_RENDERED_CONTAINERS);
+  // Above the visual budget, keep the attention-worthy and active containers
+  // (never the first N alphabetically); see selectRenderedContainers.
+  const renderedContainers = selectRenderedContainers(
+    model.docker.containers,
+    MAX_RENDERED_CONTAINERS,
+  );
   const containerOverflowCount = Math.max(
     0,
     model.docker.containers.length - renderedContainers.length,
@@ -282,7 +334,17 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
   const span = dockerBelt.a1 - dockerBelt.a0;
   const unit = 1 / 0x1_0000_0000;
 
-  for (const container of renderedContainers) {
+  // Placement is a pure function of (name, aspect, membership set): every
+  // slot reserves the fixed CONTAINER_SLOT_R envelope, never the live radius
+  // or I/O halo, so telemetry changes cannot move any center. Placement order
+  // is name-sorted so telemetry ORDER cannot either. Adding/removing a
+  // container (or membership churn at the overflow boundary) may shift the
+  // collision-resolution of later attempts — membership is part of the stable
+  // configuration; per-sample metrics are not.
+  const placementOrder = [...renderedContainers].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  for (const container of placementOrder) {
     const seed = containerHash(container.name);
     const u = seed * unit;
     const v = containerHash(`${container.name}:radius`) * unit;
@@ -294,17 +356,17 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
       const sin = Math.sin(angle);
       const edgeR = Math.min(
         cos > 0
-          ? (w - safe.right - container.radius - core.center.x) / cos
-          : (core.center.x - safe.left - container.radius) / -cos,
+          ? (w - safe.right - CONTAINER_SLOT_R - core.center.x) / cos
+          : (core.center.x - safe.left - CONTAINER_SLOT_R) / -cos,
         sin > 0
-          ? (h - safe.bottom - container.radius - core.center.y) / sin
-          : (core.center.y - safe.top - container.radius) / -sin,
+          ? (h - safe.bottom - CONTAINER_SLOT_R - core.center.y) / sin
+          : (core.center.y - safe.top - CONTAINER_SLOT_R) / -sin,
       );
       const radius = Math.min(desiredR, edgeR);
-      if (radius < core.atmosphereR + container.radius + 38) continue;
+      if (radius < core.atmosphereR + CONTAINER_SLOT_R + 38) continue;
       const point = pointOnCircle(core.center, radius, angle);
       const clear = [...fixedObstacles, ...placed].every(
-        (body) => dist(point, body.center) >= body.atmosphereR + container.radius + 12,
+        (body) => dist(point, body.center) >= body.atmosphereR + CONTAINER_SLOT_R + 12,
       );
       if (clear) {
         chosen = point;
@@ -318,7 +380,7 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
       const edgeR = Math.min(
         BELT_R,
         Math.abs(Math.sin(angle)) > 0.01
-          ? (h - safe.bottom - container.radius - core.center.y) / Math.sin(angle)
+          ? (h - safe.bottom - CONTAINER_SLOT_R - core.center.y) / Math.sin(angle)
           : BELT_R,
       );
       chosen = pointOnCircle(core.center, Math.max(core.atmosphereR + 64, edgeR), angle);
@@ -326,10 +388,12 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
     const geom: BodyGeom = {
       id: `container:${container.name}`,
       center: chosen,
+      // The DRAWN body keeps its live radius (it breathes inside the slot);
+      // the reserved obstacle envelope stays the fixed slot size.
       r: container.radius,
-      atmosphereR: container.radius + 5 + container.ioIntensity * 12,
+      atmosphereR: CONTAINER_SLOT_R,
       orbitAngle: Math.atan2(chosen.y - core.center.y, chosen.x - core.center.x),
-      labelAnchor: vec(chosen.x, chosen.y + container.radius + 18),
+      labelAnchor: vec(chosen.x, chosen.y + CONTAINER_SLOT_R + 13),
     };
     containerField.set(container.name, geom);
     placed.push(geom);

@@ -98,6 +98,16 @@ export interface NetworkModel {
   linkBytesPerSecond: number | null;
 }
 
+/**
+ * How much of a container's metric set was actually observed this cycle.
+ * `complete`: every metric carries a confirmed value (zeros included);
+ * `partial`: some metrics observed, others null (e.g. cgroup v2 hosts omit
+ * blkio); `unavailable`: nothing was sampled — a stats-collection skip or a
+ * refresh-budget pass. Null metrics must never be rendered as CONFIRMED idle:
+ * an unknown workload and a proven-quiet one are different truths (PLA-273).
+ */
+export type ContainerMetricCoverage = "complete" | "partial" | "unavailable";
+
 export interface DockerContainerModel {
   name: string;
   state: ContainerState;
@@ -115,6 +125,7 @@ export interface DockerContainerModel {
   resourceScore: number;
   radius: number;
   ioIntensity: number;
+  metricCoverage: ContainerMetricCoverage;
   unverified: boolean;
   bad: boolean;
 }
@@ -191,6 +202,29 @@ export function containerRadius(resourceScore: number): number {
   // approach the 13-unit ceiling without letting modest memory residency turn
   // every idle process into a primary body.
   return 3 + 10 * Math.pow(clamp01(resourceScore), 1.15);
+}
+
+/** Classify observed vs missing metrics; see ContainerMetricCoverage. */
+export function containerMetricCoverage(container: {
+  cpuFraction: number | null;
+  memoryBytes: number | null;
+  netRxBps: number | null;
+  netTxBps: number | null;
+  blockReadBps: number | null;
+  blockWriteBps: number | null;
+}): ContainerMetricCoverage {
+  const metrics = [
+    container.cpuFraction,
+    container.memoryBytes,
+    container.netRxBps,
+    container.netTxBps,
+    container.blockReadBps,
+    container.blockWriteBps,
+  ];
+  const known = metrics.filter((value) => value !== null).length;
+  if (known === 0) return "unavailable";
+  if (known === metrics.length) return "complete";
+  return "partial";
 }
 
 export function containerIoIntensity(rates: Array<number | null>): number {
@@ -384,6 +418,7 @@ export function buildSceneModel(
           c.blockReadBps,
           c.blockWriteBps,
         ]),
+        metricCoverage: containerMetricCoverage(c),
         unverified: c.state === "unknown",
         bad:
           c.health === "unhealthy" ||

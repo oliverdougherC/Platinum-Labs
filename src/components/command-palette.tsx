@@ -40,6 +40,11 @@ export function CommandPalette({
     { kind: "navigate" } | { kind: "media-search" }
   > | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // The trigger unmounts while the palette is open, so the overlay's captured
+  // activeElement is a dead node on close. This ref always points at the
+  // CURRENT trigger button (it reattaches on remount), giving OverlayShell a
+  // live restore target (V2.1 focus-restoration blocker).
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   const ctx = useMemo(
     () => ({ snapshot, links, now, mediaSearchEnabled: Boolean(onMediaSearch) }),
@@ -105,6 +110,7 @@ export function CommandPalette({
   if (!open) {
     return (
       <button
+        ref={triggerRef}
         type="button"
         onClick={openPalette}
         className={OBSERVATORY_CONTROL_CLASS}
@@ -143,6 +149,7 @@ export function CommandPalette({
       onClose={close}
       label="Command palette"
       initialFocusRef={inputRef}
+      returnFocusRef={triggerRef}
       panelClassName="mt-[3dvh]"
     >
       <div

@@ -747,12 +747,36 @@ export function containerMotionOffset(
   motionEnabled: boolean,
   phase = 0,
 ): { x: number; y: number } {
-  if (!motionEnabled || container.freshness !== "live") return { x: 0, y: 0 };
+  // Stale or metric-less containers must sit perfectly still: motion is an
+  // activity claim, and unknown metrics support no such claim (PLA-273).
+  if (
+    !motionEnabled ||
+    container.freshness !== "live" ||
+    container.metricCoverage === "unavailable"
+  ) {
+    return { x: 0, y: 0 };
+  }
   const energy = Math.max(container.resourceScore, container.ioIntensity);
   return {
     x: Math.cos(t / 19 + phase) * energy * 2.4,
     y: Math.sin(t / 23 + phase) * energy * 2.4,
   };
+}
+
+/**
+ * Pure stroke/dash decision for a container body — exported so the unknown ≠
+ * idle distinction is unit-testable without rasterizing. Confirmed-idle bodies
+ * keep a solid quiet outline; metric-less bodies get a NEUTRAL dashed static
+ * treatment (distinct from the tighter dash of an unknown-STATE container).
+ */
+export function containerStrokeTreatment(container: DockerContainerModel): {
+  token: ColorTokenName;
+  dash: number[] | null;
+} {
+  if (container.bad) return { token: "danger", dash: null };
+  if (container.unverified) return { token: "faint", dash: [2, 2] };
+  if (container.metricCoverage === "unavailable") return { token: "muted", dash: [4, 3] };
+  return { token: "fg", dash: null };
 }
 
 function drawContainerAsteroid(
@@ -790,16 +814,23 @@ function drawContainerAsteroid(
     }
   }
 
-  const alpha = stale ? 0.24 : container.bad ? 0.78 : 0.3 + energy * 0.32;
-  const stateToken: ColorTokenName = container.bad
-    ? "danger"
-    : container.unverified
-      ? "faint"
-      : "fg";
-  ctx.fillStyle = rgba(stateToken, container.unverified ? 0.05 : alpha * 0.45);
-  ctx.strokeStyle = rgba(stateToken, container.unverified ? 0.55 : alpha);
+  const metricsUnknown =
+    container.metricCoverage === "unavailable" && !container.bad && !container.unverified;
+  const alpha = stale
+    ? 0.24
+    : container.bad
+      ? 0.78
+      : metricsUnknown
+        ? 0.42 // quiet but present — NOT the dimmer confirmed-idle floor
+        : 0.3 + energy * 0.32;
+  const treatment = containerStrokeTreatment(container);
+  ctx.fillStyle = rgba(
+    treatment.token,
+    container.unverified ? 0.05 : metricsUnknown ? 0.03 : alpha * 0.45,
+  );
+  ctx.strokeStyle = rgba(treatment.token, container.unverified ? 0.55 : alpha);
   ctx.lineWidth = container.bad ? 1.8 : 1;
-  if (container.unverified) ctx.setLineDash([2, 2]);
+  if (treatment.dash) ctx.setLineDash(treatment.dash);
   ctx.beginPath();
   if (container.bad) {
     // Angular silhouette distinguishes stopped/unhealthy state without color.
@@ -817,7 +848,7 @@ function drawContainerAsteroid(
   }
   ctx.fill();
   ctx.stroke();
-  if (container.unverified) ctx.setLineDash([]);
+  if (treatment.dash) ctx.setLineDash([]);
 
   if (hovered || container.bad) {
     ctx.fillStyle = rgba(container.bad ? "danger" : "muted", stale ? 0.5 : 0.82);

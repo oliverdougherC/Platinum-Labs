@@ -23,10 +23,25 @@ import type {
  */
 
 const FALLBACK_POLL_MS = 7_000;
+/**
+ * Hard per-request deadline for one fallback fetch. Strictly less than the
+ * poll interval, so a slow response can never overlap the next tick or be
+ * repeatedly aborted by it — a request either finishes or times out first.
+ */
+const FALLBACK_TIMEOUT_MS = 6_000;
 const HIDDEN_CLOSE_MS = 60_000;
 /** Data older than this renders the stale indicator. */
 const STALE_AFTER_MS = 20_000;
 const OFFLINE_AFTER_MS = 45_000;
+/**
+ * SSE delivery watchdog: the server emits telemetry every ~2s and snapshots
+ * every ~5s, so a connection that has parsed no valid frame for this long is
+ * not actually delivering — regardless of what `EventSource.readyState`
+ * claims. An open-but-silent, heartbeat-only, buffered, or malformed stream
+ * must fall back to polling instead of leaving the page delayed forever.
+ */
+const SSE_SILENT_AFTER_MS = 15_000;
+const WATCHDOG_INTERVAL_MS = 5_000;
 
 export function liveDataIsStale(
   generatedAt: number,
@@ -125,7 +140,9 @@ export function useLiveData(
   const { scenario, frozen } = opts;
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>(initial);
   const [transport, setTransport] = useState<TransportObservation>(() => {
-    const now = Date.now();
+    // Frozen mode anchors receive times to the snapshot clock so every
+    // transport-derived surface stays independent of the machine date.
+    const now = frozen ? initial.generatedAt : Date.now();
     return {
       lastSnapshotReceivedAt: now,
       lastTelemetryReceivedAt: null,
@@ -143,14 +160,20 @@ export function useLiveData(
 
     let source: EventSource | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let watchdogTimer: ReturnType<typeof setInterval> | null = null;
     let hiddenTimer: ReturnType<typeof setTimeout> | null = null;
-    let pollAbort: AbortController | null = null;
     let disposed = false;
+    /** In-flight guard: fallback requests never overlap or abort each other. */
+    let pollInFlight = false;
+    /** The in-flight request's own controller, aborted only on teardown. */
+    let activePollAbort: AbortController | null = null;
+    /** Last time a VALID SSE frame was parsed and applied (connect resets it). */
+    let lastSseDeliveryAt = Date.now();
 
     const query = scenario ? `?scenario=${encodeURIComponent(scenario)}` : "";
 
-    const applySnapshot = (snap: DashboardSnapshot) => {
-      if (disposed || document.hidden) return;
+    const applySnapshot = (snap: DashboardSnapshot): boolean => {
+      if (disposed || document.hidden) return false;
       setSnapshot(snap);
       const receivedAt = Date.now();
       setTransport((prev) => ({
@@ -158,10 +181,11 @@ export function useLiveData(
         lastSnapshotGeneratedAt: snap.generatedAt,
         lastSnapshotReceivedAt: receivedAt,
       }));
+      return true;
     };
 
-    const applyTelemetry = (ev: TelemetryEvent) => {
-      if (disposed || document.hidden) return;
+    const applyTelemetry = (ev: TelemetryEvent): boolean => {
+      if (disposed || document.hidden) return false;
       setSnapshot((prev) => ({
         ...prev,
         telemetry: ev.telemetry,
@@ -173,6 +197,7 @@ export function useLiveData(
         lastTelemetryGeneratedAt: ev.generatedAt,
         lastTelemetryReceivedAt: receivedAt,
       }));
+      return true;
     };
 
     const stopPolling = () => {
@@ -183,16 +208,29 @@ export function useLiveData(
       }
     };
 
+    // Fallback stops ONLY here: a frame counted as delivered after both JSON
+    // parsing and application succeeded. `onopen` and pre-parse listener entry
+    // prove nothing about delivery and must not silence the fallback.
+    const markSseDelivery = () => {
+      lastSseDeliveryAt = Date.now();
+      stopPolling();
+    };
+
     const pollOnce = async () => {
-      if (!disposed) {
-        setTransport((prev) => ({ ...prev, pollingState: "active" }));
-      }
+      if (disposed || pollInFlight) return;
+      pollInFlight = true;
+      setTransport((prev) => ({ ...prev, pollingState: "active" }));
+      const abort = new AbortController();
+      activePollAbort = abort;
+      let timedOut = false;
+      const deadline = setTimeout(() => {
+        timedOut = true;
+        abort.abort();
+      }, FALLBACK_TIMEOUT_MS);
       try {
-        pollAbort?.abort();
-        pollAbort = new AbortController();
         const res = await fetch(`/api/dashboard${query}`, {
           cache: "no-store",
-          signal: pollAbort.signal,
+          signal: abort.signal,
         });
         if (res.ok) {
           applySnapshot((await res.json()) as DashboardSnapshot);
@@ -208,9 +246,16 @@ export function useLiveData(
           setTransport((prev) => ({ ...prev, pollingState: "failed" }));
         }
       } catch {
-        if (!disposed && !pollAbort?.signal.aborted) {
+        // A deadline abort is a real failure of THIS request; a teardown
+        // abort is not. Either way this request can never mark a newer one
+        // failed — the controller is request-local.
+        if (!disposed && (timedOut || !abort.signal.aborted)) {
           setTransport((prev) => ({ ...prev, pollingState: "failed" }));
         }
+      } finally {
+        clearTimeout(deadline);
+        pollInFlight = false;
+        if (activePollAbort === abort) activePollAbort = null;
       }
     };
 
@@ -222,26 +267,31 @@ export function useLiveData(
 
     const connect = () => {
       if (disposed || source) return;
+      // A fresh connection earns one full delivery window before the
+      // watchdog may declare it silent.
+      lastSseDeliveryAt = Date.now();
       setTransport((prev) => ({ ...prev, sseState: "connecting" }));
       source = new EventSource(`/api/stream${query}`);
       source.onopen = () => {
+        // `open` is a socket claim, not proof of delivery — fallback keeps
+        // running until a valid frame is parsed and applied.
         if (disposed) return;
         setTransport((prev) => ({ ...prev, sseState: "open" }));
-        stopPolling();
       };
       source.addEventListener("snapshot", (e) => {
-        stopPolling(); // SSE delivering → polling unnecessary
         try {
-          applySnapshot(JSON.parse((e as MessageEvent).data) as DashboardSnapshot);
+          const snap = JSON.parse((e as MessageEvent).data) as DashboardSnapshot;
+          if (applySnapshot(snap)) markSseDelivery();
         } catch {
-          // malformed frame: ignore
+          // malformed frame: not delivery — the watchdog/fallback stay armed
         }
       });
       source.addEventListener("telemetry", (e) => {
         try {
-          applyTelemetry(JSON.parse((e as MessageEvent).data) as TelemetryEvent);
+          const ev = JSON.parse((e as MessageEvent).data) as TelemetryEvent;
+          if (applyTelemetry(ev)) markSseDelivery();
         } catch {
-          // malformed frame: ignore
+          // malformed frame: not delivery
         }
       });
       source.onerror = () => {
@@ -280,13 +330,21 @@ export function useLiveData(
     };
 
     connect();
+    // Delivery watchdog: even an "open" stream must keep proving itself with
+    // valid frames; silence beyond the window re-arms fallback polling, and
+    // markSseDelivery() stands it back down when real delivery resumes.
+    watchdogTimer = setInterval(() => {
+      if (disposed || document.hidden || !source) return;
+      if (Date.now() - lastSseDeliveryAt > SSE_SILENT_AFTER_MS) startPolling();
+    }, WATCHDOG_INTERVAL_MS);
     document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
       disposed = true;
       document.removeEventListener("visibilitychange", onVisibility);
       if (hiddenTimer) clearTimeout(hiddenTimer);
-      pollAbort?.abort();
+      if (watchdogTimer) clearInterval(watchdogTimer);
+      activePollAbort?.abort();
       disconnect();
     };
   }, [scenario, frozen]);

@@ -122,10 +122,22 @@ function GroupRow({
   );
 }
 
-export function useNotificationCenter(attention: AttentionItem[], frozen: boolean) {
+/**
+ * `now` is the app's authoritative clock (`referenceNow`): the frozen
+ * snapshot clock under the review harness, wall time in production. Every
+ * visible grouping/relative-time decision derives from it so frozen frames
+ * are bit-identical regardless of the machine's system date (V2.1 review
+ * blocker). Persistence WRITES still use real time outside frozen mode.
+ */
+export function useNotificationCenter(
+  attention: AttentionItem[],
+  frozen: boolean,
+  now: number,
+) {
   const [prefs, setPrefs] = useState<NotificationPrefs | null>(null);
 
   // Load persisted prefs client-side once (SSR renders with none applied).
+  // Snooze pruning is a persistence concern and may use real time.
   useEffect(() => {
     setPrefs(loadPrefs(Date.now()));
   }, []);
@@ -140,11 +152,9 @@ export function useNotificationCenter(attention: AttentionItem[], frozen: boolea
     if (!frozen) savePrefs(next, Date.now());
   };
 
-  const now = Date.now();
   const grouped = useMemo(
     () => groupNotifications(attention, effectivePrefs, now),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `now` is a render-time clock read
-    [attention, effectivePrefs],
+    [attention, effectivePrefs, now],
   );
   return {
     prefs: effectivePrefs,
@@ -192,6 +202,7 @@ export function NotificationDrawer({
   groups,
   hiddenCount,
   prefs,
+  now,
   onUpdatePrefs,
   onClose,
 }: {
@@ -199,10 +210,11 @@ export function NotificationDrawer({
   groups: NotificationGroup[];
   hiddenCount: number;
   prefs: NotificationPrefs;
+  /** Authoritative clock (frozen snapshot time under the review harness). */
+  now: number;
   onUpdatePrefs: (next: NotificationPrefs) => void;
   onClose: () => void;
 }) {
-  const now = Date.now();
   return (
     <DrawerShell
       open={open}

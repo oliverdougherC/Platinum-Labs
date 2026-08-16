@@ -624,13 +624,19 @@ function ContainerDetail({ name, snapshot }: { name: string; snapshot: Dashboard
 export function DetailDrawer({
   selection,
   snapshot,
+  now,
   onClose,
 }: {
   selection: TopologySelection | null;
   snapshot: DashboardSnapshot;
+  /**
+   * Authoritative clock (`referenceNow`): the frozen snapshot clock under the
+   * review harness, wall time in production — every relative-time string in
+   * the drawer derives from it (V2.1 determinism blocker).
+   */
+  now: number;
   onClose: () => void;
 }) {
-  const now = Date.now();
   const title = useMemo(() => {
     if (!selection) return "";
     switch (selection.kind) {

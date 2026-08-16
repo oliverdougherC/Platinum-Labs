@@ -33,6 +33,21 @@ const boolFlag = z
   .optional()
   .transform((v) => v === "1" || v === "true");
 
+/**
+ * Optional bounded integer that treats a BLANK value exactly like an absent
+ * one. `.env` templates ship every key with an empty value (`FOO=`), and
+ * `z.coerce.number()` turns `""`/whitespace into 0 — which then fails the
+ * bound check and takes the whole app down at startup while `/api/health`
+ * still answers 200. Blank ⇒ undefined; anything non-blank must be a valid
+ * integer in range (malformed values still fail loudly).
+ */
+const optionalBoundedInt = (min: number, max: number) =>
+  z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    z.coerce.number().int().min(min).max(max).optional(),
+  );
+
 const envSchema = z.object({
   /** Master switch between deterministic fake data and live connectors. */
   HOMELAB_DATA_MODE: z.enum(["fake", "live"]).default("fake"),
@@ -46,7 +61,7 @@ const envSchema = z.object({
     .optional()
     .or(z.literal("").transform(() => undefined)),
   /** Selected interface capacity in megabits/sec for truthful visual scaling. */
-  HOMELAB_NETWORK_LINK_MBPS: z.coerce.number().int().min(100).max(100_000).optional(),
+  HOMELAB_NETWORK_LINK_MBPS: optionalBoundedInt(100, 100_000),
 
   // --- Jellyfin ---
   JELLYFIN_URL: optionalUrl,

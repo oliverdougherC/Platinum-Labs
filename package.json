@@ -21,6 +21,7 @@
     "verify": "npm run typecheck && npm run lint && npm run test && npm run build",
     "deploy": "scripts/deploy-production.sh",
     "soak": "node scripts/soak.mjs",
+    "smoke:example-env": "node scripts/smoke-example-env.mjs",
     "compose:prod:config": "HOMEPAGE_ENV_FILE=.env.example MEDIA_NETWORK_NAME=media_default JELLYFIN_NETWORK_NAME=jellyfin_default HOMEPAGE_BIND_ADDRESS=127.0.0.1 HOMEPAGE_PORT=3000 HOMEPAGE_VOLUME_NAME=homelab-homepage-data ZFS_COLLECTOR_TOKEN=placeholder docker compose -f docker-compose.yml -f docker-compose.production.yml --profile zfs-sidecar config",
     "screenshots": "node scripts/screenshots.mjs",
     "screenshots:motion": "node scripts/screenshots.mjs --motion",

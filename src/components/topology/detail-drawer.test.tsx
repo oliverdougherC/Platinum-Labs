@@ -14,6 +14,7 @@ describe("DetailDrawer", () => {
       <DetailDrawer
         selection={{ kind: "service", id: "jellyfin" }}
         snapshot={snapshot}
+        now={1_754_000_000_000}
         onClose={() => {}}
       />,
     );
@@ -22,7 +23,14 @@ describe("DetailDrawer", () => {
   });
 
   it("does not mount a closed drawer", () => {
-    render(<DetailDrawer selection={null} snapshot={makeFakeSnapshot("idle")} onClose={() => {}} />);
+    render(
+      <DetailDrawer
+        selection={null}
+        snapshot={makeFakeSnapshot("idle")}
+        now={1_754_000_000_000}
+        onClose={() => {}}
+      />,
+    );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

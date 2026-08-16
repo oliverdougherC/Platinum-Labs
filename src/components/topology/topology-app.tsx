@@ -173,12 +173,16 @@ export function TopologyApp({
         : "The full snapshot or high-frequency telemetry stream is delayed.",
       source: "host",
       firstSeenAt: lastSeen + 20_000,
-      lastSeenAt: Date.now(),
+      // referenceNow, never Date.now(): with a frozen snapshot plus a
+      // transport override, the harness must render identical pixels on any
+      // machine date (V2.1 determinism blocker).
+      lastSeenAt: referenceNow,
     }];
-  }, [shellTransportState, transport]);
+  }, [shellTransportState, transport, referenceNow]);
   const notifications = useNotificationCenter(
     [...snapshot.attention, ...transportAttention],
     frozen,
+    referenceNow,
   );
   const activeCount = notifications.groups.reduce((sum, g) => sum + g.items.length, 0);
 
@@ -296,12 +300,14 @@ export function TopologyApp({
         groups={notifications.groups}
         hiddenCount={notifications.hiddenCount}
         prefs={notifications.prefs}
+        now={referenceNow}
         onUpdatePrefs={notifications.update}
         onClose={() => setNotifOpen(false)}
       />
       <DetailDrawer
         selection={selection}
         snapshot={snapshot}
+        now={referenceNow}
         onClose={() => setSelection(null)}
       />
 
