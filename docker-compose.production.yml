@@ -54,9 +54,10 @@ services:
       # Optional: aggregate only these interfaces (comma-separated). Default:
       # physical-looking interfaces (en*/eth*/bond*), excluding veth/br/tailscale.
       HOST_NET_INTERFACES: ${HOST_NET_INTERFACES:-}
-      # Optional: read-only Docker socket proxy URL (GET-only endpoints used).
-      # Leave empty to report the docker section as "not-configured".
-      DOCKER_PROXY_URL: ${DOCKER_PROXY_URL:-}
+      # Read-only Docker socket proxy URL (GET-only endpoints used). Defaults
+      # to the stack's own narrow proxy below; set empty to report the docker
+      # section as "not-configured".
+      DOCKER_PROXY_URL: ${DOCKER_PROXY_URL:-http://docker-proxy:2375}
     devices:
       - "/dev/zfs:/dev/zfs"
     volumes:
@@ -90,6 +91,35 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+  # Narrow read-only Docker telemetry access (PLA-265/272 review blocker).
+  # The collector may ONLY reach `GET /containers/*` (list + one-shot stats):
+  # the proxy denies every other API section, POST is disabled, the socket is
+  # mounted read-only, and the proxy lives exclusively on the private sidecar
+  # network — it is never published and nothing else can reach it. This is
+  # deliberately NOT an unrestricted /var/run/docker.sock mount.
+  docker-proxy:
+    profiles: ["zfs-sidecar"]
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      POST: 0
+      # Everything else (exec, images, volumes, networks, swarm, …) defaults
+      # to denied in this image; list nothing so nothing else opens.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      zfs_private:
+        aliases:
+          - docker-proxy
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   homelab-data:
