@@ -373,9 +373,13 @@ export function TopologyScene({
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      // Body hover (buttons) takes precedence; only probe flows on the ground.
-      if ((e.target as HTMLElement).tagName === "BUTTON") {
-        setFlowTip((cur) => (cur ? null : cur));
+      // Body hover (buttons) takes precedence; only probe flows on the
+      // ground. A flow's own focus target keeps its tooltip alive instead.
+      const target = e.target as HTMLElement;
+      if (target.tagName === "BUTTON") {
+        if (!target.hasAttribute("data-flow-target")) {
+          setFlowTip((cur) => (cur ? null : cur));
+        }
         return;
       }
       const rect = hostRef.current?.getBoundingClientRect();
@@ -470,8 +474,10 @@ export function TopologyScene({
               key={g.flow.id}
               type="button"
               aria-label={`${d.summary}. ${d.detail}`}
+              data-flow-target
               onFocus={() => setFlowTip({ id: g.flow.id, x: mid.x, y: mid.y })}
               onBlur={() => setFlowTip((cur) => (cur?.id === g.flow.id ? null : cur))}
+              onMouseEnter={() => setFlowTip({ id: g.flow.id, x: mid.x, y: mid.y })}
               className="absolute rounded-full outline-none focus-visible:ring-1 focus-visible:ring-accent/70"
               style={{ left: p.x - 9, top: p.y - 9, width: 18, height: 18 }}
             />
