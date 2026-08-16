@@ -46,11 +46,19 @@ Set `HOMELAB_FAKE_SCENARIO` (or use the dev switcher / `?scenario=` in dev):
 
 `idle`, `direct-play`, `transcode`, `multi-session`, `downloads`, `stalled`,
 `connector-unavailable`, `stale`, `zfs-warning`, `zfs-degraded`, `unconfigured`,
-`active`, `attention`.
+`active`, `attention`, `container-field-real` (a sanitized 44-container
+real-scale population), `container-field-stress` (above the 96-body render
+budget, proving truthful overflow).
 
 The screenshot harness drives the same scenarios with a frozen clock and stable
 query parameters (`?scenario=…&freeze=…`, plus optional `panel=` / `drawer=`),
 so review evidence is reproducible from a clean checkout.
+
+**Committed review evidence is captured from a production build** (`--prod`:
+`next build` + `next start`, dev controls enabled at runtime) with a headful
+browser — dev-mode numbers include compile/HMR overhead and headless Chromium
+has no real GPU path, so neither may back performance claims. Every artifact
+records its build mode; the default dev-mode harness remains for iteration.
 
 ## Configuration
 
@@ -164,8 +172,12 @@ compatible with the Seerr v3 `/api/v1` contract.
 | `npm run verify` | typecheck + lint + test + build (the full gate) |
 | `npm run audit:prod` | production dependency policy audit |
 | `npm run compose:prod:config` | validate the production Compose topology |
-| `npm run screenshots` | deterministic still review evidence |
+| `npm run screenshots` | deterministic stills (dev server; iteration only) |
+| `npm run screenshots:prod` | deterministic stills from a production build (committed evidence) |
 | `npm run screenshots:motion` | deterministic motion/reduced-motion evidence |
+| `npm run screenshots:performance:prod` | production-build performance JSON (headful GPU) |
+| `npm run screenshots:determinism` | frozen-frame pixel identity under two system dates |
+| `npm run smoke:example-env` | boots a production build under `.env.example` and asserts health + homepage |
 | `npm run soak -- …` | deployed long-run RSS/DB-growth sampler |
 
 CI (`.github/workflows/ci.yml`) runs `verify`, a secret scan (gitleaks) +

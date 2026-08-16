@@ -13,17 +13,30 @@
  * USAGE
  *   node scripts/screenshots.mjs [--base-url http://localhost:3900]
  *                                [--out docs/review/v21-living-topology]
+ *                                [--prod] [--headless]
  *                                [--motion] [--performance] [--lab]
+ *                                [--determinism]
  *                                [--only <name-substring>]
  *
- * Without --base-url the harness starts `next dev` on port 3911 with
- * HOMELAB fake-mode env and tears it down afterwards. `--motion` records a
- * ~24s idle→active webm (and a GIF when ffmpeg is available) instead of PNGs.
- * `--lab` captures the flow-design contact sheets (one full-page frame per
- * tunnel treatment from /dev/flow-lab, at a fixed animation clock).
+ * Without --base-url the harness starts a server on port 3911 with HOMELAB
+ * fake-mode env and tears it down afterwards: `next dev` by default (fast
+ * iteration), or `next build` + `next start` with --prod. COMMITTED review
+ * evidence (screenshots, performance JSON) must come from --prod — dev-mode
+ * numbers include compilation/HMR overhead and are not production claims.
+ * Every artifact records which build mode produced it.
+ *
+ * `--motion` records a ~24s idle→active webm (and a GIF when ffmpeg is
+ * available) instead of PNGs. `--lab` captures the flow-design contact
+ * sheets. `--performance` samples per-scenario browser cost — headFUL by
+ * default because headless Chromium has no real GPU raster path and its
+ * numbers mislead (pass --headless only for rough smoke runs; the JSON
+ * records it). `--determinism` captures the same frozen state under two
+ * fake system dates half a year apart and fails unless the PNGs are
+ * byte-identical.
  */
 
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
 
@@ -65,7 +78,34 @@ const SHOTS = [
   { name: "30-zoom-150", scenario: "idle", w: 1280, h: 720, zoom: 1.5 },
   { name: "31-small-window-drawer", scenario: "active", w: 1280, h: 720, action: "host-detail" },
   { name: "32-renderer-debug", scenario: "active", w: 1920, h: 1080, debug: true },
+  // Real-scale container evidence (PLA-272): a sanitized 44-container replay
+  // of a real server population, and a stress field above the render budget.
+  { name: "33-real-scale-container-field", scenario: "container-field-real", w: 1920, h: 1080 },
+  { name: "34-container-field-stress", scenario: "container-field-stress", w: 1920, h: 1080 },
 ];
+
+/**
+ * Truthful container accounting per scenario — the harness fails loudly if a
+ * fixture is silently truncated or an expectation drifts from the fixtures.
+ * rendered + overflow must equal the source population.
+ */
+const CONTAINER_EXPECTATIONS = {
+  default: { population: 14, rendered: 14, overflow: 0 },
+  "container-field-real": { population: 44, rendered: 44, overflow: 0 },
+  "container-field-stress": { population: 106, rendered: 96, overflow: 10 },
+};
+
+/** Bodies that must never be hidden by overflow selection, per scenario. */
+const REQUIRED_CONTAINER_TARGETS = {
+  "container-field-real": ["flaresolverr", "unpackerr", "jellyfin"],
+  "container-field-stress": [
+    "zz-batch-failed", // unhealthy, sorts last alphabetically
+    "zz-batch-unknown", // unknown state, sorts last alphabetically
+    "flaresolverr",
+    "unpackerr",
+    "jellyfin", // highest live activity
+  ],
+};
 
 function arg(flag, fallback = null) {
   const i = process.argv.indexOf(flag);
@@ -77,6 +117,9 @@ const ONLY = arg("--only");
 const MOTION = process.argv.includes("--motion");
 const PERFORMANCE = process.argv.includes("--performance");
 const LAB = process.argv.includes("--lab");
+const DETERMINISM = process.argv.includes("--determinism");
+const PROD = process.argv.includes("--prod");
+const HEADLESS_PERF = process.argv.includes("--headless");
 const PORT = 3911;
 
 async function waitForServer(url, timeoutMs = 60_000) {
@@ -212,9 +255,35 @@ async function validateShot(page, shot, beforeActionBox) {
   await assertInsideViewport(page.locator("header button, header [role=status]"), page, "control");
   await assertInsideViewport(page.locator("main [role=status], [data-overlay-panel]"), page, "tooltip/overlay");
 
+  // Truthful container accounting: rendered bodies + overflow = population.
+  const expected = CONTAINER_EXPECTATIONS[shot.scenario] ?? CONTAINER_EXPECTATIONS.default;
   const containerTargets = page.locator('button[aria-label*=" container detail"]');
-  if ((await containerTargets.count()) !== 14) {
-    throw new Error(`representative container population was truncated (${shot.name})`);
+  const rendered = await containerTargets.count();
+  if (rendered !== expected.rendered) {
+    throw new Error(
+      `rendered container count ${rendered} != expected ${expected.rendered} (${shot.name})`,
+    );
+  }
+  const overflowTarget = page.locator('button[aria-label*="more containers"]');
+  if (expected.overflow > 0) {
+    const overflowLabel = (await overflowTarget.getAttribute("aria-label")) ?? "";
+    if (!overflowLabel.startsWith(`${expected.overflow} more containers`)) {
+      throw new Error(
+        `overflow body claims "${overflowLabel}", expected ${expected.overflow} (${shot.name})`,
+      );
+    }
+  } else if (await overflowTarget.count()) {
+    throw new Error(`unexpected overflow body for a fully rendered population (${shot.name})`);
+  }
+  if (rendered + expected.overflow !== expected.population) {
+    throw new Error(
+      `rendered ${rendered} + overflow ${expected.overflow} != population ${expected.population} (${shot.name})`,
+    );
+  }
+  for (const name of REQUIRED_CONTAINER_TARGETS[shot.scenario] ?? []) {
+    if (!(await page.locator(`button[aria-label^="${name} container detail"]`).count())) {
+      throw new Error(`attention/high-activity container "${name}" hidden by overflow (${shot.name})`);
+    }
   }
   if ((await page.locator('button[aria-label$=" detail"]').count()) < 6) {
     throw new Error(`scene body focus targets are missing (${shot.name})`);
@@ -243,6 +312,12 @@ async function validateShot(page, shot, beforeActionBox) {
   }
 }
 
+/** "production" (next build+start), "development" (next dev) or "external". */
+function buildMode() {
+  if (arg("--base-url")) return "external";
+  return PROD ? "production" : "development";
+}
+
 async function main() {
   mkdirSync(OUT_DIR, { recursive: true });
 
@@ -250,23 +325,46 @@ async function main() {
   let server = null;
   if (!baseUrl) {
     baseUrl = `http://localhost:${PORT}`;
-    server = spawn("npx", ["next", "dev", "-p", String(PORT)], {
-      env: {
-        ...process.env,
-        HOMELAB_DATA_MODE: "fake",
-        HOMELAB_ENABLE_DEV_CONTROLS: "1",
-      },
-      stdio: "ignore",
-    });
+    const serverEnv = {
+      ...process.env,
+      HOMELAB_DATA_MODE: "fake",
+      // Runtime flag: a production build honours ?scenario=/dev fixtures only
+      // with this set — without it every scenario silently measures the
+      // DEFAULT_SCENARIO (a previous evidence bug).
+      HOMELAB_ENABLE_DEV_CONTROLS: "1",
+    };
+    if (PROD) {
+      console.log("building production bundle for evidence capture…");
+      const build = spawnSync("npx", ["next", "build"], {
+        env: serverEnv,
+        stdio: "inherit",
+      });
+      if (build.status !== 0) throw new Error("next build failed");
+      server = spawn("npx", ["next", "start", "-p", String(PORT)], {
+        env: serverEnv,
+        stdio: "ignore",
+      });
+    } else {
+      server = spawn("npx", ["next", "dev", "-p", String(PORT)], {
+        env: serverEnv,
+        stdio: "ignore",
+      });
+    }
   }
   await waitForServer(`${baseUrl}/api/health`);
 
-  const browser = await chromium.launch();
+  // Performance sampling runs headful: headless Chromium lacks the real GPU
+  // raster/compositor path and reports misleading main-thread numbers.
+  const browser = await chromium.launch(
+    PERFORMANCE ? { headless: HEADLESS_PERF } : undefined,
+  );
   try {
     if (MOTION) {
       await captureMotion(browser, baseUrl);
     } else if (PERFORMANCE) {
       await capturePerformance(browser, baseUrl);
+    } else if (DETERMINISM) {
+      await captureDeterminism(browser, baseUrl);
     } else if (LAB) {
       // Flow-design study (PLA-266 v2): the eleven canonical flow states under
       // each tunnel treatment, at one fixed animation clock so particle
@@ -390,21 +488,60 @@ async function measurePerformanceProfile(browser, baseUrl, profile) {
   return result;
 }
 
+/**
+ * Review thresholds for main-thread cost (ms of task time per wall second at
+ * 1920×1080, production build, headful GPU). These are OUR budgets — the
+ * page must stay a quiet ambient surface on a 24/7 display — not an external
+ * benchmark score. Exceeding a budget prints a loud warning and is recorded
+ * in the JSON for the reviewer; the raw numbers are the claim, not a grade.
+ */
+const PERFORMANCE_BUDGET_MS_PER_S = {
+  idle: 40,
+  "representative-active": 80,
+  "container-field-real": 100,
+  "container-field-stress": 150,
+  "reduced-motion": 40,
+  "hidden-tab": 15,
+};
+
 async function capturePerformance(browser, baseUrl) {
   const profiles = [
     { name: "idle", scenario: "idle", reducedMotion: false, hidden: false },
     { name: "representative-active", scenario: "active", reducedMotion: false, hidden: false },
+    { name: "container-field-real", scenario: "container-field-real", reducedMotion: false, hidden: false },
+    { name: "container-field-stress", scenario: "container-field-stress", reducedMotion: false, hidden: false },
     { name: "reduced-motion", scenario: "active", reducedMotion: true, hidden: false },
     { name: "hidden-tab", scenario: "active", reducedMotion: false, hidden: true },
   ];
   const measurements = [];
   for (const profile of profiles) {
     console.log(`measuring browser cost: ${profile.name}…`);
-    measurements.push(await measurePerformanceProfile(browser, baseUrl, profile));
+    const result = await measurePerformanceProfile(browser, baseUrl, profile);
+    const budget = PERFORMANCE_BUDGET_MS_PER_S[profile.name] ?? null;
+    result.budgetMainThreadMsPerSecond = budget;
+    result.withinBudget =
+      budget === null ? null : result.mainThreadTaskMsPerSecond <= budget;
+    if (result.withinBudget === false) {
+      console.warn(
+        `⚠ ${profile.name}: ${result.mainThreadTaskMsPerSecond} ms/s exceeds the ${budget} ms/s review budget`,
+      );
+    }
+    measurements.push(result);
   }
   const evidence = {
     viewport: { width: 1920, height: 1080 },
-    method: "Chromium CDP Performance.getMetrics; 5-second samples after a 2-second settle",
+    build: buildMode(),
+    headless: PERFORMANCE ? HEADLESS_PERF : true,
+    method:
+      "Chromium CDP Performance.getMetrics; 5-second samples after a 2-second settle. " +
+      "Committed evidence uses --prod (next build + next start) and a headful browser; " +
+      "development-mode or headless numbers are for iteration only and say so here.",
+    budget: {
+      description:
+        "Review budget: main-thread ms per wall second at 1920×1080 on the capture machine. " +
+        "A quiet ambient 24/7 surface, not a benchmark score — reviewers judge the raw numbers.",
+      values: PERFORMANCE_BUDGET_MS_PER_S,
+    },
     units: {
       mainThreadTaskMsPerSecond: "milliseconds of main-thread task time per wall second",
       scriptMsPerSecond: "milliseconds of script execution per wall second",
@@ -416,6 +553,49 @@ async function capturePerformance(browser, baseUrl) {
   const path = `${OUT_DIR}/performance-1920x1080.json`;
   writeFileSync(path, `${JSON.stringify(evidence, null, 2)}\n`);
   console.log(`captured ${path}`);
+}
+
+/**
+ * Pixel-level determinism regression (V2.1 review blocker): the SAME frozen
+ * state captured under two fake system dates half a year apart must produce
+ * byte-identical PNGs — any drift means some visible surface still reads the
+ * wall clock instead of the frozen snapshot clock. Runs the notification
+ * drawer over the attention scenario (the densest relative-time surface).
+ */
+async function captureDeterminism(browser, baseUrl) {
+  const SYSTEM_DATES = [
+    Date.UTC(2026, 7, 16, 9, 30, 0),
+    Date.UTC(2027, 1, 3, 22, 45, 11),
+  ];
+  const hashes = [];
+  for (const fakeNow of SYSTEM_DATES) {
+    const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+    const page = await context.newPage();
+    await page.clock.install({ time: fakeNow });
+    const params = new URLSearchParams({
+      scenario: "attention",
+      freeze: String(FREEZE_AT),
+      panel: "notifications",
+    });
+    await page.goto(`${baseUrl}/?${params}`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1_200);
+    const png = await page.screenshot();
+    hashes.push({ fakeNow, sha256: createHash("sha256").update(png).digest("hex"), png });
+    await context.close();
+  }
+  if (hashes[0].sha256 !== hashes[1].sha256) {
+    for (const { fakeNow, png } of hashes) {
+      const path = `${OUT_DIR}/determinism-failure-${fakeNow}.png`;
+      writeFileSync(path, png);
+      console.error(`wrote ${path}`);
+    }
+    throw new Error(
+      `frozen frame differs across system dates: ${hashes[0].sha256} != ${hashes[1].sha256}`,
+    );
+  }
+  console.log(
+    `determinism ok: identical frozen pixels under two system dates (sha256 ${hashes[0].sha256.slice(0, 12)}…)`,
+  );
 }
 
 /**

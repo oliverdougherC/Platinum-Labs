@@ -64,12 +64,17 @@ export function isConnectorStale(
 
 export type PlaybackMethod = "direct-play" | "direct-stream" | "transcode";
 
-/** What a playback rate actually describes. */
+/**
+ * What a playback rate actually describes. Every member is produced by a real
+ * code path — a basis with no producer is a false capability claim (a
+ * `transcode-target` basis was removed for exactly that reason: Jellyfin's
+ * audited payloads expose no distinct output-target rate beyond
+ * `TranscodingInfo.Bitrate`, which is `jellyfin-session-output`).
+ */
 export type RateBasis =
   | "container-egress"
   | "container-block-read"
   | "jellyfin-session-output"
-  | "transcode-target"
   | "source-media"
   | "mixed-session-sources"
   | "storage-attribution";

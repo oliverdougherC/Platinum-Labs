@@ -404,9 +404,17 @@ function ServiceDetail({
   now: number;
 }) {
   const health = snapshot.health.find((h) => h.id === id);
-  const container = snapshot.telemetry.docker.value?.containers.find(
-    (c) => c.name.toLowerCase().includes(id === "seerr" ? "seerr" : id),
-  );
+  // Container telemetry appears ONLY through an explicit operator mapping.
+  // Jellyfin uses the exact configured container name; no other service has a
+  // declared mapping today, so their drawers omit the section entirely.
+  // Substring matching is banned: "jellyfin-exporter" or a similarly named
+  // sidecar must never impersonate the service's own container (V2.1 blocker).
+  const container =
+    id === "jellyfin" && snapshot.jellyfinContainer
+      ? snapshot.telemetry.docker.value?.containers.find(
+          (c) => c.name === snapshot.jellyfinContainer,
+        )
+      : undefined;
   const queue = snapshot.acquisition.items.filter(
     (i) => (id === "qbittorrent" ? true : i.source === id) && i.state !== "completed",
   );

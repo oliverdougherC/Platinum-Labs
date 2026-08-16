@@ -100,6 +100,14 @@ export interface FlowObservation {
   updatedAt: number | null;
   /** Typed aggregate rate for flows whose coverage/source needs explanation. */
   rate?: AggregateRateObservation;
+  /**
+   * Rate observations that were CONSIDERED but did not become the headline —
+   * kept for detail/accessibility surfaces instead of being erased. The
+   * canonical case: a live measured container window of 0 B/s during
+   * buffered playback, retained as supporting evidence while the nonzero
+   * session aggregate carries the headline.
+   */
+  supportingRates?: AggregateRateObservation[];
 }
 
 function endpointKey(e: FlowEndpoint): string {
@@ -298,6 +306,39 @@ function storageAttribution(
   };
 }
 
+/**
+ * Documented headline-rate precedence for the Jellyfin playback legs
+ * (V2.1 rate-truth blocker):
+ *
+ *  1. a POSITIVE live measured container rate wins;
+ *  2. otherwise a POSITIVE session aggregate wins — a zero container sampling
+ *     window (buffered playback pauses I/O between bursts) must never erase a
+ *     useful nonzero session observation, but the measured zero is RETAINED
+ *     as supporting detail rather than discarded;
+ *  3. a measured zero becomes the headline only when no contradictory active
+ *     rate evidence exists;
+ *  4. otherwise whichever observation still carries information (session
+ *     aggregate, then stale container data).
+ */
+export function pickHeadlineRate(
+  container: AggregateRateObservation | null,
+  session: AggregateRateObservation,
+): { headline: AggregateRateObservation; supporting: AggregateRateObservation[] } {
+  const containerLive = container !== null && container.freshness === "live";
+  const containerKnown = containerLive && container.knownBytesPerSecond !== null;
+  const containerPositive = containerKnown && container.knownBytesPerSecond! > 0;
+  const sessionPositive =
+    session.knownBytesPerSecond !== null && session.knownBytesPerSecond > 0;
+
+  if (containerPositive) return { headline: container, supporting: [] };
+  if (sessionPositive) {
+    return { headline: session, supporting: containerKnown ? [container] : [] };
+  }
+  if (containerKnown) return { headline: container, supporting: [] };
+  if (session.knownBytesPerSecond !== null) return { headline: session, supporting: [] };
+  return { headline: container ?? session, supporting: [] };
+}
+
 /** Derive every observable flow from the snapshot. Idle input → empty array. */
 export function deriveFlows(
   snapshot: DashboardSnapshot,
@@ -478,19 +519,13 @@ export function deriveFlows(
     const sessionAggregate = sessionRateAggregate(sessions, jellyfin.freshness);
     const containerEgress = containerRate(snapshot, "netTxBps");
     const containerReads = containerRate(snapshot, "blockReadBps");
-    const egressRate =
-      containerEgress?.freshness === "live"
-        ? containerEgress
-        : sessionAggregate.knownBytesPerSecond !== null
-          ? sessionAggregate
-          : containerEgress ?? sessionAggregate;
-    const attributedStorage = storageAttribution(sessionAggregate);
-    const playbackRate =
-      containerReads?.freshness === "live"
-        ? containerReads
-        : attributedStorage.knownBytesPerSecond !== null
-          ? attributedStorage
-          : containerReads ?? attributedStorage;
+    const egress = pickHeadlineRate(containerEgress, sessionAggregate);
+    const playback = pickHeadlineRate(
+      containerReads,
+      storageAttribution(sessionAggregate),
+    );
+    const egressRate = egress.headline;
+    const playbackRate = playback.headline;
     const egressFreshness: FlowFreshness =
       jellyfin.freshness === "stale" || egressRate.freshness === "stale"
         ? "stale"
@@ -509,12 +544,13 @@ export function deriveFlows(
     flows.push(
       makeFlow("playback", mediaStorage, { kind: "service", id: "jellyfin" }, {
         plane: "data",
-        evidence:
-          playbackRate.knownBytesPerSecond === null
-            ? "state-only"
-            : playbackRate.basis === "container-block-read"
-              ? "measured"
-              : "derived",
+        // The storage→Jellyfin PATH is always a derived attribution, even
+        // when the rate itself is measured container block I/O: Docker
+        // counters prove the container read blocks, not which pool supplied
+        // them (no mount/device/pool mapping is verified). The rate keeps
+        // its own measured evidence; the flow does not claim an exact
+        // measured pool flow (V2.1 attribution blocker).
+        evidence: playbackRate.knownBytesPerSecond === null ? "state-only" : "derived",
         freshness: playbackFreshness,
         channels: [{
           direction: "forward",
@@ -522,9 +558,12 @@ export function deriveFlows(
           bytesPerSecond: playbackRate.knownBytesPerSecond,
         }],
         rate: { ...playbackRate, freshness: playbackFreshness },
+        supportingRates: playback.supporting,
         provenance:
           playbackRate.basis === "container-block-read"
-            ? "measured Jellyfin container block reads; cache and ARC may still serve media without disk I/O"
+            ? `measured Jellyfin container block reads, attributed to ${
+                mediaStorage.kind === "pool" ? mediaStorage.name : "storage"
+              } by declared configuration (pool mapping not device-verified); cache and ARC may still serve media without disk I/O`
             : playbackRate.knownBytesPerSecond !== null
               ? "derived media demand from available Jellyfin session rates; cache and ARC may satisfy reads"
               : "playback reported by Jellyfin; storage rate unavailable",
@@ -551,6 +590,7 @@ export function deriveFlows(
           bytesPerSecond: egressRate.knownBytesPerSecond,
         }],
         rate: { ...egressRate, freshness: egressFreshness },
+        supportingRates: egress.supporting,
         provenance:
           egressRate.basis === "container-egress"
             ? "measured Jellyfin container egress; not an exact per-session bitrate"

@@ -154,10 +154,15 @@ export function OverlayShell({
       window.removeEventListener("keydown", onKeyDown, true);
       unregister();
       const captured = capturedFocusRef.current;
+      // Reading returnFocusRef.current at CLEANUP time is deliberate — the
+      // triggering control may have remounted while the overlay was open, and
+      // only the close-time value points at the live node.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      const fallback = returnFocusRef?.current ?? null;
       const target = canRestoreFocusTo(captured)
         ? captured
-        : canRestoreFocusTo(returnFocusRef?.current)
-          ? returnFocusRef.current
+        : canRestoreFocusTo(fallback)
+          ? fallback
           : null;
       // No usable target (e.g. handoff to another overlay that is about to
       // capture focus itself): better to leave focus alone than to focus an

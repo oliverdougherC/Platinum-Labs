@@ -297,11 +297,25 @@ export function describeFlow(
     obs.updatedAt === null
       ? `, ${obs.freshness}`
       : `, ${obs.freshness}, source updated ${formatRelativeTime(obs.updatedAt, now)}`;
+  // Non-headline observations (e.g. a measured zero container window during
+  // buffered playback) stay visible in detail — retained, never erased.
+  const supporting = obs.supportingRates?.length
+    ? ` Also observed: ${obs.supportingRates
+        .map(
+          (rate) =>
+            `${rate.basis ?? "unknown basis"} ${
+              rate.knownBytesPerSecond === null
+                ? "rate unknown"
+                : formatRate(rate.knownBytesPerSecond)
+            } (${rate.evidence ?? "unknown"})`,
+        )
+        .join("; ")}.`
+    : "";
   return {
     title,
     value,
-    accessible: `${title}. ${value}. ${evidence}${basis}${coverage}${freshness}. ${obs.provenance}`,
-    detail: obs.provenance,
+    accessible: `${title}. ${value}. ${evidence}${basis}${coverage}${freshness}. ${obs.provenance}${supporting}`,
+    detail: `${obs.provenance}${supporting}`,
   };
 }
 

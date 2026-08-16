@@ -449,6 +449,11 @@ export const SCENARIOS = [
   "active",
   "attention",
   "container-mixed",
+  // Real-scale container-field fixtures (PLA-272): a sanitized ~44-container
+  // replay of a real server population, and a stress field just above the
+  // 96-body render budget.
+  "container-field-real",
+  "container-field-stress",
 ] as const;
 
 export type FakeScenario = (typeof SCENARIOS)[number];
@@ -481,6 +486,8 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   active: "Active (playback + downloads)",
   attention: "Attention (stall + degraded)",
   "container-mixed": "Mixed container resources / health",
+  "container-field-real": "Container field — real-scale (44)",
+  "container-field-stress": "Container field — over budget",
 };
 
 type Builder = (now: number) => DashboardSnapshot;
@@ -934,6 +941,32 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       acquisition: acquisitionActive(),
       zfs: zfsHealthy(now),
       telemetryProfile: "container-mixed",
+    }),
+
+  "container-field-real": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [session({ id: "s1", method: "direct-play" })],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionActive(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "container-field-real",
+    }),
+
+  "container-field-stress": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [session({ id: "s1", method: "direct-play" })],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionActive(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "container-field-stress",
     }),
 };
 

@@ -111,8 +111,10 @@ function sessionRate(raw: RawSession, method: PlaybackMethod): RateObservation |
   }
 
   // Jellyfin may omit output/target rate while still reporting source-media
-  // bitrate. It is useful evidence, but never measured egress; for a transcode
-  // it is explicitly an estimate because the output can differ substantially.
+  // bitrate. It is useful evidence, but never measured egress. Only DIRECT
+  // PLAY sends the source bytes as-is (reported); a transcode obviously
+  // re-encodes, and a DIRECT STREAM remuxes into a different container, so
+  // for both the source-media bitrate is an ESTIMATE of the output rate.
   const source = bytesPerSecond(
     raw.MediaSource?.Bitrate ?? raw.NowPlayingItem?.Bitrate,
   );
@@ -120,7 +122,7 @@ function sessionRate(raw: RawSession, method: PlaybackMethod): RateObservation |
   return {
     bytesPerSecond: source,
     basis: "source-media",
-    evidence: method === "transcode" ? "estimated" : "reported",
+    evidence: method === "direct-play" ? "reported" : "estimated",
   };
 }
 

@@ -33,7 +33,11 @@ import { buildBackground } from "@/lib/scene/background";
 import { appConfig } from "@/lib/config";
 import { deriveFlows } from "@/lib/topology/activity";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
-import { FAKE_CORE_COUNT } from "@/lib/fake/telemetry";
+import {
+  FAKE_CORE_COUNT,
+  REAL_FIELD_CONTAINER_COUNT,
+  STRESS_FIELD_CONTAINER_COUNT,
+} from "@/lib/fake/telemetry";
 import { testPool } from "@/lib/test/factories";
 import type { BodyGeom } from "@/lib/scene/layout";
 import type { SceneModel } from "@/lib/scene/model";
@@ -402,6 +406,64 @@ describe("layout determinism and bounds", () => {
     expect(layout.containerField.size).toBe(MAX_RENDERED_CONTAINERS);
     expect(layout.containerOverflowCount).toBe(9);
     expect(layout.containerOverflow).not.toBeNull();
+  });
+
+  it("the real-scale fixture is a representative 44-container population, fully rendered", () => {
+    expect(REAL_FIELD_CONTAINER_COUNT).toBe(44);
+    const m = model("container-field-real");
+    expect(m.docker.containers).toHaveLength(44);
+
+    // Representative distribution, not 44 clones:
+    const hot = m.docker.containers.filter((c) => (c.cpuFraction ?? 0) >= 0.5);
+    const idle = m.docker.containers.filter(
+      (c) => c.cpuFraction !== null && c.cpuFraction < 0.05,
+    );
+    const noStats = m.docker.containers.filter((c) => c.metricCoverage === "unavailable");
+    const partial = m.docker.containers.filter((c) => c.metricCoverage === "partial");
+    expect(hot.length).toBeGreaterThanOrEqual(3);
+    expect(idle.length).toBeGreaterThanOrEqual(12);
+    expect(noStats.length).toBeGreaterThanOrEqual(3);
+    expect(partial.length).toBeGreaterThanOrEqual(2);
+    expect(m.docker.containers.some((c) => c.bad)).toBe(true);
+    expect(m.docker.containers.some((c) => c.unverified)).toBe(true);
+    expect(m.docker.containers.some((c) => (c.netRxBps ?? 0) > 1_000_000)).toBe(true);
+    expect(m.docker.containers.some((c) => (c.blockWriteBps ?? 0) > 1_000_000)).toBe(true);
+
+    // Under the 96-body budget the entire population renders — no overflow.
+    const layout = computeLayout(m, 16 / 9);
+    expect(layout.containerField.size).toBe(44);
+    expect(layout.containerOverflowCount).toBe(0);
+    expect(layout.containerOverflow).toBeNull();
+    for (const geom of layout.containerField.values()) {
+      expect(geom.center.x).toBeGreaterThan(0);
+      expect(geom.center.x).toBeLessThan(layout.world.w);
+      expect(geom.center.y).toBeGreaterThan(0);
+      expect(geom.center.y).toBeLessThan(layout.world.h);
+    }
+  });
+
+  it("the stress fixture exceeds the budget with a truthful overflow and no hidden attention", () => {
+    expect(STRESS_FIELD_CONTAINER_COUNT).toBeGreaterThan(MAX_RENDERED_CONTAINERS);
+    const m = model("container-field-stress");
+    expect(m.docker.containers).toHaveLength(STRESS_FIELD_CONTAINER_COUNT);
+    const layout = computeLayout(m, 16 / 9);
+    expect(layout.containerField.size).toBe(MAX_RENDERED_CONTAINERS);
+    expect(layout.containerOverflowCount).toBe(
+      STRESS_FIELD_CONTAINER_COUNT - MAX_RENDERED_CONTAINERS,
+    );
+    // The alphabetically-last unhealthy/unknown workers must still render.
+    expect(layout.containerField.has("zz-batch-failed")).toBe(true);
+    expect(layout.containerField.has("zz-batch-unknown")).toBe(true);
+    expect(layout.containerField.has("flaresolverr")).toBe(true);
+    expect(layout.containerField.has("unpackerr")).toBe(true);
+    // The hottest live workloads survive selection too.
+    expect(layout.containerField.has("jellyfin")).toBe(true);
+    for (const geom of layout.containerField.values()) {
+      expect(geom.center.x).toBeGreaterThan(0);
+      expect(geom.center.x).toBeLessThan(layout.world.w);
+      expect(geom.center.y).toBeGreaterThan(0);
+      expect(geom.center.y).toBeLessThan(layout.world.h);
+    }
   });
 
   it("keeps the representative container field clear of primary bodies", () => {

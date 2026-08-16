@@ -108,8 +108,28 @@ describe("normalizeJellyfin", () => {
       NOW,
     );
     expect(snap.sessions[0]).toMatchObject({ method: "direct-play", rate: null });
+    // A direct stream REMUXES the media, so its output rate differs from the
+    // source-media bitrate — that bitrate is an estimate, never "reported"
+    // output (V2.1 rate-truth correction).
     expect(snap.sessions[1]).toMatchObject({
       method: "direct-stream",
+      rate: {
+        bytesPerSecond: 1_000_000,
+        basis: "source-media",
+        evidence: "estimated",
+      },
+    });
+  });
+
+  it("keeps direct-play source-media bitrate reported (bytes are sent as-is)", () => {
+    const directPlay = {
+      ...MOVIE_SESSION,
+      Id: "dp",
+      NowPlayingItem: { ...MOVIE_SESSION.NowPlayingItem, Bitrate: 8_000_000 },
+    };
+    const snap = normalizeJellyfin({ system: SYSTEM, sessions: [directPlay] }, NOW);
+    expect(snap.sessions[0]).toMatchObject({
+      method: "direct-play",
       rate: {
         bytesPerSecond: 1_000_000,
         basis: "source-media",
