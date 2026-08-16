@@ -171,6 +171,12 @@ function fakeContainers(
         ? null
         : clamp(0.01 + 0.2 * profile.cpu * wave(now, 45_000, i), 0, 2),
       memoryBytes: bad ? null : Math.round((0.2 + (i % 5) * 0.35) * GiB),
+      // A few containers deliberately report unknown I/O so the null path
+      // stays exercised in fake mode (unknown ≠ zero, PLA-273).
+      netRxBps: bad || i % 4 === 3 ? null : Math.round(20_000 * (1 + (i % 3))),
+      netTxBps: bad || i % 4 === 3 ? null : Math.round(12_000 * (1 + (i % 3))),
+      blockReadBps: bad || i % 5 === 4 ? null : Math.round(80_000 * (1 + (i % 2))),
+      blockWriteBps: bad || i % 5 === 4 ? null : Math.round(45_000 * (1 + (i % 2))),
     };
   });
 }

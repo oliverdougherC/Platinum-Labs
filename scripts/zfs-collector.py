@@ -507,6 +507,13 @@ def _fetch_docker(now=time.monotonic):
             "cpuTotalNs": None,
             "systemCpuNs": None,
             "memoryBytes": None,
+            # Cumulative I/O counters from the same one-shot stats call; the
+            # dashboard normalizes successive samples into rates. None when
+            # the runtime does not expose them (never fabricated zeros).
+            "netRxBytes": None,
+            "netTxBytes": None,
+            "blockReadBytes": None,
+            "blockWriteBytes": None,
         }
         # Bound one refresh cycle: once the total budget is spent, skip the
         # remaining per-container stats calls (their fields stay null) so a
@@ -525,6 +532,45 @@ def _fetch_docker(now=time.monotonic):
                 inactive = (mem.get("stats") or {}).get("inactive_file") or 0
                 if usage is not None:
                     container["memoryBytes"] = max(0, usage - inactive)
+                # Per-container network counters: sum across interfaces. The
+                # key is absent for host/none network modes — leave None.
+                networks = stats.get("networks")
+                if isinstance(networks, dict) and networks:
+                    rx = tx = 0
+                    valid = True
+                    for iface in networks.values():
+                        if not isinstance(iface, dict):
+                            valid = False
+                            break
+                        rx += iface.get("rx_bytes") or 0
+                        tx += iface.get("tx_bytes") or 0
+                    if valid:
+                        container["netRxBytes"] = rx
+                        container["netTxBytes"] = tx
+                # Block I/O: io_service_bytes_recursive rows (cgroup v1 and
+                # v2 both report them here when available; None otherwise).
+                blkio = (stats.get("blkio_stats") or {}).get(
+                    "io_service_bytes_recursive"
+                )
+                if isinstance(blkio, list) and blkio:
+                    read = write = 0
+                    saw = False
+                    for row in blkio:
+                        if not isinstance(row, dict):
+                            continue
+                        op = str(row.get("op", "")).lower()
+                        value = row.get("value")
+                        if not isinstance(value, (int, float)):
+                            continue
+                        if op == "read":
+                            read += int(value)
+                            saw = True
+                        elif op == "write":
+                            write += int(value)
+                            saw = True
+                    if saw:
+                        container["blockReadBytes"] = read
+                        container["blockWriteBytes"] = write
             except Exception:
                 pass  # keep list-derived fields; stats stay null
         containers.append(container)

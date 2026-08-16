@@ -92,6 +92,12 @@ const rawContainerSchema = z.object({
   cpuTotalNs: z.number().nullish(),
   systemCpuNs: z.number().nullish(),
   memoryBytes: z.number().nullish(),
+  // Cumulative one-shot-stats counters (PLA-265 telemetry audit); absent on
+  // older collectors and on runtimes that do not expose them.
+  netRxBytes: z.number().nullish(),
+  netTxBytes: z.number().nullish(),
+  blockReadBytes: z.number().nullish(),
+  blockWriteBytes: z.number().nullish(),
 });
 
 const rawDockerSchema = z.object({
@@ -387,6 +393,16 @@ function normalizeDocker(
   );
   const coreCount =
     curr.cpu.status === "ok" && curr.cpu.cores ? curr.cpu.cores.length : null;
+  const elapsedMs = prevRaw ? curr.sampledAt - prevRaw.sampledAt : 0;
+  // Rate from two cumulative per-container counters; null on a missing
+  // counter, a reset (delta < 0), or an invalid window — never 0 (PLA-273).
+  const counterRate = (
+    prev: number | null | undefined,
+    now: number | null | undefined,
+  ): number | null => {
+    if (typeof prev !== "number" || typeof now !== "number") return null;
+    return rateBetween(prev, now, elapsedMs);
+  };
   const containers = raw.containers.map((c) => {
     const state = (CONTAINER_STATES as string[]).includes(c.state)
       ? (c.state as ContainerState)
@@ -415,6 +431,10 @@ function normalizeDocker(
       restartCount: finiteOrNull(c.restartCount),
       cpuFraction,
       memoryBytes: typeof c.memoryBytes === "number" ? c.memoryBytes : null,
+      netRxBps: counterRate(before?.netRxBytes, c.netRxBytes),
+      netTxBps: counterRate(before?.netTxBytes, c.netTxBytes),
+      blockReadBps: counterRate(before?.blockReadBytes, c.blockReadBytes),
+      blockWriteBps: counterRate(before?.blockWriteBytes, c.blockWriteBytes),
     };
   });
   return domain(

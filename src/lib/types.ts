@@ -145,8 +145,16 @@ export interface AcquisitionRollup {
   downloading: number;
   importing: number;
   failedOrStalled: number;
-  /** Aggregate throughput in bytes/sec across active transfers. */
+  /** Aggregate download throughput in bytes/sec across active transfers. */
   aggregateRateBps: number;
+  /**
+   * Aggregate upload (seeding) throughput in bytes/sec, when the downloader
+   * reports it. Null means unknown (older payloads) — never a fabricated 0,
+   * and never a reason to draw an upload flow.
+   */
+  uploadRateBps?: number | null;
+  /** Number of torrents actively uploading right now (seeding with peers). */
+  seeding?: number;
 }
 
 export interface AcquisitionSnapshot {
@@ -323,6 +331,16 @@ export interface DockerContainerTelemetry {
   /** 0..1 of one core (can exceed 1 for multi-core usage); null when stats were not sampled. */
   cpuFraction: number | null;
   memoryBytes: number | null;
+  /**
+   * Per-container I/O rates normalized from one-shot Docker stats counter
+   * deltas (PLA-265 telemetry audit). Null whenever stats were not sampled,
+   * the counter window was invalid, or the runtime does not expose the
+   * counters (cgroup v2 hosts often omit blkio) — never fabricated zeros.
+   */
+  netRxBps: number | null;
+  netTxBps: number | null;
+  blockReadBps: number | null;
+  blockWriteBps: number | null;
 }
 
 export interface DockerTelemetry {
@@ -485,4 +503,11 @@ export interface DashboardSnapshot {
    * generic storage endpoint.
    */
   mediaPool?: string | null;
+  /**
+   * Operator-declared download/staging pool name (HOMELAB_DOWNLOAD_POOL), or
+   * null/absent. Anchors the qBittorrent write/seed-read storage endpoint and
+   * enables honest same-pool vs cross-pool import semantics. Never inferred
+   * from whichever pool happens to be busiest.
+   */
+  downloadPool?: string | null;
 }

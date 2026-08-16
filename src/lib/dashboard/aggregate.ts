@@ -90,6 +90,8 @@ export interface AggregateParts {
   history?: DashboardHistory;
   /** Operator-declared media pool (PLA-275); null/undefined when not configured. */
   mediaPool?: string | null;
+  /** Operator-declared download/staging pool; null/undefined when not configured. */
+  downloadPool?: string | null;
 }
 
 const JELLYFIN_UNAVAILABLE: JellyfinSnapshot = {
@@ -179,7 +181,11 @@ export function correlateAcquisition(items: AcquisitionItem[]): AcquisitionItem[
   return [...merged, ...singles];
 }
 
-function rollupOf(items: AcquisitionItem[], aggregateRateBps: number): AcquisitionSnapshot["rollup"] {
+function rollupOf(
+  items: AcquisitionItem[],
+  aggregateRateBps: number,
+  upload: { uploadRateBps: number | null; seeding: number },
+): AcquisitionSnapshot["rollup"] {
   return {
     downloading: items.filter((i) => i.state === "downloading").length,
     importing: items.filter((i) => i.state === "importing").length,
@@ -187,6 +193,8 @@ function rollupOf(items: AcquisitionItem[], aggregateRateBps: number): Acquisiti
       (i) => i.state === "stalled" || i.state === "failed",
     ).length,
     aggregateRateBps: Math.max(0, Math.round(aggregateRateBps)),
+    uploadRateBps: upload.uploadRateBps,
+    seeding: upload.seeding,
   };
 }
 
@@ -206,7 +214,15 @@ export function mergeAcquisition(
   const summedRates = items.reduce((sum, i) => sum + (i.rateBps ?? 0), 0);
   const aggregateRateBps = qbittorrent?.rollup.aggregateRateBps ?? summedRates;
 
-  return { items, rollup: rollupOf(items, aggregateRateBps) };
+  return {
+    items,
+    rollup: rollupOf(items, aggregateRateBps, {
+      // Upload is only ever measured by the downloader; the *arrs know nothing
+      // about seeding, so without qBittorrent it is unknown (null), not 0.
+      uploadRateBps: qbittorrent?.rollup.uploadRateBps ?? null,
+      seeding: qbittorrent?.rollup.seeding ?? 0,
+    }),
+  };
 }
 
 /**
@@ -244,5 +260,6 @@ export function assembleSnapshot(parts: AggregateParts): DashboardSnapshot {
     activity: parts.activity ?? [],
     history: parts.history,
     mediaPool: parts.mediaPool ?? null,
+    downloadPool: parts.downloadPool ?? null,
   };
 }

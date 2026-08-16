@@ -103,6 +103,14 @@ const envSchema = z.object({
    * rather than guessing from I/O activity (PLA-275).
    */
   HOMELAB_MEDIA_POOL: z.string().optional(),
+  /**
+   * Name of the ZFS pool that holds the qBittorrent download/staging area.
+   * Anchors downloader↔storage flows and distinguishes same-pool imports
+   * (rename/hardlink — local organizing, no bulk transfer) from cross-pool
+   * imports (a real copy). Unset ⇒ downloader storage flows end at the
+   * generic "storage" endpoint; identity is never inferred from I/O.
+   */
+  HOMELAB_DOWNLOAD_POOL: z.string().optional(),
 });
 
 export type ServerEnv = z.infer<typeof envSchema>;

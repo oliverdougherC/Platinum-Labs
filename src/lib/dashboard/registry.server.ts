@@ -283,6 +283,7 @@ function assemble(reg: LiveRegistry, now: number): DashboardSnapshot {
     telemetryHistory: telemetryHist,
     history: readHistory(now),
     mediaPool: getServerEnv().HOMELAB_MEDIA_POOL ?? null,
+    downloadPool: getServerEnv().HOMELAB_DOWNLOAD_POOL ?? null,
   });
 
   // Jellyfin's /Sessions only reports *current* playback, so its lastPlaybackAt

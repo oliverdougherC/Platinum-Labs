@@ -30,6 +30,7 @@ const torrentSchema = z
     name: z.string().optional(),
     progress: z.number().optional(),
     dlspeed: z.number().optional(),
+    upspeed: z.number().optional(),
     eta: z.number().optional(),
     state: z.string().optional(),
   })
@@ -37,7 +38,10 @@ const torrentSchema = z
 
 export const qbTorrentsSchema = z.array(torrentSchema);
 export const qbTransferSchema = z
-  .object({ dl_info_speed: z.number().optional() })
+  .object({
+    dl_info_speed: z.number().optional(),
+    up_info_speed: z.number().optional(),
+  })
   .passthrough();
 
 type RawTorrent = z.infer<typeof torrentSchema>;
@@ -71,7 +75,11 @@ export function mapQbState(state: string | undefined, dlspeed: number): Acquisit
   }
 }
 
-function rollup(items: AcquisitionItem[], globalRateBps: number | null): AcquisitionSnapshot["rollup"] {
+function rollup(
+  items: AcquisitionItem[],
+  globalRateBps: number | null,
+  upload: { rateBps: number | null; seeding: number },
+): AcquisitionSnapshot["rollup"] {
   const aggregate =
     globalRateBps ?? items.reduce((sum, i) => sum + (i.rateBps ?? 0), 0);
   return {
@@ -79,6 +87,11 @@ function rollup(items: AcquisitionItem[], globalRateBps: number | null): Acquisi
     importing: items.filter((i) => i.state === "importing").length,
     failedOrStalled: items.filter((i) => i.state === "stalled" || i.state === "failed").length,
     aggregateRateBps: Math.max(0, Math.round(aggregate)),
+    // Upload telemetry (PLA-267 seeding flows): the global transfer-info rate
+    // when reported, else the per-torrent sum when torrents carried upspeed,
+    // else null — an unknown upload rate must never render as a confirmed 0.
+    uploadRateBps: upload.rateBps === null ? null : Math.max(0, Math.round(upload.rateBps)),
+    seeding: upload.seeding,
   };
 }
 
@@ -104,6 +117,15 @@ function normalizeTorrent(raw: RawTorrent, index: number): AcquisitionItem {
   };
 }
 
+/** qB states that mean the torrent is in its seeding lifecycle. */
+const SEED_STATES = new Set([
+  "uploading",
+  "forcedUP",
+  "stalledUP",
+  "queuedUP",
+  "checkingUP",
+]);
+
 export function normalizeQbittorrent(input: {
   torrents: unknown;
   transfer?: unknown;
@@ -114,7 +136,21 @@ export function normalizeQbittorrent(input: {
     : null;
 
   const items = torrents.map(normalizeTorrent);
-  return { items, rollup: rollup(items, transfer?.dl_info_speed ?? null) };
+  // Actively seeding = in a seed state AND moving bytes right now.
+  const seeding = torrents.filter(
+    (t) => SEED_STATES.has(t.state ?? "") && (t.upspeed ?? 0) > 0,
+  ).length;
+  const upspeedSum = torrents.some((t) => typeof t.upspeed === "number")
+    ? torrents.reduce((sum, t) => sum + (t.upspeed ?? 0), 0)
+    : null;
+  const uploadRateBps = transfer?.up_info_speed ?? upspeedSum;
+  return {
+    items,
+    rollup: rollup(items, transfer?.dl_info_speed ?? null, {
+      rateBps: uploadRateBps,
+      seeding,
+    }),
+  };
 }
 
 // --- connector factory ------------------------------------------------------

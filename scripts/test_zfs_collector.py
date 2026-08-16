@@ -350,6 +350,56 @@ class BackgroundCacheTests(unittest.TestCase):
         self.assertIsNone(by_name["two"]["memoryBytes"])
         self.assertIsNone(by_name["three"]["cpuTotalNs"])
 
+    def test_docker_stats_capture_network_and_blkio_counters(self):
+        listing = [
+            {"Id": "aaa111", "Names": ["/one"], "State": "running", "Status": "Up 1 hour"},
+            {"Id": "bbb222", "Names": ["/two"], "State": "running", "Status": "Up 1 hour"},
+        ]
+
+        def fake_docker_get(path):
+            if path.startswith("/containers/json"):
+                return listing
+            if "aaa111" in path:
+                return {
+                    "cpu_stats": {"cpu_usage": {"total_usage": 1}, "system_cpu_usage": 2},
+                    "memory_stats": {"usage": 500, "stats": {}},
+                    "networks": {
+                        "eth0": {"rx_bytes": 1000, "tx_bytes": 400},
+                        "eth1": {"rx_bytes": 200, "tx_bytes": 100},
+                    },
+                    "blkio_stats": {
+                        "io_service_bytes_recursive": [
+                            {"op": "read", "value": 4096},
+                            {"op": "Read", "value": 1024},
+                            {"op": "write", "value": 2048},
+                            {"op": "total", "value": 999999},
+                        ]
+                    },
+                }
+            # Second container: host networking + cgroup v2 without blkio rows —
+            # the counters must stay None, never zero.
+            return {
+                "cpu_stats": {"cpu_usage": {"total_usage": 1}, "system_cpu_usage": 2},
+                "memory_stats": {"usage": 500, "stats": {}},
+                "blkio_stats": {"io_service_bytes_recursive": None},
+            }
+
+        with patch.object(zfs_collector, "DOCKER_PROXY_URL", "http://proxy"), \
+             patch.object(zfs_collector, "_docker_get", fake_docker_get):
+            payload = zfs_collector._fetch_docker(now=lambda: 0.0)
+
+        by_name = {c["name"]: c for c in payload["containers"]}
+        one = by_name["one"]
+        self.assertEqual(one["netRxBytes"], 1200)  # summed across interfaces
+        self.assertEqual(one["netTxBytes"], 500)
+        self.assertEqual(one["blockReadBytes"], 5120)  # case-insensitive ops
+        self.assertEqual(one["blockWriteBytes"], 2048)  # "total" rows ignored
+        two = by_name["two"]
+        self.assertIsNone(two["netRxBytes"])
+        self.assertIsNone(two["netTxBytes"])
+        self.assertIsNone(two["blockReadBytes"])
+        self.assertIsNone(two["blockWriteBytes"])
+
 
 if __name__ == "__main__":
     unittest.main()
