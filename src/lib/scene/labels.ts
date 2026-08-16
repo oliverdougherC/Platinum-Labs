@@ -230,7 +230,7 @@ const FLOW_SERVICE_LABEL: Record<string, string> = {
   qbittorrent: "qBittorrent",
 };
 
-function endpointLabel(endpoint: FlowObservation["from"]): string {
+export function endpointLabel(endpoint: FlowObservation["from"]): string {
   switch (endpoint.kind) {
     case "network":
       return "network";
@@ -247,14 +247,31 @@ function shortAge(at: number, now: number): string {
   return formatRelativeTime(at, now).replace(/ ago$/, "");
 }
 
-function visibleFlowValue(obs: FlowObservation, now: number): string {
+/**
+ * The VISIBLE rate convention (V2.1 evidence-display blocker) — sighted
+ * users must be able to tell estimate from measurement without opening the
+ * detail surface:
+ *
+ *   measured/reported complete   `5.8 MB/s`
+ *   estimated                    `≈ 5.8 MB/s`
+ *   partial known lower bound    `5.8 MB/s + 1 unknown`
+ *   estimated partial            `≈ 5.8 MB/s + 1 unknown`
+ *   unknown                      `rate unknown`
+ *   stale                        `stale 34s`
+ *
+ * `derived` values carry no ≈: the number itself is a real measurement,
+ * only its attribution to this path is inferred — the detail surface and
+ * accessible text explain that attribution.
+ */
+export function visibleFlowValue(obs: FlowObservation, now: number): string {
   if (obs.freshness === "stale") {
     return obs.updatedAt === null ? "stale" : `stale ${shortAge(obs.updatedAt, now)}`;
   }
   if (obs.rate) {
     if (obs.rate.knownBytesPerSecond === null) return "rate unknown";
+    const approx = obs.rate.evidence === "estimated" ? "≈ " : "";
     const unknown = obs.rate.unknownContributors;
-    return `${formatRate(obs.rate.knownBytesPerSecond)}${
+    return `${approx}${formatRate(obs.rate.knownBytesPerSecond)}${
       unknown > 0 ? ` + ${unknown} unknown` : ""
     }`;
   }
@@ -274,12 +291,15 @@ function visibleFlowValue(obs: FlowObservation, now: number): string {
 /**
  * Flow copy has two layers: a terse two-line visible contract and a complete
  * accessibility/provenance sentence. Technical evidence never leaks back into
- * the primary hover card merely because it remains available to screen readers.
+ * the primary hover card merely because it remains available to screen
+ * readers — sighted users reach the full technical detail by ACTIVATING the
+ * flow (click/Enter), which opens the shared flow-detail drawer rendered
+ * straight from the FlowObservation.
  */
 export function describeFlow(
   obs: FlowObservation,
   now: number,
-): { title: string; value: string; accessible: string; detail: string } {
+): { title: string; value: string; accessible: string } {
   const title = `${endpointLabel(obs.from)} → ${endpointLabel(obs.to)}`;
   const value = visibleFlowValue(obs, now);
   const evidence =
@@ -315,7 +335,6 @@ export function describeFlow(
     title,
     value,
     accessible: `${title}. ${value}. ${evidence}${basis}${coverage}${freshness}. ${obs.provenance}${supporting}`,
-    detail: `${obs.provenance}${supporting}`,
   };
 }
 

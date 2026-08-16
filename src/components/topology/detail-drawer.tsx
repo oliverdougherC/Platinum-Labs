@@ -4,6 +4,8 @@ import { useMemo } from "react";
 import { DrawerShell } from "@/components/ui/overlay-shell";
 import type { TopologySelection } from "@/components/topology/scene";
 import { SERVICE_LABELS } from "@/lib/scene/model";
+import { endpointLabel, visibleFlowValue } from "@/lib/scene/labels";
+import { deriveFlows } from "@/lib/topology/activity";
 import { appConfig } from "@/lib/config";
 import { formatBytes, formatRate } from "@/lib/format/bytes";
 import {
@@ -11,6 +13,7 @@ import {
   formatPercent,
   formatRelativeTime,
 } from "@/lib/utils";
+import type { AggregateRateObservation } from "@/lib/types";
 import type {
   AcquisitionItem,
   ActivityEvent,
@@ -638,6 +641,134 @@ function ContainerDetail({ name, snapshot }: { name: string; snapshot: Dashboard
   );
 }
 
+// --- flow --------------------------------------------------------------------
+
+/** Honest wording for the flow-path evidence classes. */
+const FLOW_EVIDENCE_WORDING = {
+  measured: "measured on this exact path",
+  derived: "derived — a real measurement attributed to this path",
+  "state-only": "state evidence only — no byte rate is measured",
+} as const;
+
+function supportingRateValue(rate: AggregateRateObservation): string {
+  const value =
+    rate.knownBytesPerSecond === null
+      ? "rate unknown"
+      : `${rate.evidence === "estimated" ? "≈ " : ""}${formatRate(rate.knownBytesPerSecond)}`;
+  const qualifiers = [rate.evidence ?? "unknown evidence"];
+  if (rate.freshness === "stale") qualifiers.push("stale");
+  return `${value} (${qualifiers.join(", ")})`;
+}
+
+/**
+ * Compact technical flow detail (V2.1 evidence-display blocker): the full
+ * evidence a rate claim rests on — basis, coverage, unknown contributors,
+ * freshness, provenance, attribution caveats, and retained non-headline
+ * observations — rendered straight from the FlowObservation through the
+ * shared drawer architecture (focus trap, Escape, focus return included).
+ */
+function FlowDetail({
+  id,
+  snapshot,
+  now,
+}: {
+  id: string;
+  snapshot: DashboardSnapshot;
+  now: number;
+}) {
+  const flow = deriveFlows(snapshot, now).find((f) => f.id === id) ?? null;
+  if (!flow) {
+    return (
+      <Section title="Flow">
+        <p className="text-[12px] text-faint">
+          This flow is not observed in the latest snapshot — the activity that
+          justified it has stopped or its source is unavailable.
+        </p>
+      </Section>
+    );
+  }
+  const rate = flow.rate ?? null;
+  return (
+    <>
+      <Section title="Route">
+        <dl>
+          <Row
+            label="Path"
+            value={`${endpointLabel(flow.from)} → ${endpointLabel(flow.to)}`}
+          />
+          <Row label="Activity" value={flow.label} />
+          <Row
+            label="Plane"
+            value={flow.plane === "data" ? "data — bytes move" : "control — orchestration only"}
+          />
+        </dl>
+      </Section>
+      <Section title="Rate">
+        <dl>
+          <Row label="Headline" value={visibleFlowValue(flow, now)} />
+          {flow.channels.map((channel) => (
+            <Row
+              key={`${channel.direction}:${channel.role}`}
+              label={`${channel.direction === "forward" ? "→" : "←"} ${channel.role}`}
+              value={
+                channel.bytesPerSecond === null
+                  ? "rate unknown"
+                  : formatRate(channel.bytesPerSecond)
+              }
+            />
+          ))}
+          {rate && (
+            <Row
+              label="Coverage"
+              value={`${rate.coverage}${
+                rate.unknownContributors > 0
+                  ? ` · ${rate.unknownContributors} unknown contributor${
+                      rate.unknownContributors === 1 ? "" : "s"
+                    }`
+                  : ""
+              }`}
+            />
+          )}
+          {rate?.basis && <Row label="Basis" value={rate.basis} />}
+          {rate?.evidence && <Row label="Value evidence" value={rate.evidence} />}
+        </dl>
+      </Section>
+      <Section title="Evidence">
+        <dl>
+          <Row label="Path evidence" value={FLOW_EVIDENCE_WORDING[flow.evidence]} />
+          <Row
+            label="Freshness"
+            value={flow.freshness}
+            tone={flow.freshness === "stale" ? "warn" : undefined}
+          />
+          {flow.updatedAt !== null && (
+            <Row label="Source updated" value={formatRelativeTime(flow.updatedAt, now)} />
+          )}
+        </dl>
+        <p className="mt-1 text-[11px] leading-snug text-faint">{flow.provenance}</p>
+      </Section>
+      {(flow.supportingRates?.length ?? 0) > 0 && (
+        <Section title="Also observed">
+          <dl>
+            {flow.supportingRates!.map((supporting, index) => (
+              <Row
+                key={`${supporting.basis ?? "unknown"}-${index}`}
+                label={supporting.basis ?? "unknown basis"}
+                value={supportingRateValue(supporting)}
+              />
+            ))}
+          </dl>
+          <p className="mt-1 text-[11px] leading-snug text-faint">
+            Observations considered but not the headline — retained rather than
+            erased (e.g. a measured zero sampling window during buffered
+            playback).
+          </p>
+        </Section>
+      )}
+    </>
+  );
+}
+
 // --- drawer shell ------------------------------------------------------------
 
 export function DetailDrawer({
@@ -669,8 +800,14 @@ export function DetailDrawer({
         return `Container · ${selection.name}`;
       case "docker":
         return "Docker";
+      case "flow": {
+        const flow = deriveFlows(snapshot, now).find((f) => f.id === selection.id);
+        return flow
+          ? `Flow · ${endpointLabel(flow.from)} → ${endpointLabel(flow.to)}`
+          : "Flow";
+      }
     }
-  }, [selection, snapshot.hostLabel]);
+  }, [selection, snapshot, now]);
 
   const pool =
     selection?.kind === "pool"
@@ -694,6 +831,9 @@ export function DetailDrawer({
           <ContainerDetail name={selection.name} snapshot={snapshot} />
         )}
         {selection?.kind === "docker" && <DockerDetail snapshot={snapshot} />}
+        {selection?.kind === "flow" && (
+          <FlowDetail id={selection.id} snapshot={snapshot} now={now} />
+        )}
       </div>
     </DrawerShell>
   );

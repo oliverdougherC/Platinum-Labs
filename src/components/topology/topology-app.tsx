@@ -82,6 +82,9 @@ function parseDrawer(value: string | null | undefined): TopologySelection | null
   if (value.startsWith("container:")) {
     return { kind: "container", name: value.slice(10) };
   }
+  if (value.startsWith("flow:")) {
+    return { kind: "flow", id: value.slice(5) };
+  }
   return null;
 }
 

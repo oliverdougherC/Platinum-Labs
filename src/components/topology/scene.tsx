@@ -60,7 +60,9 @@ export type TopologySelection =
   | { kind: "pool"; name: string }
   | { kind: "service"; id: ServiceId }
   | { kind: "container"; name: string }
-  | { kind: "docker" };
+  | { kind: "docker" }
+  /** A live flow's technical detail (evidence, basis, coverage, provenance). */
+  | { kind: "flow"; id: string };
 
 export interface SceneProps {
   snapshot: DashboardSnapshot;
@@ -541,7 +543,9 @@ export function TopologyScene({
             />
           );
         })}
-        {/* Flow focus targets: keyboard access to each live flow's provenance. */}
+        {/* Flow focus targets: keyboard access to each live flow's provenance.
+            Activation (click/Enter) opens the shared flow-detail drawer with
+            the full technical evidence; the two-line tooltip stays terse. */}
         {mounted && flowGeoms.map((g) => {
           const mid = pointAtLength(g.path, g.path.totalLength / 2);
           const p = project(mid.x, mid.y);
@@ -551,7 +555,9 @@ export function TopologyScene({
               key={g.flow.id}
               type="button"
               aria-label={d.accessible}
+              aria-haspopup="dialog"
               data-flow-target
+              onClick={() => onSelect({ kind: "flow", id: g.flow.id })}
               onFocus={() => setFlowTip({ id: g.flow.id, x: mid.x, y: mid.y })}
               onBlur={() => setFlowTip((cur) => (cur?.id === g.flow.id ? null : cur))}
               onMouseEnter={() => setFlowTip({ id: g.flow.id, x: mid.x, y: mid.y })}

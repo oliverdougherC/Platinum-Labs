@@ -841,7 +841,60 @@ describe("flow inspection text", () => {
     expect(`${d.title}\n${d.value}`).not.toMatch(/measured|updated|derived/);
     expect(d.accessible).toContain("measured");
     expect(d.accessible).toContain("source updated");
-    expect(d.detail).toContain("qBittorrent");
+    expect(d.accessible).toContain("qBittorrent");
+  });
+
+  it("estimated rates carry the visible ≈ prefix; measured/reported values stay plain", () => {
+    const snap = makeFakeSnapshot("transcode", NOW);
+    const estimated = {
+      ...snap,
+      jellyfinContainer: null,
+      jellyfin: {
+        ...snap.jellyfin,
+        sessions: snap.jellyfin.sessions.map((s) => ({
+          ...s,
+          rate: {
+            bytesPerSecond: 3_000_000,
+            basis: "source-media" as const,
+            evidence: "estimated" as const,
+          },
+        })),
+      },
+    };
+    const egress = deriveFlows(estimated, NOW).find((f) => f.kind === "egress")!;
+    expect(describeFlow(egress, NOW).value).toBe("≈ 3.0 MB/s");
+
+    // A reported complete rate keeps the plain form.
+    const reported = deriveFlows(
+      { ...snap, jellyfinContainer: null },
+      NOW,
+    ).find((f) => f.kind === "egress")!;
+    expect(describeFlow(reported, NOW).value).toBe("1.5 MB/s");
+  });
+
+  it("estimated partial coverage combines ≈ with the unknown-contributor count", () => {
+    const snap = makeFakeSnapshot("multi-session", NOW);
+    const estimatedPartial = {
+      ...snap,
+      jellyfinContainer: null,
+      jellyfin: {
+        ...snap.jellyfin,
+        sessions: snap.jellyfin.sessions.map((s, index) =>
+          index === 0
+            ? { ...s, rate: null }
+            : {
+                ...s,
+                rate: {
+                  bytesPerSecond: 1_187_500,
+                  basis: "source-media" as const,
+                  evidence: "estimated" as const,
+                },
+              },
+        ),
+      },
+    };
+    const egress = deriveFlows(estimatedPartial, NOW).find((f) => f.kind === "egress")!;
+    expect(describeFlow(egress, NOW).value).toBe("≈ 1.2 MB/s + 1 unknown");
   });
 
   it("a state-only data flow admits its byte rate is unavailable", () => {

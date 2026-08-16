@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { TopologyApp } from "@/components/topology/topology-app";
 import { TopologyScene } from "@/components/topology/scene";
 import { MetricsRail } from "@/components/topology/metrics-rail";
@@ -112,6 +112,85 @@ describe("TopologyApp — frozen/reduced-motion and composition", () => {
     expect(screen.getByRole("dialog", { name: "Jellyfin" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Notifications" })).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Media search" })).not.toBeInTheDocument();
+  });
+});
+
+describe("flow technical detail interaction (V2.1 evidence display)", () => {
+  it("activating a flow target opens the shared flow-detail drawer with full evidence", () => {
+    renderApp("transcode");
+    // Flow targets are native <button>s, so click and Enter share the same
+    // native activation path; the test focuses first to model keyboard use.
+    const flowTarget = screen.getByRole("button", { name: /^Jellyfin → network/ });
+    expect(flowTarget).toHaveAttribute("aria-haspopup", "dialog");
+    act(() => flowTarget.focus());
+    fireEvent.click(flowTarget);
+
+    const dialog = screen.getByRole("dialog", { name: /Flow · Jellyfin → network/ });
+    // The compact technical surface: endpoints, headline, evidence, basis,
+    // coverage, freshness, provenance.
+    expect(within(dialog).getByText("Path")).toBeInTheDocument();
+    expect(within(dialog).getByText("Headline")).toBeInTheDocument();
+    expect(within(dialog).getByText("Coverage")).toBeInTheDocument();
+    expect(within(dialog).getByText("Basis")).toBeInTheDocument();
+    expect(within(dialog).getByText("Path evidence")).toBeInTheDocument();
+    expect(within(dialog).getByText("Freshness")).toBeInTheDocument();
+    expect(within(dialog).getByText("Source updated")).toBeInTheDocument();
+  });
+
+  it("Escape closes the flow detail and focus returns to the flow target", () => {
+    renderApp("transcode");
+    const flowTarget = screen.getByRole("button", { name: /^Jellyfin → network/ });
+    act(() => flowTarget.focus());
+    fireEvent.click(flowTarget);
+    expect(
+      screen.getByRole("dialog", { name: /Flow · Jellyfin → network/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(
+      screen.queryByRole("dialog", { name: /Flow · Jellyfin → network/ }),
+    ).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(flowTarget);
+  });
+
+  it("retained non-headline observations render in the detail surface", () => {
+    // direct-play with a zero container window: the session aggregate is the
+    // headline and the measured zero is retained under "Also observed".
+    const snapshot = makeFakeSnapshot("direct-play", NOW);
+    const docker = snapshot.telemetry.docker.value!;
+    docker.containers = docker.containers.map((c) =>
+      c.name === "jellyfin" ? { ...c, netTxBps: 0, blockReadBps: 0 } : c,
+    );
+    render(
+      <TopologyApp
+        initial={snapshot}
+        seerr={{ search: false, requests: false }}
+        quickLinks={[]}
+        frozen
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Jellyfin → network/ }));
+    const dialog = screen.getByRole("dialog", { name: /Flow · Jellyfin → network/ });
+    expect(within(dialog).getByText("Also observed")).toBeInTheDocument();
+    expect(within(dialog).getByText("container-egress")).toBeInTheDocument();
+    expect(within(dialog).getByText(/0\.0? ?B\/s|0 B\/s/)).toBeInTheDocument();
+  });
+
+  it("a flow that stopped being observed reads honestly instead of rendering stale evidence", () => {
+    const snapshot = makeFakeSnapshot("idle", NOW);
+    render(
+      <TopologyApp
+        initial={snapshot}
+        seerr={{ search: false, requests: false }}
+        quickLinks={[]}
+        frozen
+        initialPanels={{ drawer: "flow:egress:jellyfin->network" }}
+      />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Flow" });
+    expect(
+      within(dialog).getByText(/not observed in the latest snapshot/),
+    ).toBeInTheDocument();
   });
 });
 

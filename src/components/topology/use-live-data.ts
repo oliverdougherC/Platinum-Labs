@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   DashboardSnapshot,
   HostTelemetrySnapshot,
@@ -199,6 +199,10 @@ export function useLiveData(
     };
   });
   const [staleTick, setStaleTick] = useState(0);
+  // Mount-time generation floor for the monotonic guards. A ref, not a dep:
+  // the guard belongs to the transport generation, so it re-seeds only when
+  // the transport effect itself re-runs (scenario/frozen change).
+  const initialGeneratedAtRef = useRef(initial.generatedAt);
 
   useEffect(() => {
     if (frozen) return;
@@ -221,8 +225,8 @@ export function useLiveData(
      * fallback response racing a newer SSE snapshot, or a replayed SSE frame
      * — must never become current merely because it arrived later.
      */
-    let lastAppliedSnapshotGeneratedAt = initial.generatedAt;
-    let lastAppliedTelemetryGeneratedAt = initial.generatedAt;
+    let lastAppliedSnapshotGeneratedAt = initialGeneratedAtRef.current;
+    let lastAppliedTelemetryGeneratedAt = initialGeneratedAtRef.current;
 
     const query = scenario ? `?scenario=${encodeURIComponent(scenario)}` : "";
 
