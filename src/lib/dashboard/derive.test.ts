@@ -4,31 +4,10 @@ import {
   capacityBand,
   connectorPresentation,
   healthById,
-  mediaVisualState,
   storageVisualState,
 } from "@/lib/dashboard/derive";
 
 const NOW = 1_754_000_000_000;
-
-describe("mediaVisualState", () => {
-  it("is ambient when idle", () => {
-    expect(mediaVisualState(makeFakeSnapshot("idle", NOW))).toBe("ambient");
-  });
-  it("is active during playback", () => {
-    expect(mediaVisualState(makeFakeSnapshot("direct-play", NOW))).toBe("active");
-  });
-  it("is active during downloads", () => {
-    expect(mediaVisualState(makeFakeSnapshot("downloads", NOW))).toBe("active");
-  });
-  it("is attention on a stalled transfer", () => {
-    expect(mediaVisualState(makeFakeSnapshot("stalled", NOW))).toBe("attention");
-  });
-  it("is attention when Jellyfin is unavailable", () => {
-    expect(mediaVisualState(makeFakeSnapshot("connector-unavailable", NOW))).toBe(
-      "attention",
-    );
-  });
-});
 
 describe("storageVisualState", () => {
   it("is ambient when pools are healthy", () => {

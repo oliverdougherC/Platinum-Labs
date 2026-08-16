@@ -42,6 +42,8 @@ jobs:
       - name: Production build
         run: npm run build
       - name: Example-env startup smoke (built app boots with .env.example)
+        # Last-resort guard only — the script itself owns bounded teardown.
+        timeout-minutes: 3
         run: npm run smoke:example-env -- --skip-build
 
   security:
