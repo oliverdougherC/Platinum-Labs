@@ -78,6 +78,12 @@ describe("mergeAcquisition", () => {
     expect(merged.items).toEqual([]);
     expect(merged.rollup.aggregateRateBps).toBe(0);
   });
+
+  it("keeps an Arr-only download rate unknown instead of fabricating zero", () => {
+    const merged = mergeAcquisition([sonarrItem], null, null);
+    expect(merged.rollup.downloading).toBe(1);
+    expect(merged.rollup.aggregateRateBps).toBeNull();
+  });
 });
 
 describe("correlateAcquisition — cross-service correlation (exact identifiers only)", () => {

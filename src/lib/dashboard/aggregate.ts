@@ -8,6 +8,7 @@
  * the API can always return 200 with whatever is healthy.
  */
 
+import { emptyTelemetry, notConfiguredTelemetry } from "@/lib/telemetry/normalize";
 import type {
   AcquisitionItem,
   AcquisitionSnapshot,
@@ -18,17 +19,20 @@ import type {
   ConnectorId,
   DashboardHistory,
   DashboardSnapshot,
+  HostTelemetrySnapshot,
   JellyfinSnapshot,
+  TelemetryHistory,
   ZfsSnapshot,
 } from "@/lib/types";
 
-/** The five core connectors that must always appear in `health`. */
+/** The core connectors that must always appear in `health`. */
 export const CORE_CONNECTORS: ConnectorId[] = [
   "jellyfin",
   "sonarr",
   "radarr",
   "qbittorrent",
   "zfs",
+  "host",
 ];
 
 /** Config classification for a connector that has no live runtime. */
@@ -76,9 +80,18 @@ export interface AggregateParts {
   radarr: AcquisitionItem[] | null;
   qbittorrent: AcquisitionSnapshot | null;
   zfs: ZfsSnapshot | null;
+  /** Host telemetry; null when the collector has never produced a snapshot. */
+  telemetry?: HostTelemetrySnapshot | null;
+  /** True when no host collector is configured at all (vs. failing). */
+  telemetryNotConfigured?: boolean;
+  telemetryHistory?: TelemetryHistory;
   attention?: AttentionItem[];
   activity?: ActivityEvent[];
   history?: DashboardHistory;
+  /** Operator-declared media pool (PLA-275); null/undefined when not configured. */
+  mediaPool?: string | null;
+  /** Operator-declared download/staging pool; null/undefined when not configured. */
+  downloadPool?: string | null;
 }
 
 const JELLYFIN_UNAVAILABLE: JellyfinSnapshot = {
@@ -168,14 +181,23 @@ export function correlateAcquisition(items: AcquisitionItem[]): AcquisitionItem[
   return [...merged, ...singles];
 }
 
-function rollupOf(items: AcquisitionItem[], aggregateRateBps: number): AcquisitionSnapshot["rollup"] {
+function rollupOf(
+  items: AcquisitionItem[],
+  aggregateRateBps: number | null,
+  upload: { uploadRateBps: number | null; seeding: number },
+): AcquisitionSnapshot["rollup"] {
   return {
     downloading: items.filter((i) => i.state === "downloading").length,
     importing: items.filter((i) => i.state === "importing").length,
     failedOrStalled: items.filter(
       (i) => i.state === "stalled" || i.state === "failed",
     ).length,
-    aggregateRateBps: Math.max(0, Math.round(aggregateRateBps)),
+    aggregateRateBps:
+      aggregateRateBps === null
+        ? null
+        : Math.max(0, Math.round(aggregateRateBps)),
+    uploadRateBps: upload.uploadRateBps,
+    seeding: upload.seeding,
   };
 }
 
@@ -192,10 +214,23 @@ export function mergeAcquisition(
 
   // qBittorrent's global download speed is the authoritative live throughput;
   // fall back to summing per-item rates for the *arr-only case.
-  const summedRates = items.reduce((sum, i) => sum + (i.rateBps ?? 0), 0);
-  const aggregateRateBps = qbittorrent?.rollup.aggregateRateBps ?? summedRates;
+  const downloadingItems = items.filter((item) => item.state === "downloading");
+  const summedRates = downloadingItems.every((item) => item.rateBps !== null)
+    ? downloadingItems.reduce((sum, item) => sum + item.rateBps!, 0)
+    : null;
+  const aggregateRateBps = qbittorrent
+    ? qbittorrent.rollup.aggregateRateBps
+    : summedRates;
 
-  return { items, rollup: rollupOf(items, aggregateRateBps) };
+  return {
+    items,
+    rollup: rollupOf(items, aggregateRateBps, {
+      // Upload is only ever measured by the downloader; the *arrs know nothing
+      // about seeding, so without qBittorrent it is unknown (null), not 0.
+      uploadRateBps: qbittorrent?.rollup.uploadRateBps ?? null,
+      seeding: qbittorrent?.rollup.seeding ?? 0,
+    }),
+  };
 }
 
 /**
@@ -225,8 +260,14 @@ export function assembleSnapshot(parts: AggregateParts): DashboardSnapshot {
     jellyfin: parts.jellyfin ?? JELLYFIN_UNAVAILABLE,
     acquisition: mergeAcquisition(parts.sonarr, parts.radarr, parts.qbittorrent),
     zfs: parts.zfs ?? { pools: [] },
+    telemetry:
+      parts.telemetry ??
+      (parts.telemetryNotConfigured ? notConfiguredTelemetry() : emptyTelemetry()),
+    telemetryHistory: parts.telemetryHistory,
     attention: parts.attention ?? [],
     activity: parts.activity ?? [],
     history: parts.history,
+    mediaPool: parts.mediaPool ?? null,
+    downloadPool: parts.downloadPool ?? null,
   };
 }

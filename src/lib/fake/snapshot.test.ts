@@ -34,9 +34,9 @@ describe("every scenario is deterministic and well-formed", () => {
 
       expect(a.mode).toBe("fake");
       expect(a.generatedAt).toBe(NOW);
-      // Health is reported for all five connectors in every scenario.
+      // Health is reported for all six connectors in every scenario.
       expect(a.health.map((h) => h.id).sort()).toEqual(
-        ["jellyfin", "qbittorrent", "radarr", "sonarr", "zfs"].sort(),
+        ["jellyfin", "qbittorrent", "radarr", "sonarr", "zfs", "host"].sort(),
       );
       // Pool capacity fractions are always derived consistently.
       for (const pool of a.zfs.pools) {
@@ -98,11 +98,15 @@ describe("required scenario characteristics", () => {
   });
 
   it("zfs-warning: a pool is near the warning threshold", () => {
-    const tank = makeFakeSnapshot("zfs-warning", NOW).zfs.pools.find(
-      (p) => p.name === "tank",
+    const datastore = makeFakeSnapshot("zfs-warning", NOW).zfs.pools.find(
+      (p) => p.name === "DataStore",
     )!;
-    expect(tank.capacityFraction).toBeGreaterThan(0.8);
-    expect(tank.health).toBe("ONLINE");
+    expect(datastore.capacityFraction).toBeGreaterThan(0.8);
+    // Headline capacity is LOGICAL (root dataset), never raw physical (PLA-264).
+    expect(datastore.capacityBasis).toBe("logical");
+    expect(datastore.logical).not.toBeNull();
+    expect(datastore.allocation.sizeBytes).toBeGreaterThan(datastore.logical!.totalBytes);
+    expect(datastore.health).toBe("ONLINE");
   });
 
   it("zfs-degraded: a pool is DEGRADED with scrub errors", () => {

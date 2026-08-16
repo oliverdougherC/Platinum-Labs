@@ -15,10 +15,17 @@
  *    LAN/Tailscale deployment is the V1 trust boundary (documented in the README
  *    security section). Everything else is locked to 'self'.
  */
+// `next dev` bootstraps modules through eval'd source maps; production builds
+// do not. The relaxation exists ONLY in development.
+const scriptSrc =
+  process.env.NODE_ENV === "development"
+    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+    : "script-src 'self' 'unsafe-inline'";
+
 const csp = [
   "default-src 'self'",
   "base-uri 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  scriptSrc,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",
@@ -38,6 +45,9 @@ const securityHeaders = [
 ];
 
 const nextConfig = {
+  // Keep the dev error badge out of the composition (screenshot review runs
+  // against dev servers; the badge would contaminate captures).
+  devIndicators: false,
   reactStrictMode: true,
   // Standalone output for a minimal production Docker image (PLA-196).
   output: "standalone",

@@ -6,47 +6,64 @@ import {
 } from "@/lib/snapshot.server";
 import { getDataMode } from "@/lib/env.server";
 import { getSeerrAvailability } from "@/lib/seerr/config.server";
-import { LiveDashboard } from "@/components/live-dashboard";
 import { ScenarioSwitcher } from "@/components/dev/scenario-switcher";
-import { cn } from "@/lib/utils";
+import { TopologyApp } from "@/components/topology/topology-app";
 
 // Always render fresh: the dashboard is a live operational surface.
 export const dynamic = "force-dynamic";
 
 /**
- * Homepage (PLA-186).
+ * V2 homepage (PLA-263): the Living Topology.
  *
- * A thin server wrapper: it fetches the initial aggregate snapshot for a fast,
- * SSR first paint, then hands off to the client `LiveDashboard`, which polls the
- * `/api/dashboard` contract and updates in place. Composition, progressive
- * disclosure, and ambient motion come from earlier tickets.
+ * A thin server wrapper — fetch the initial snapshot for SSR first paint, then
+ * hand off to the client `TopologyApp` (SSE-driven). Dev-only query params
+ * power the deterministic screenshot harness (PLA-270):
+ *
+ *   ?scenario=…            select a fake scenario (fake mode only)
+ *   ?freeze=<epoch-ms>     render one deterministic frame, no transport/motion
+ *   ?panel=notifications   open the notification drawer
+ *   ?drawer=host|docker|pool:<name>|service:<id>   open a detail drawer
  */
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams: Promise<{ scenario?: string | string[] }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const { scenario } = await searchParams;
-  const initial = await getDashboardSnapshot({ scenarioOverride: scenario });
+  const params = await searchParams;
+  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
-  const devControls = getDataMode() === "fake" && shouldShowDevControls();
-  const currentScenario = resolveScenario(scenario);
-  const scenarioParam = Array.isArray(scenario) ? scenario[0] : scenario;
+  const devControls = shouldShowDevControls();
+  const fake = getDataMode() === "fake";
+
+  // Freeze is a dev/screenshot affordance: fake mode + dev controls only.
+  const freezeRaw = devControls && fake ? Number(one(params.freeze)) : Number.NaN;
+  const frozenAt = Number.isFinite(freezeRaw) && freezeRaw > 0 ? freezeRaw : null;
+
+  const initial = await getDashboardSnapshot({
+    scenarioOverride: params.scenario,
+    nowOverride: frozenAt ?? undefined,
+  });
+
+  const currentScenario = resolveScenario(params.scenario);
+  const scenarioParam = one(params.scenario);
+  const panel = devControls && one(params.panel) === "notifications" ? "notifications" : null;
+  const drawer = devControls ? one(params.drawer) ?? null : null;
 
   return (
-    <main
-      className={cn(
-        "mx-auto flex min-h-screen max-w-canvas flex-col gap-8 px-6 py-8 md:gap-10 md:px-10 lg:px-14",
-        devControls && "pb-20",
-      )}
-    >
-      <LiveDashboard
+    <>
+      <TopologyApp
         initial={initial}
-        scenario={devControls ? scenarioParam : undefined}
-        quickLinks={getQuickLinks()}
         seerr={getSeerrAvailability()}
+        quickLinks={getQuickLinks()}
+        scenario={fake && devControls ? scenarioParam : undefined}
+        frozen={frozenAt !== null}
+        initialPanels={{ panel, drawer }}
+        devControls={fake && devControls}
       />
-      {devControls ? <ScenarioSwitcher current={currentScenario} /> : null}
-    </main>
+      {/* `switcher=off` keeps the dev control out of motion recordings. */}
+      {devControls && fake && frozenAt === null && one(params.switcher) !== "off" ? (
+        <ScenarioSwitcher current={currentScenario} />
+      ) : null}
+    </>
   );
 }

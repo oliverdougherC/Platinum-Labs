@@ -17,6 +17,16 @@ import { createQbittorrentConnector } from "@/lib/connectors/qbittorrent";
 import { makeQbClient } from "@/lib/connectors/qbittorrent.server";
 import { createZfsConnector } from "@/lib/connectors/zfs";
 import { makeCommandCollect, makeHelperCollect } from "@/lib/connectors/zfs.server";
+import { createHostConnector, makeHostCollect } from "@/lib/telemetry/host.server";
+import {
+  emptyTelemetryHistory,
+  pushBounded,
+} from "@/lib/telemetry/history";
+import {
+  emptyTelemetry,
+  gradeTelemetryFreshness,
+  notConfiguredTelemetry,
+} from "@/lib/telemetry/normalize";
 import {
   assembleSnapshot,
   fillConnectorHealth,
@@ -45,8 +55,10 @@ import type {
   AcquisitionSnapshot,
   DashboardHistory,
   DashboardSnapshot,
+  HostTelemetrySnapshot,
   JellyfinSnapshot,
   ServarrSnapshot,
+  TelemetryHistory,
   ZfsSnapshot,
 } from "@/lib/types";
 
@@ -83,6 +95,7 @@ interface LiveRegistry {
   radarrRt: ConnectorRuntime<ServarrSnapshot> | null;
   qbRt: ConnectorRuntime<AcquisitionSnapshot> | null;
   zfsRt: ConnectorRuntime<ZfsSnapshot> | null;
+  hostRt: ConnectorRuntime<HostTelemetrySnapshot> | null;
 }
 
 let registry: LiveRegistry | null = null;
@@ -92,6 +105,7 @@ let alertStates = new Map<string, AlertState>();
 let initPromise: Promise<void> | null = null;
 let assembleTimer: ReturnType<typeof setInterval> | null = null;
 let maintenanceTimer: ReturnType<typeof setInterval> | null = null;
+let telemetryTimer: ReturnType<typeof setInterval> | null = null;
 
 /** Engine rules whose lifecycle deriveEvents does NOT already cover. */
 const ENGINE_EVENT_RULES = new Set<string>([RULE.capacityWarning, RULE.capacityCritical]);
@@ -181,7 +195,17 @@ function build(): LiveRegistry {
         )
       : null;
 
-  for (const rt of [jellyfinRt, sonarrRt, radarrRt, qbRt, zfsRt]) {
+  const hostRt =
+    resolved.host.kind === "configured"
+      ? new ConnectorRuntime(
+          createHostConnector(
+            { pollIntervalMs: p.host },
+            makeHostCollect(resolved.host.value.url, resolved.host.value.token),
+          ),
+        )
+      : null;
+
+  for (const rt of [jellyfinRt, sonarrRt, radarrRt, qbRt, zfsRt, hostRt]) {
     if (rt) {
       hub.register(rt as ConnectorRuntime<unknown>);
       runtimes.push(rt as ConnectorRuntime<unknown>);
@@ -197,11 +221,55 @@ function build(): LiveRegistry {
     radarrRt,
     qbRt,
     zfsRt,
+    hostRt,
   };
+}
+
+// Bounded telemetry history, sampled on its own 2s tick (matches host cadence).
+const TELEMETRY_TICK_MS = 2_000;
+/** A telemetry sample older than this is re-graded `stale` (kept, labeled). */
+const TELEMETRY_STALE_MS = 10_000;
+let telemetryHistory: TelemetryHistory = emptyTelemetryHistory();
+let lastTelemetrySampleAt: number | null = null;
+
+function sampleTelemetryHistory(reg: LiveRegistry, now: number): void {
+  const snap = reg.hostRt?.getState().snapshot ?? null;
+  if (!snap) return;
+  // Only append when the collector actually produced a new sample; a stalled
+  // collector must not flat-line the sparklines with repeats.
+  const at = snap.cpu.updatedAt ?? snap.network.updatedAt;
+  if (at === null || at === lastTelemetrySampleAt) return;
+  lastTelemetrySampleAt = at;
+  if (snap.cpu.status === "available" && snap.cpu.value) {
+    pushBounded(telemetryHistory.cpuTotal, { t: now, v: snap.cpu.value.totalFraction });
+  }
+  if (snap.network.status === "available" && snap.network.value) {
+    pushBounded(telemetryHistory.netRx, { t: now, v: snap.network.value.rxBps });
+    pushBounded(telemetryHistory.netTx, { t: now, v: snap.network.value.txBps });
+  }
+  if (snap.disk.status === "available" && snap.disk.value) {
+    pushBounded(telemetryHistory.diskRead, { t: now, v: snap.disk.value.readBps });
+    pushBounded(telemetryHistory.diskWrite, { t: now, v: snap.disk.value.writeBps });
+  }
+}
+
+/** Current graded telemetry + bounded history (used by assemble and the SSE stream). */
+function currentTelemetry(reg: LiveRegistry, now: number): {
+  telemetry: HostTelemetrySnapshot;
+  history: TelemetryHistory;
+} {
+  const raw = reg.hostRt?.getState().snapshot ?? null;
+  const telemetry = raw
+    ? gradeTelemetryFreshness(raw, now, TELEMETRY_STALE_MS)
+    : reg.configStatus.host?.configured
+      ? emptyTelemetry()
+      : notConfiguredTelemetry();
+  return { telemetry, history: telemetryHistory };
 }
 
 function assemble(reg: LiveRegistry, now: number): DashboardSnapshot {
   const health = fillConnectorHealth(reg.hub.health(), reg.configStatus);
+  const { telemetry, history: telemetryHist } = currentTelemetry(reg, now);
   const snapshot = assembleSnapshot({
     now,
     health,
@@ -210,7 +278,12 @@ function assemble(reg: LiveRegistry, now: number): DashboardSnapshot {
     radarr: reg.radarrRt?.getState().snapshot?.items ?? null,
     qbittorrent: reg.qbRt?.getState().snapshot ?? null,
     zfs: reg.zfsRt?.getState().snapshot ?? null,
+    telemetry,
+    telemetryNotConfigured: !reg.configStatus.host?.configured,
+    telemetryHistory: telemetryHist,
     history: readHistory(now),
+    mediaPool: getServerEnv().HOMELAB_MEDIA_POOL ?? null,
+    downloadPool: getServerEnv().HOMELAB_DOWNLOAD_POOL ?? null,
   });
 
   // Jellyfin's /Sessions only reports *current* playback, so its lastPlaybackAt
@@ -364,7 +437,12 @@ function persist(
 ): void {
   tryPersist((db) => {
     // Throughput sampled every cycle (feeds the ~45m media chart).
-    insertThroughput(db, { t: now, bps: snapshot.acquisition.rollup.aggregateRateBps });
+    if (snapshot.acquisition.rollup.aggregateRateBps !== null) {
+      insertThroughput(db, {
+        t: now,
+        bps: snapshot.acquisition.rollup.aggregateRateBps,
+      });
+    }
 
     // Storage sampled only on a NEW ZFS observation, throttled to a low cadence —
     // never once per aggregate cycle.
@@ -469,6 +547,13 @@ async function init(reg: LiveRegistry): Promise<void> {
   if (assembleTimer && typeof assembleTimer === "object" && "unref" in assembleTimer) {
     assembleTimer.unref();
   }
+  telemetryTimer = setInterval(
+    () => sampleTelemetryHistory(reg, Date.now()),
+    TELEMETRY_TICK_MS,
+  );
+  if (telemetryTimer && typeof telemetryTimer === "object" && "unref" in telemetryTimer) {
+    telemetryTimer.unref();
+  }
   maintenanceTimer = setInterval(runScheduledMaintenance, MAINTENANCE_INTERVAL_MS);
   if (maintenanceTimer && typeof maintenanceTimer === "object" && "unref" in maintenanceTimer) {
     maintenanceTimer.unref();
@@ -483,10 +568,29 @@ export async function getLiveSnapshot(): Promise<DashboardSnapshot> {
   return cached ?? assemble(registry, Date.now());
 }
 
+/**
+ * High-frequency live telemetry for the SSE stream (PLA-265): the current
+ * graded host snapshot plus bounded history, WITHOUT triggering a fresh
+ * aggregate assembly. Requires the registry to be initialized.
+ */
+export async function getLiveTelemetry(): Promise<{
+  telemetry: HostTelemetrySnapshot;
+  history: TelemetryHistory;
+  generatedAt: number;
+}> {
+  if (!registry) registry = build();
+  if (!initPromise) initPromise = init(registry);
+  await initPromise;
+  const now = Date.now();
+  const { telemetry, history } = currentTelemetry(registry, now);
+  return { telemetry, history, generatedAt: now };
+}
+
 /** Test-only: reset module state so a fresh registry can be built. */
 export function __resetLiveRegistryForTests(): void {
   if (assembleTimer) clearInterval(assembleTimer);
   if (maintenanceTimer) clearInterval(maintenanceTimer);
+  if (telemetryTimer) clearInterval(telemetryTimer);
   registry = null;
   cached = null;
   prevForEvents = null;
@@ -494,6 +598,9 @@ export function __resetLiveRegistryForTests(): void {
   initPromise = null;
   assembleTimer = null;
   maintenanceTimer = null;
+  telemetryTimer = null;
   lastStorageSampleAt = 0;
   lastZfsObservedAt = null;
+  telemetryHistory = emptyTelemetryHistory();
+  lastTelemetrySampleAt = null;
 }

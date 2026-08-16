@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { detectConditions, RULE, type AttentionInputs } from "@/lib/attention/rules";
 import { appConfig } from "@/lib/config";
+import { testPool } from "@/lib/test/factories";
 import type { AcquisitionItem, ConnectorHealth, ZfsPool } from "@/lib/types";
 
 const thresholds = appConfig.thresholds;
@@ -12,10 +13,7 @@ function health(id: ConnectorHealth["id"], overrides: Partial<ConnectorHealth> =
   };
 }
 function pool(overrides: Partial<ZfsPool> = {}): ZfsPool {
-  return {
-    name: "tank", usedBytes: 10, totalBytes: 100, capacityFraction: 0.1,
-    health: "ONLINE", scan: "none", lastScrubAt: null, scrubErrors: 0, ...overrides,
-  };
+  return testPool({ usedBytes: 10, totalBytes: 100, capacityFraction: 0.1, ...overrides });
 }
 function item(overrides: Partial<AcquisitionItem> = {}): AcquisitionItem {
   return {

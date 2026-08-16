@@ -47,11 +47,14 @@ export interface RawPool {
   alloc: number;
   free: number;
   health: string;
+  /** zpool FRAG percent, when the listing included it. */
+  frag: number | null;
 }
 
 /**
- * Parse `zpool list -Hp -o name,size,alloc,free,health` output. Tab-separated,
- * exact bytes, no header. Skips any line that doesn't have the expected numeric
+ * Parse `zpool list -Hp -o name,size,alloc,free,frag,health` output (also
+ * accepts the pre-PLA-264 5-column form without `frag`). Tab-separated, exact
+ * bytes, no header. Skips any line that doesn't have the expected numeric
  * columns (resilient to unexpected/partial output).
  */
 export function parseZpoolList(stdout: string): RawPool[] {
@@ -60,7 +63,11 @@ export function parseZpoolList(stdout: string): RawPool[] {
     if (!line.trim()) continue;
     const cols = line.split("\t");
     if (cols.length < 5) continue;
-    const [name, size, alloc, free, health] = cols;
+    const [name, size, alloc, free] = cols;
+    // 6-column form carries FRAG before HEALTH; 5-column form has HEALTH last.
+    const hasFrag = cols.length >= 6;
+    const fragN = hasFrag ? Number(String(cols[4]).replace("%", "")) : Number.NaN;
+    const health = hasFrag ? cols[5] : cols[4];
     const sizeN = Number(size);
     const allocN = Number(alloc);
     const freeN = Number(free);
@@ -71,9 +78,37 @@ export function parseZpoolList(stdout: string): RawPool[] {
       alloc: allocN,
       free: Number.isNaN(freeN) ? sizeN - allocN : freeN,
       health: (health ?? "").trim(),
+      frag: Number.isNaN(fragN) ? null : fragN,
     });
   }
   return pools;
+}
+
+export interface RawRootDataset {
+  name: string;
+  used: number;
+  avail: number;
+}
+
+/**
+ * Parse `zfs list -Hp -o name,used,avail -d 0` output: one line per root
+ * dataset (dataset name === pool name), exact bytes.
+ */
+export function parseZfsList(stdout: string): Record<string, RawRootDataset> {
+  const out: Record<string, RawRootDataset> = {};
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const cols = line.split("\t");
+    if (cols.length < 3) continue;
+    const [name, used, avail] = cols;
+    const usedN = Number(used);
+    const availN = Number(avail);
+    if (!name || Number.isNaN(usedN) || Number.isNaN(availN)) continue;
+    // Only root datasets: a nested dataset name contains "/".
+    if (name.includes("/")) continue;
+    out[name] = { name, used: usedN, avail: availN };
+  }
+  return out;
 }
 
 export type ScrubState =
@@ -129,25 +164,67 @@ export function parseZpoolStatus(stdout: string): Record<string, ScrubInfo> {
   return out;
 }
 
-/** Combine capacity + scrub info into the normalized snapshot. */
+/**
+ * Compose one normalized pool from the zpool allocation listing plus
+ * (optionally) the root-dataset logical values. The HEADLINE used/total is
+ * logical whenever datasets are known — zpool allocation size is never
+ * presented as usable capacity (PLA-264), and never as installed raw device
+ * capacity either (PLA-274). Allocation stays under `allocation` for detail
+ * surfaces.
+ */
+export function composeZfsPool(
+  p: RawPool,
+  dataset: RawRootDataset | undefined,
+  info: ScrubInfo | undefined,
+): ZfsPool {
+  const allocation = {
+    sizeBytes: p.size,
+    allocBytes: p.alloc,
+    freeBytes: p.free,
+    capFraction: p.size > 0 ? clamp(p.alloc / p.size, 0, 1) : 0,
+    fragPercent: p.frag,
+  };
+  const logical =
+    dataset !== undefined
+      ? {
+          usedBytes: dataset.used,
+          availBytes: dataset.avail,
+          totalBytes: dataset.used + dataset.avail,
+          usedFraction:
+            dataset.used + dataset.avail > 0
+              ? clamp(dataset.used / (dataset.used + dataset.avail), 0, 1)
+              : 0,
+        }
+      : null;
+  const headline = logical ?? {
+    usedBytes: allocation.allocBytes,
+    availBytes: allocation.freeBytes,
+    totalBytes: allocation.sizeBytes,
+    usedFraction: allocation.capFraction,
+  };
+  return {
+    name: p.name,
+    usedBytes: headline.usedBytes,
+    totalBytes: headline.totalBytes,
+    capacityFraction: headline.usedFraction,
+    capacityBasis: logical ? "logical" : "pool-allocation",
+    allocation,
+    logical,
+    health: mapPoolHealth(p.health),
+    scan: toScanState(info?.state),
+    lastScrubAt: info?.lastScrubAt ?? null,
+    scrubErrors: info?.errors ?? 0,
+  };
+}
+
+/** Combine capacity + dataset + scrub info into the normalized snapshot. */
 export function buildZfsSnapshot(
   pools: RawPool[],
   scrub: Record<string, ScrubInfo> = {},
+  datasets: Record<string, RawRootDataset> = {},
 ): ZfsSnapshot {
   return {
-    pools: pools.map((p): ZfsPool => {
-      const info = scrub[p.name];
-      return {
-        name: p.name,
-        usedBytes: p.alloc,
-        totalBytes: p.size,
-        capacityFraction: p.size > 0 ? clamp(p.alloc / p.size, 0, 1) : 0,
-        health: mapPoolHealth(p.health),
-        scan: toScanState(info?.state),
-        lastScrubAt: info?.lastScrubAt ?? null,
-        scrubErrors: info?.errors ?? 0,
-      };
-    }),
+    pools: pools.map((p) => composeZfsPool(p, datasets[p.name], scrub[p.name])),
   };
 }
 
@@ -160,6 +237,11 @@ const collectorPoolSchema = z
     alloc: z.number(),
     free: z.number().optional(),
     health: z.string(),
+    /** FRAG percent — added by the PLA-264 collector; absent on older sidecars. */
+    frag: z.number().nullable().optional(),
+    /** Root-dataset logical bytes — added by the PLA-264 collector. */
+    logicalUsed: z.number().nullable().optional(),
+    logicalAvail: z.number().nullable().optional(),
     scanState: z.enum(["none", "scrubbing", "resilvering", "finished"]).optional(),
     lastScrubAt: z.number().nullable().optional(),
     scrubErrors: z.number().optional(),
@@ -174,16 +256,26 @@ export const zfsCollectorSchema = z.object({
 export function normalizeZfsCollector(raw: unknown): ZfsSnapshot {
   const parsed = parseUpstream(zfsCollectorSchema, raw, "zfs.collector");
   return {
-    pools: parsed.pools.map((p): ZfsPool => ({
-      name: p.name,
-      usedBytes: p.alloc,
-      totalBytes: p.size,
-      capacityFraction: p.size > 0 ? clamp(p.alloc / p.size, 0, 1) : 0,
-      health: mapPoolHealth(p.health),
-      scan: p.scanState ?? "none",
-      lastScrubAt: p.lastScrubAt ?? null,
-      scrubErrors: p.scrubErrors ?? 0,
-    })),
+    pools: parsed.pools.map((p): ZfsPool => {
+      const raw: RawPool = {
+        name: p.name,
+        size: p.size,
+        alloc: p.alloc,
+        free: p.free ?? p.size - p.alloc,
+        health: p.health,
+        frag: p.frag ?? null,
+      };
+      const dataset =
+        typeof p.logicalUsed === "number" && typeof p.logicalAvail === "number"
+          ? { name: p.name, used: p.logicalUsed, avail: p.logicalAvail }
+          : undefined;
+      const pool = composeZfsPool(raw, dataset, undefined);
+      // The helper reports scan state in the normalized vocabulary already.
+      pool.scan = p.scanState ?? "none";
+      pool.lastScrubAt = p.lastScrubAt ?? null;
+      pool.scrubErrors = p.scrubErrors ?? 0;
+      return pool;
+    }),
   };
 }
 

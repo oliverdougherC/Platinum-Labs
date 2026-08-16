@@ -40,7 +40,9 @@ export const appConfig: AppConfig = {
     sonarr: 25_000,
     radarr: 25_000,
     qbittorrent: 10_000,
-    zfs: 60_000,
+    zfs: 30_000,
+    // High-frequency host telemetry (PLA-265): CPU/memory/network/disk rates.
+    host: 2_000,
   },
   thresholds: {
     storageWarnFraction: 0.8,

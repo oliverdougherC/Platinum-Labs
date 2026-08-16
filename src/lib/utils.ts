@@ -11,24 +11,13 @@ export function cn(...values: ClassValue[]): string {
   return values.filter(Boolean).join(" ");
 }
 
-/** Human-readable bytes, e.g. 1536 -> "1.5 KB". */
-export function formatBytes(bytes: number, fractionDigits = 1): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return "—";
-  if (bytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
-  const exponent = Math.min(
-    Math.floor(Math.log(bytes) / Math.log(1024)),
-    units.length - 1,
-  );
-  const value = bytes / Math.pow(1024, exponent);
-  const digits = exponent === 0 ? 0 : fractionDigits;
-  return `${value.toFixed(digits)} ${units[exponent]}`;
-}
-
-/** Bytes/sec as a rate string, e.g. "4.2 MB/s". */
-export function formatRate(bytesPerSecond: number): string {
-  return `${formatBytes(bytesPerSecond)}/s`;
-}
+/**
+ * Byte formatting moved to the single tested layer in `@/lib/format/bytes`
+ * (PLA-264). The V1 implementation here divided by 1024 while labeling with
+ * decimal units — the root cause of the "87.3 TB" regression. Re-exported so
+ * existing call sites keep working with CORRECT decimal semantics.
+ */
+export { formatBytes, formatRate } from "@/lib/format/bytes";
 
 /** Clamp a number to the inclusive [min, max] range. */
 export function clamp(value: number, min: number, max: number): number {

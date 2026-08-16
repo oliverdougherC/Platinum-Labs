@@ -47,15 +47,34 @@ services:
       ZFS_COLLECTOR_TOKEN: ${ZFS_COLLECTOR_TOKEN:?set ZFS_COLLECTOR_TOKEN when enabling the zfs-sidecar profile}
       ZFS_COLLECTOR_BIND: 0.0.0.0
       ZFS_COLLECTOR_PORT: 9797
+      # Host telemetry (PLA-265): host procfs mounted read-only below. Network
+      # counters are read from /host/proc/1/net/dev (host netns via pid 1);
+      # without the mount the network section reports "unavailable" (never 0).
+      HOST_PROC: /host/proc
+      # Optional: aggregate only these interfaces (comma-separated). Default:
+      # physical-looking interfaces (en*/eth*/bond*), excluding veth/br/tailscale.
+      HOST_NET_INTERFACES: ${HOST_NET_INTERFACES:-}
+      # Read-only Docker socket proxy URL (GET-only endpoints used). Defaults
+      # to the stack's own narrow proxy below; set empty to report the docker
+      # section as "not-configured".
+      DOCKER_PROXY_URL: ${DOCKER_PROXY_URL:-http://docker-proxy:2375}
     devices:
       - "/dev/zfs:/dev/zfs"
+    volumes:
+      # Read-only host procfs for CPU/memory/disk/network counters (PLA-265).
+      - /proc:/host/proc:ro
     expose:
       - "9797"
     hostname: zfs-collector
+    # Two-network isolation (PLA-265): `zfs_private` carries homepage →
+    # collector polling; `docker_telemetry_private` carries collector →
+    # docker-proxy only. The homepage never joins the latter, so it can reach
+    # the collector but can never reach the Docker socket proxy.
     networks:
       zfs_private:
         aliases:
           - zfs-collector
+      docker_telemetry_private: {}
     cap_drop:
       - ALL
     security_opt:
@@ -78,6 +97,38 @@ services:
       retries: 3
       start_period: 15s
 
+  # Narrow read-only Docker telemetry access (PLA-265/272 review blocker).
+  # The collector may ONLY reach `GET /containers/*` (list + one-shot stats):
+  # the proxy denies every other API section, POST is disabled, and the socket
+  # is mounted read-only. The proxy lives exclusively on the internal
+  # `docker_telemetry_private` network, which only `zfs-collector` shares —
+  # `homepage` sits on `zfs_private` (homepage ↔ collector) and is NOT attached
+  # to `docker_telemetry_private`, so the dashboard container has no route to
+  # the Docker socket at all. This is deliberately NOT an unrestricted
+  # /var/run/docker.sock mount.
+  docker-proxy:
+    profiles: ["zfs-sidecar"]
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      POST: 0
+      # Everything else (exec, images, volumes, networks, swarm, …) defaults
+      # to denied in this image; list nothing so nothing else opens.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      docker_telemetry_private:
+        aliases:
+          - docker-proxy
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   homelab-data:
     name: ${HOMEPAGE_VOLUME_NAME:-homelab-homepage-data}
@@ -90,4 +141,8 @@ networks:
     external: true
     name: ${JELLYFIN_NETWORK_NAME:-jellyfin_default}
   zfs_private:
+    internal: true
+  # Collector-only hop to the Docker socket proxy. Internal (no egress), and
+  # joined by exactly zfs-collector + docker-proxy — never homepage.
+  docker_telemetry_private:
     internal: true

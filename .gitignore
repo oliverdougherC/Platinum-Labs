@@ -26,6 +26,11 @@ soak-report*.ndjson
 .env.local
 .env.*.local
 
+# transient agent/session state (OMX, Claude, etc.) — never commit
+.omx/
+.claude/
+.claude/local/
+
 # misc
 .DS_Store
 *.pem

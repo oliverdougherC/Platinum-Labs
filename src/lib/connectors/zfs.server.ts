@@ -7,6 +7,7 @@ import { fetchJson } from "@/lib/connectors/http";
 import {
   buildZfsSnapshot,
   normalizeZfsCollector,
+  parseZfsList,
   parseZpoolList,
   parseZpoolStatus,
 } from "@/lib/connectors/zfs";
@@ -27,17 +28,25 @@ export function makeCommandCollect(
 ): (signal: AbortSignal) => Promise<ZfsSnapshot> {
   return async (signal) => {
     try {
-      const [list, status] = await Promise.all([
+      const [list, status, datasets] = await Promise.all([
         execFileP(
           "zpool",
-          ["list", "-Hp", "-o", "name,size,alloc,free,health"],
+          ["list", "-Hp", "-o", "name,size,alloc,free,frag,health"],
           { signal, timeout: timeoutMs },
         ),
         execFileP("zpool", ["status"], { signal, timeout: timeoutMs }),
+        // Root datasets only (-d 0): logical USED/AVAIL — the user-facing
+        // capacity. Best-effort: a failure degrades to physical-only display
+        // rather than failing the poll.
+        execFileP("zfs", ["list", "-Hp", "-o", "name,used,avail", "-d", "0"], {
+          signal,
+          timeout: timeoutMs,
+        }).catch(() => ({ stdout: "" })),
       ]);
       return buildZfsSnapshot(
         parseZpoolList(list.stdout),
         parseZpoolStatus(status.stdout),
+        parseZfsList(datasets.stdout),
       );
     } catch {
       // Missing binary, no permission, or timeout — surface a sanitized error.

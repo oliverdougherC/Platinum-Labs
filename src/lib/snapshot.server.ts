@@ -26,11 +26,16 @@ import type { DashboardSnapshot } from "@/lib/types";
  */
 export async function getDashboardSnapshot(opts?: {
   scenarioOverride?: string | string[] | undefined;
+  /**
+   * Fixed clock for deterministic screenshot frames (PLA-270). Honored in
+   * fake mode only — live data always reports its real timestamps.
+   */
+  nowOverride?: number;
 }): Promise<DashboardSnapshot> {
   const mode = getDataMode();
 
   if (mode === "fake") {
-    return makeFakeSnapshot(resolveScenario(opts?.scenarioOverride));
+    return makeFakeSnapshot(resolveScenario(opts?.scenarioOverride), opts?.nowOverride);
   }
 
   // Live mode: read the cached aggregate assembled by the connector registry

@@ -66,6 +66,26 @@ deployed. Deploy when the task actually intends the change to go live.
 - Full deployment/rollback/backup reference: `docs/DEPLOYMENT.md`
 - Verification suite: `npm run verify`
 
+## Visual changes require visible screenshot evidence
+
+Major visual/UI changes are NOT review-ready until the pull request itself
+shows the result. This is a hard gate, equal in standing to tests:
+
+- Regenerate the deterministic review screenshots with
+  `npm run screenshots` (and `npm run screenshots:motion` for animation
+  changes). The harness uses the fake simulator with a frozen clock
+  (`?scenario=…&freeze=<epoch-ms>` plus `panel=`/`drawer=` params), so the
+  same commit produces the same frames.
+- Commit the PNGs (and motion webm/gif) under `docs/review/<change-name>/`
+  in a dedicated review-artifact commit, and embed them in the PR body with
+  raw URLs pinned to that commit SHA. Never point reviewers at local paths
+  or buried CI artifacts.
+- Include at least one before/after comparison for redesigns, and one
+  screenshot backed by validated real server data when data semantics
+  changed.
+- Review-artifact files may be removed in a cleanup commit AFTER visual
+  approval; the PR body keeps the commit-pinned links.
+
 ## Project state
 
 - Production branch (current): `finish-v1`. Do not merge it into `main`
