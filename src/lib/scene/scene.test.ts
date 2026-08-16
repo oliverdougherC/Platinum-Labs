@@ -5,6 +5,7 @@ import {
   containerMetricCoverage,
   containerRadius,
   containerResourceScore,
+  containerWorkScore,
 } from "@/lib/scene/model";
 import {
   computeLayout,
@@ -16,6 +17,7 @@ import { buildLabels, describeFlow, labelsOverlap } from "@/lib/scene/labels";
 import {
   flowOverlayIsLive,
   containerMotionOffset,
+  containerMotionPhase,
   containerStrokeTreatment,
   tunnelBodyIsBidirectional,
   tunnelEndpointTokens,
@@ -305,6 +307,92 @@ describe("container metric coverage — unknown is never confirmed idle (PLA-273
   });
 });
 
+describe("container motion is WORK, never residency (V2.1 motion truth)", () => {
+  /** A live container model built straight from the fake snapshot, mutated. */
+  function liveContainer(
+    mutate: (c: import("@/lib/types").DockerContainerTelemetry) => void,
+  ) {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const target = snapshot.telemetry.docker.value!.containers.find(
+      (c) => c.name === "sonarr",
+    )!;
+    mutate(target);
+    return buildSceneModel(snapshot, { seerrConfigured: true, now: NOW })
+      .docker.containers.find((c) => c.name === "sonarr")!;
+  }
+
+  it("a memory-only idle container (CPU 0, net 0, block 0, big RSS) sits still — but stays large", () => {
+    const container = liveContainer((c) => {
+      c.cpuFraction = 0;
+      c.memoryBytes = 6 * 1024 ** 3;
+      c.netRxBps = 0;
+      c.netTxBps = 0;
+      c.blockReadBps = 0;
+      c.blockWriteBps = 0;
+    });
+    expect(container.workScore).toBe(0);
+    expect(containerMotionOffset(container, 3, true)).toEqual({ x: 0, y: 0 });
+    // Size may still reflect residency; motion may not.
+    expect(container.radius).toBeGreaterThan(6);
+  });
+
+  it("CPU work moves; network I/O and block I/O each carry local energy", () => {
+    const cpuActive = liveContainer((c) => {
+      c.cpuFraction = 1.4;
+      c.netRxBps = 0;
+      c.netTxBps = 0;
+      c.blockReadBps = 0;
+      c.blockWriteBps = 0;
+    });
+    expect(cpuActive.workScore).toBeGreaterThan(0.5);
+    expect(containerMotionOffset(cpuActive, 3, true).x).not.toBe(0);
+
+    const netActive = liveContainer((c) => {
+      c.cpuFraction = 0;
+      c.netRxBps = 40_000_000;
+      c.netTxBps = 0;
+      c.blockReadBps = 0;
+      c.blockWriteBps = 0;
+    });
+    expect(netActive.workScore).toBeGreaterThan(0);
+    expect(containerMotionOffset(netActive, 3, true).x).not.toBe(0);
+
+    const blockActive = liveContainer((c) => {
+      c.cpuFraction = 0;
+      c.netRxBps = 0;
+      c.netTxBps = 0;
+      c.blockReadBps = 0;
+      c.blockWriteBps = 40_000_000;
+    });
+    expect(blockActive.workScore).toBeGreaterThan(0);
+    expect(containerMotionOffset(blockActive, 3, true).y).not.toBe(0);
+  });
+
+  it("unknown metrics contribute no motion energy — quiet, never fabricated", () => {
+    expect(containerWorkScore(null, 0)).toBe(0);
+    const partialUnknown = liveContainer((c) => {
+      c.cpuFraction = null;
+      c.memoryBytes = 2 * 1024 ** 3;
+      c.netRxBps = null;
+      c.netTxBps = null;
+      c.blockReadBps = null;
+      c.blockWriteBps = null;
+    });
+    // Partial coverage (memory known) with every WORK metric unknown: still.
+    expect(partialUnknown.metricCoverage).toBe("partial");
+    expect(partialUnknown.workScore).toBe(0);
+    expect(containerMotionOffset(partialUnknown, 3, true)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("phase derives from the FULL name: equal length + first letter must not synchronize", () => {
+    const a = containerMotionPhase("sonarr");
+    const b = containerMotionPhase("seerrr");
+    expect(a).not.toBe(b);
+    // Deterministic per name across calls.
+    expect(containerMotionPhase("sonarr")).toBe(a);
+  });
+});
+
 describe("layout determinism and bounds", () => {
   it("same model + same aspect ⇒ identical layout", () => {
     const m = model("active");
@@ -425,6 +513,51 @@ describe("layout determinism and bounds", () => {
     expect(layout.containerField.has("zz-hot")).toBe(true);
     // …which means some alphabetically-earlier idle container yielded.
     expect(layout.containerField.has("container-112")).toBe(false);
+  });
+
+  it("an alphabetically-last RUNNING container with all-null metrics stays rendered at the budget", () => {
+    // A stats-collection skip means the runtime work is UNKNOWN — it could be
+    // hiding real load. A known-idle container must never displace it.
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const docker = snapshot.telemetry.docker.value!;
+    const base = docker.containers[0]!;
+    const idle = (index: number): typeof base => ({
+      ...base,
+      name: `container-${String(index).padStart(3, "0")}`,
+      state: "running",
+      health: null,
+      cpuFraction: 0.01,
+      memoryBytes: 128 * 1024 ** 2,
+      netRxBps: 1_000,
+      netTxBps: 1_000,
+      blockReadBps: 0,
+      blockWriteBps: 0,
+    });
+    docker.containers = [
+      ...Array.from({ length: 140 }, (_, i) => idle(i)),
+      {
+        ...idle(140),
+        name: "zzz-stats-skipped",
+        state: "running" as const,
+        cpuFraction: null,
+        memoryBytes: null,
+        netRxBps: null,
+        netTxBps: null,
+        blockReadBps: null,
+        blockWriteBps: null,
+      },
+    ];
+    docker.total = docker.containers.length;
+    docker.running = docker.containers.length;
+
+    const m = buildSceneModel(snapshot, { seerrConfigured: true, now: NOW });
+    const skipped = m.docker.containers.find((c) => c.name === "zzz-stats-skipped")!;
+    expect(skipped.metricCoverage).toBe("unavailable");
+    const layout = computeLayout(m, 16 / 9);
+    expect(layout.containerField.size).toBe(MAX_RENDERED_CONTAINERS);
+    expect(layout.containerField.has("zzz-stats-skipped")).toBe(true);
+    // A known-idle container yielded instead.
+    expect(layout.containerField.has("container-139")).toBe(false);
   });
 
   it("uses a truthful overflow body instead of silently truncating large populations", () => {

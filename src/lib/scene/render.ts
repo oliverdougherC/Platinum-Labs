@@ -32,6 +32,7 @@
 
 import { colorTokens, type ColorTokenName } from "@/lib/design/tokens";
 import { pointAtLength, pointOnCircle, tangentAtLength, TAU } from "@/lib/scene/geom";
+import { containerHash } from "@/lib/scene/layout";
 import { makeRng } from "@/lib/scene/rng";
 import { intensityFromRate, particlePeriodSeconds } from "@/lib/topology/smoothing";
 import type { BackgroundField } from "@/lib/scene/background";
@@ -741,6 +742,16 @@ function drawFlows(ctx: CanvasRenderingContext2D, s: RenderState, style: FlowSty
 
 // --- container asteroid field -------------------------------------------------
 
+/**
+ * Deterministic ambient-drift phase from the FULL container name (the shared
+ * stable FNV-1a hash). Names of equal length sharing a first letter must not
+ * synchronize — the previous `length + firstCharCode` seed made e.g.
+ * "sonarr"/"seerrr" twins (V2.1 phase blocker).
+ */
+export function containerMotionPhase(name: string): number {
+  return makeRng(containerHash(name))() * TAU;
+}
+
 export function containerMotionOffset(
   container: DockerContainerModel,
   t: number,
@@ -756,7 +767,10 @@ export function containerMotionOffset(
   ) {
     return { x: 0, y: 0 };
   }
-  const energy = Math.max(container.resourceScore, container.ioIntensity);
+  // Motion energy is WORK (CPU + network + block I/O), never memory
+  // residency: a large idle process keeps its size but not a drift. Null
+  // metrics contribute zero — no unsupported movement (V2.1 motion truth).
+  const energy = container.workScore;
   return {
     x: Math.cos(t / 19 + phase) * energy * 2.4,
     y: Math.sin(t / 23 + phase) * energy * 2.4,
@@ -788,7 +802,7 @@ function drawContainerAsteroid(
   const live = container.freshness === "live";
   const stale = container.freshness === "stale";
   const energy = live ? Math.max(container.resourceScore, container.ioIntensity) : 0;
-  const phase = (makeRng(container.name.length + container.name.charCodeAt(0))() * TAU);
+  const phase = containerMotionPhase(container.name);
   const offset = containerMotionOffset(container, s.t, s.motionEnabled, phase);
   const cx = geom.center.x + offset.x;
   const cy = geom.center.y + offset.y;

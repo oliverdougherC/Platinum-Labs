@@ -125,6 +125,8 @@ export interface DockerContainerModel {
   resourceScore: number;
   radius: number;
   ioIntensity: number;
+  /** Live work (CPU + I/O) driving motion energy; memory never contributes. */
+  workScore: number;
   metricCoverage: ContainerMetricCoverage;
   unverified: boolean;
   bad: boolean;
@@ -195,6 +197,23 @@ export function containerResourceScore(
     : clamp01(1 - Math.exp(-Math.max(0, cpuFraction) / 0.7));
   const memory = containerMemoryScore(memoryBytes);
   return clamp01(Math.max(cpu, memory) * 0.72 + Math.min(cpu, memory) * 0.28);
+}
+
+/**
+ * Live WORK signal for motion energy: CPU activity and network/block I/O
+ * only — NEVER memory residency. A big-but-idle process (CPU 0, no I/O,
+ * gigabytes resident) must sit perfectly still; residency may size the body
+ * (resourceScore/radius) but motion is an activity claim (V2.1 motion-truth
+ * blocker). Null metrics contribute nothing — unknown is quiet, not moving.
+ */
+export function containerWorkScore(
+  cpuFraction: number | null,
+  ioIntensity: number,
+): number {
+  const cpu = cpuFraction === null || !Number.isFinite(cpuFraction)
+    ? 0
+    : clamp01(1 - Math.exp(-Math.max(0, cpuFraction) / 0.7));
+  return clamp01(Math.max(cpu, ioIntensity));
 }
 
 export function containerRadius(resourceScore: number): number {
@@ -411,6 +430,12 @@ export function buildSceneModel(
     status: t.docker.status,
     containers: (t.docker.value?.containers ?? []).map((c) => {
       const resourceScore = containerResourceScore(c.cpuFraction, c.memoryBytes);
+      const ioIntensity = containerIoIntensity([
+        c.netRxBps,
+        c.netTxBps,
+        c.blockReadBps,
+        c.blockWriteBps,
+      ]);
       return {
         ...c,
         memoryScore: containerMemoryScore(c.memoryBytes),
@@ -424,12 +449,8 @@ export function buildSceneModel(
           snapshot.jellyfinContainer === c.name ? "jellyfin" as const : null,
         resourceScore,
         radius: containerRadius(resourceScore),
-        ioIntensity: containerIoIntensity([
-          c.netRxBps,
-          c.netTxBps,
-          c.blockReadBps,
-          c.blockWriteBps,
-        ]),
+        ioIntensity,
+        workScore: containerWorkScore(c.cpuFraction, ioIntensity),
         metricCoverage: containerMetricCoverage(c),
         unverified: c.state === "unknown",
         bad:

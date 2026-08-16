@@ -123,37 +123,50 @@ export const CONTAINER_SLOT_R = 18;
 
 /**
  * Which containers get a rendered body when the population exceeds the
- * visual budget. NEVER the first `max` alphabetically: attention-worthy and
- * active containers must not vanish into the overflow. Priority order:
- *   1. unhealthy / stopped (`bad`)
- *   2. unknown / unverified state
- *   3. highest live activity/resource score
- *   4. deterministic name tie-breaker
- * Populations at or under the budget render in full. The overflow body keeps
- * a truthful count and the detail drawer lists every container.
+ * visual budget. NEVER the first `max` alphabetically: attention-worthy,
+ * unknown, and active containers must not vanish into the overflow.
+ * Priority order:
+ *   1. unhealthy / stopped / dead / restarting (`bad`)
+ *   2. unknown / unverified STATE
+ *   3. unavailable metric coverage (stats skipped — runtime work UNKNOWN)
+ *   4. partial metric coverage (some metrics unobserved)
+ *   5. highest live CPU/I/O work (never memory residency)
+ *   6. deterministic name tie-breaker
+ * A known-idle container must never displace one whose runtime stats are
+ * unknown: unknown could be hiding real work, proven-idle cannot (tiers 3–4
+ * above tier 5). Populations at or under the budget render in full; the
+ * overflow body keeps a truthful count and the drawer lists every container.
  *
- * Note: tier 3 follows LIVE activity, so membership near the budget boundary
- * can change as workloads shift — accepted, because hiding a hot container
- * would be the greater lie. Within one membership set, positions stay fixed.
+ * Note: tiers follow LIVE workloads and coverage, so membership near the
+ * budget boundary may change as work or coverage shifts — accepted, because
+ * hiding a hot or unknown container would be the greater lie. Within one
+ * selected membership set, positions stay fixed.
  */
 export function selectRenderedContainers<
   T extends {
     name: string;
     bad: boolean;
     unverified: boolean;
-    resourceScore: number;
-    ioIntensity: number;
+    metricCoverage: "complete" | "partial" | "unavailable";
+    workScore: number;
   },
 >(containers: readonly T[], max: number): T[] {
-  const tier = (c: T) => (c.bad ? 0 : c.unverified ? 1 : 2);
+  const tier = (c: T) =>
+    c.bad
+      ? 0
+      : c.unverified
+        ? 1
+        : c.metricCoverage === "unavailable"
+          ? 2
+          : c.metricCoverage === "partial"
+            ? 3
+            : 4;
   return [...containers]
     .sort((a, b) => {
       const ta = tier(a);
       const tb = tier(b);
       if (ta !== tb) return ta - tb;
-      const sa = Math.max(a.resourceScore, a.ioIntensity);
-      const sb = Math.max(b.resourceScore, b.ioIntensity);
-      if (sa !== sb) return sb - sa;
+      if (a.workScore !== b.workScore) return b.workScore - a.workScore;
       return a.name.localeCompare(b.name);
     })
     .slice(0, max);
