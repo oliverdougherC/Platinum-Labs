@@ -6,6 +6,7 @@ import {
   type HttpGet,
 } from "@/lib/connectors/jellyfin";
 import { ConnectorValidationError } from "@/lib/connectors/connector";
+import missingRateFixture from "@/lib/connectors/__fixtures__/jellyfin-transcode-missing-rate.json";
 
 const NOW = 1_754_000_000_000;
 
@@ -64,8 +65,57 @@ describe("normalizeJellyfin", () => {
     expect(s.title).toBe("The Bear");
     expect(s.subtitle).toBe("S03E01 — Tomorrow");
     expect(s.method).toBe("transcode");
-    expect(s.bitrateBps).toBe(12_000_000);
+    expect(s.rate).toEqual({
+      bytesPerSecond: 1_500_000,
+      basis: "jellyfin-session-output",
+      evidence: "reported",
+    });
     expect(s.resolution).toBe("1080p");
+  });
+
+  it("keeps the sanitized real missing-rate transcode unknown", () => {
+    const snap = normalizeJellyfin(
+      { system: SYSTEM, sessions: missingRateFixture },
+      NOW,
+    );
+    expect(snap.sessions).toHaveLength(1);
+    expect(snap.sessions[0]).toMatchObject({ method: "transcode", rate: null });
+  });
+
+  it("classifies source-media bitrate as an estimate for a transcode", () => {
+    const raw = {
+      ...EPISODE_TRANSCODE,
+      TranscodingInfo: undefined,
+      MediaSource: { Bitrate: 24_000_000 },
+    };
+    const snap = normalizeJellyfin({ system: SYSTEM, sessions: [raw] }, NOW);
+    expect(snap.sessions[0]!.rate).toEqual({
+      bytesPerSecond: 3_000_000,
+      basis: "source-media",
+      evidence: "estimated",
+    });
+  });
+
+  it("normalizes direct stream and direct play without fabricating a rate", () => {
+    const directStream = {
+      ...MOVIE_SESSION,
+      Id: "stream",
+      PlayState: { ...MOVIE_SESSION.PlayState, PlayMethod: "DirectStream" },
+      NowPlayingItem: { ...MOVIE_SESSION.NowPlayingItem, Bitrate: 8_000_000 },
+    };
+    const snap = normalizeJellyfin(
+      { system: SYSTEM, sessions: [MOVIE_SESSION, directStream] },
+      NOW,
+    );
+    expect(snap.sessions[0]).toMatchObject({ method: "direct-play", rate: null });
+    expect(snap.sessions[1]).toMatchObject({
+      method: "direct-stream",
+      rate: {
+        bytesPerSecond: 1_000_000,
+        basis: "source-media",
+        evidence: "reported",
+      },
+    });
   });
 
   it("ignores sessions with nothing playing", () => {

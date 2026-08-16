@@ -208,6 +208,34 @@ describe("assembleSnapshot — partial responses", () => {
     expect(snap.health).toHaveLength(1);
     expect(snap.history?.throughput).toHaveLength(1);
   });
+
+  it("carries only deliberate host display and link-capacity metadata", () => {
+    const snap = assembleSnapshot({
+      now: NOW,
+      hostLabel: "Lab compute",
+      networkLinkBytesPerSecond: 1_250_000_000,
+      health: [],
+      jellyfin: null,
+      sonarr: null,
+      radarr: null,
+      qbittorrent: null,
+      zfs: null,
+    });
+    expect(snap.hostLabel).toBe("Lab compute");
+    expect(snap.networkLinkBytesPerSecond).toBe(1_250_000_000);
+
+    const fallback = assembleSnapshot({
+      now: NOW,
+      health: [],
+      jellyfin: null,
+      sonarr: null,
+      radarr: null,
+      qbittorrent: null,
+      zfs: null,
+    });
+    expect(fallback.hostLabel).toBe("host");
+    expect(fallback.networkLinkBytesPerSecond).toBeNull();
+  });
 });
 
 describe("fillConnectorHealth — every connector represented", () => {

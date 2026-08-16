@@ -105,7 +105,11 @@ function session(overrides: Partial<JellyfinSession> & { id: string }): Jellyfin
     method: "direct-play",
     progress: 0.42,
     resolution: "4K",
-    bitrateBps: 38_000_000,
+    rate: {
+      bytesPerSecond: 4_750_000,
+      basis: "source-media",
+      evidence: "reported",
+    },
     ...overrides,
   };
 }
@@ -428,7 +432,9 @@ export const SCENARIOS = [
   "idle",
   "direct-play",
   "transcode",
+  "transcode-fallback",
   "multi-session",
+  "mixed-session",
   "downloads",
   "seeding",
   "seed-only",
@@ -442,6 +448,7 @@ export const SCENARIOS = [
   // Composite aliases used by defaults and the attention path.
   "active",
   "attention",
+  "container-mixed",
 ] as const;
 
 export type FakeScenario = (typeof SCENARIOS)[number];
@@ -458,7 +465,9 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   idle: "All healthy / idle",
   "direct-play": "Jellyfin — direct play",
   transcode: "Jellyfin — transcode",
+  "transcode-fallback": "Jellyfin — measured fallback",
   "multi-session": "Multiple sessions",
+  "mixed-session": "Mixed known / unknown sessions",
   downloads: "Active downloads / imports",
   seeding: "Download + seed upload",
   "seed-only": "Seed upload only",
@@ -471,6 +480,7 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   unconfigured: "No connectors configured",
   active: "Active (playback + downloads)",
   attention: "Attention (stall + degraded)",
+  "container-mixed": "Mixed container resources / health",
 };
 
 type Builder = (now: number) => DashboardSnapshot;
@@ -524,6 +534,7 @@ function compose(
   return {
     mode: "fake",
     generatedAt: now,
+    hostLabel: "Host",
     health: parts.health ?? buildHealth(now),
     jellyfin: parts.jellyfin,
     acquisition: parts.acquisition,
@@ -539,6 +550,8 @@ function compose(
     // cross-pool copies with an honest source and destination.
     mediaPool: "DataStore",
     downloadPool: "NVME",
+    jellyfinContainer: "jellyfin",
+    networkLinkBytesPerSecond: 1_250_000_000,
   };
 }
 
@@ -604,7 +617,41 @@ const BUILDERS: Record<FakeScenario, Builder> = {
             subtitle: "S03E01 — Tomorrow",
             method: "transcode",
             resolution: "1080p",
-            bitrateBps: 12_000_000,
+            rate: {
+              bytesPerSecond: 1_500_000,
+              basis: "jellyfin-session-output",
+              evidence: "reported",
+            },
+            progress: 0.27,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "transcode",
+    }),
+
+  "transcode-fallback": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({
+            id: "s1",
+            title: "The Bear — S03E01",
+            subtitle: "S03E01 — Tomorrow",
+            method: "transcode",
+            resolution: "1080p",
+            // Mirrors the sanitized real /Sessions response where Jellyfin
+            // omitted every session bitrate field. The explicitly mapped
+            // container's measured egress is the truthful fallback.
+            rate: {
+              bytesPerSecond: 12_000_000,
+              basis: "container-egress",
+              evidence: "measured",
+            },
             progress: 0.27,
           }),
         ],
@@ -629,8 +676,51 @@ const BUILDERS: Record<FakeScenario, Builder> = {
             subtitle: "S02E04 — Ever Been to Ghorman?",
             method: "transcode",
             resolution: "1080p",
-            bitrateBps: 9_500_000,
+            rate: {
+              bytesPerSecond: 1_187_500,
+              basis: "jellyfin-session-output",
+              evidence: "reported",
+            },
             progress: 0.71,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "transcode",
+    }),
+
+  "mixed-session": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({ id: "s1", user: "oliver", method: "direct-play", progress: 0.42 }),
+          session({
+            id: "s2",
+            user: "sam",
+            title: "Andor — S02E04",
+            subtitle: "S02E04 — Ever Been to Ghorman?",
+            method: "transcode",
+            resolution: "1080p",
+            rate: {
+              bytesPerSecond: 1_187_500,
+              basis: "jellyfin-session-output",
+              evidence: "reported",
+            },
+            progress: 0.71,
+          }),
+          session({
+            id: "s3",
+            user: "guest",
+            title: "Reservation Dogs — S03E10",
+            subtitle: "S03E10 — Dig",
+            method: "transcode",
+            resolution: "720p",
+            rate: null,
+            progress: 0.18,
           }),
         ],
         lastPlaybackAt: now - MINUTE,
@@ -831,6 +921,19 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       zfs: zfsDegraded(now),
       telemetryProfile: "idle",
       attention: [...degradedAttention(now), ...stalledAttention(now)],
+    }),
+
+  "container-mixed": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [session({ id: "s1", method: "direct-play" })],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionActive(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "container-mixed",
     }),
 };
 

@@ -25,7 +25,7 @@
  * identical layout (screenshot review depends on this).
  */
 
-import { pointOnCircle, vec, type Vec } from "@/lib/scene/geom";
+import { dist, pointOnCircle, vec, type Vec } from "@/lib/scene/geom";
 import type { SceneModel, ServiceId } from "@/lib/scene/model";
 
 export const WORLD_H = 1000;
@@ -88,6 +88,10 @@ export interface SceneLayout {
   networkArc: ArcGeom;
   gateway: GatewayGeom;
   dockerBelt: ArcGeom;
+  containerField: Map<string, BodyGeom>;
+  containerOverflow: BodyGeom | null;
+  containerOverflowCount: number;
+  containerCaption: Vec;
   /** The one routing-lane radius all core-passing flows arc along. */
   laneR: number;
   serviceOrbitR: number;
@@ -104,6 +108,17 @@ export interface SceneLayout {
 export const SERVICE_ORBIT_R = 344;
 export const LANE_R = 424;
 export const BELT_R = 456;
+export const MAX_RENDERED_CONTAINERS = 96;
+
+/** Stable FNV-1a hash used only for deterministic procedural layout. */
+export function containerHash(name: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) {
+    hash ^= name.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
 
 /** Orbital positions (canvas angles: 0 = east, positive = down/clockwise). */
 const SERVICE_ANGLES: Record<ServiceId, number> = {
@@ -246,9 +261,90 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
   const dockerBelt: ArcGeom = {
     center: core.center,
     r: BELT_R,
-    a0: deg(108),
-    a1: deg(140),
+    a0: deg(18),
+    a1: deg(162),
   };
+
+  const renderedContainers = [...model.docker.containers]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, MAX_RENDERED_CONTAINERS);
+  const containerOverflowCount = Math.max(
+    0,
+    model.docker.containers.length - renderedContainers.length,
+  );
+  const containerField = new Map<string, BodyGeom>();
+  const fixedObstacles: BodyGeom[] = [
+    ...services.values(),
+    ...storage.values(),
+    ...(genericStorage ? [genericStorage] : []),
+  ];
+  const placed: BodyGeom[] = [];
+  const span = dockerBelt.a1 - dockerBelt.a0;
+  const unit = 1 / 0x1_0000_0000;
+
+  for (const container of renderedContainers) {
+    const seed = containerHash(container.name);
+    const u = seed * unit;
+    const v = containerHash(`${container.name}:radius`) * unit;
+    let chosen: Vec | null = null;
+    for (let attempt = 0; attempt < 72; attempt++) {
+      const angle = dockerBelt.a0 + span * ((u + attempt * 0.61803398875) % 1);
+      const desiredR = BELT_R + 58 * ((v + attempt * 0.38196601125) % 1);
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const edgeR = Math.min(
+        cos > 0
+          ? (w - safe.right - container.radius - core.center.x) / cos
+          : (core.center.x - safe.left - container.radius) / -cos,
+        sin > 0
+          ? (h - safe.bottom - container.radius - core.center.y) / sin
+          : (core.center.y - safe.top - container.radius) / -sin,
+      );
+      const radius = Math.min(desiredR, edgeR);
+      if (radius < core.atmosphereR + container.radius + 38) continue;
+      const point = pointOnCircle(core.center, radius, angle);
+      const clear = [...fixedObstacles, ...placed].every(
+        (body) => dist(point, body.center) >= body.atmosphereR + container.radius + 12,
+      );
+      if (clear) {
+        chosen = point;
+        break;
+      }
+    }
+    if (!chosen) {
+      // Dense-population fallback stays deterministic and in-bounds. A small
+      // amount of overlap is preferable to silently dropping a real object.
+      const angle = dockerBelt.a0 + span * u;
+      const edgeR = Math.min(
+        BELT_R,
+        Math.abs(Math.sin(angle)) > 0.01
+          ? (h - safe.bottom - container.radius - core.center.y) / Math.sin(angle)
+          : BELT_R,
+      );
+      chosen = pointOnCircle(core.center, Math.max(core.atmosphereR + 64, edgeR), angle);
+    }
+    const geom: BodyGeom = {
+      id: `container:${container.name}`,
+      center: chosen,
+      r: container.radius,
+      atmosphereR: container.radius + 5 + container.ioIntensity * 12,
+      orbitAngle: Math.atan2(chosen.y - core.center.y, chosen.x - core.center.x),
+      labelAnchor: vec(chosen.x, chosen.y + container.radius + 18),
+    };
+    containerField.set(container.name, geom);
+    placed.push(geom);
+  }
+
+  const containerOverflow: BodyGeom | null = containerOverflowCount > 0
+    ? {
+        id: "container:overflow",
+        center: pointOnCircle(core.center, Math.min(BELT_R, h - core.center.y - 48), deg(52)),
+        r: 16,
+        atmosphereR: 22,
+        orbitAngle: deg(52),
+        labelAnchor: pointOnCircle(core.center, Math.min(BELT_R, h - core.center.y - 48) + 32, deg(52)),
+      }
+    : null;
 
   return {
     world: { w, h },
@@ -259,6 +355,10 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
     networkArc,
     gateway,
     dockerBelt,
+    containerField,
+    containerOverflow,
+    containerOverflowCount,
+    containerCaption: vec(safe.left + 92, h - safe.bottom - 56),
     laneR: LANE_R,
     serviceOrbitR: SERVICE_ORBIT_R,
     safe,

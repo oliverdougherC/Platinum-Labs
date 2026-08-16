@@ -8,6 +8,8 @@ import {
   useState,
 } from "react";
 import { Badge } from "@/components/ui/badge";
+import { OverlayShell } from "@/components/ui/overlay-shell";
+import { MediaRequestIcon } from "@/components/ui/icons";
 import {
   posterProxyUrl,
   type SeerrMediaState,
@@ -59,20 +61,6 @@ function keyOf(r: SeerrSearchResult): string {
   return `${r.mediaType}:${r.id}`;
 }
 
-/** Compact launcher rendered in the media panel header. */
-export function MediaSearchLauncher({ onOpen }: { onOpen: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-eyebrow uppercase tracking-[0.1em] text-faint ring-1 ring-hairline transition-colors hover:text-muted"
-    >
-      <span aria-hidden>⌕</span>
-      <span>Request media</span>
-    </button>
-  );
-}
-
 export function MediaSearch({
   open,
   initialQuery = "",
@@ -104,9 +92,6 @@ export function MediaSearch({
       setQuery(initialQuery);
       setRequests({});
       setSelected(0);
-      // Focus after the dialog mounts.
-      const raf = requestAnimationFrame(() => inputRef.current?.focus());
-      return () => cancelAnimationFrame(raf);
     }
   }, [open, initialQuery]);
 
@@ -249,20 +234,18 @@ export function MediaSearch({
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-[12vh] backdrop-blur-sm"
-      onClick={onClose}
+    <OverlayShell
+      open={open}
+      onClose={onClose}
+      label="Media search"
+      initialFocusRef={inputRef}
     >
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Media search"
-        className="w-full max-w-xl overflow-hidden rounded-xl bg-surface ring-1 ring-hairline"
-        onClick={(e) => e.stopPropagation()}
+        className="overflow-hidden"
         onKeyDown={onKeyDown}
       >
         <div className="flex items-center gap-2 px-4">
-          <span aria-hidden className="text-faint">⌕</span>
+          <MediaRequestIcon className="shrink-0 text-faint" />
           <input
             ref={inputRef}
             value={query}
@@ -326,7 +309,7 @@ export function MediaSearch({
           ↑↓ navigate · Enter to request · Esc to close
         </p>
       </div>
-    </div>
+    </OverlayShell>
   );
 }
 

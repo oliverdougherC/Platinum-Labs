@@ -12,8 +12,9 @@
  *
  * USAGE
  *   node scripts/screenshots.mjs [--base-url http://localhost:3900]
- *                                [--out docs/review/v2-living-topology]
- *                                [--motion] [--lab] [--only <name-substring>]
+ *                                [--out docs/review/v21-living-topology]
+ *                                [--motion] [--performance] [--lab]
+ *                                [--only <name-substring>]
  *
  * Without --base-url the harness starts `next dev` on port 3911 with
  * HOMELAB fake-mode env and tears it down afterwards. `--motion` records a
@@ -23,31 +24,47 @@
  */
 
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
 
 /** Fixed simulator clock: 2026-08-15 12:00:00 UTC. */
 export const FREEZE_AT = Date.UTC(2026, 7, 15, 12, 0, 0);
 
 const SHOTS = [
-  { name: "01-idle-1920x1080", params: `scenario=idle&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  { name: "02-idle-2560x1440", params: `scenario=idle&freeze=${FREEZE_AT}`, w: 2560, h: 1440 },
-  { name: "03-downloads-imports-1920x1080", params: `scenario=downloads&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  { name: "04-download-plus-seed-1920x1080", params: `scenario=seeding&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  { name: "04b-seed-only-reverse-flow-1920x1080", params: `scenario=seed-only&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  { name: "05-sonarr-import-organizing-1920x1080", params: `scenario=importing&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  { name: "06-jellyfin-direct-play-1920x1080", params: `scenario=direct-play&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  { name: "07-jellyfin-transcode-1920x1080", params: `scenario=transcode&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  { name: "08-notification-drawer-1920x1080", params: `scenario=attention&freeze=${FREEZE_AT}&panel=notifications`, w: 1920, h: 1080 },
-  { name: "09-datastore-drawer-1920x1080", params: `scenario=active&freeze=${FREEZE_AT}&drawer=pool:DataStore`, w: 1920, h: 1080 },
-  { name: "10-degraded-local-warning-1920x1080", params: `scenario=zfs-degraded&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  // Truthfulness states: a stale downloader freezes its flows into ghosts; an
-  // unreachable connector suppresses its flows entirely.
-  { name: "11-stale-telemetry-1920x1080", params: `scenario=stale&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  { name: "12-unavailable-connector-1920x1080", params: `scenario=connector-unavailable&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
-  // Engineering-review frame: geometry debug overlay (dev builds only —
-  // the flag is compiled out of production).
-  { name: "13-renderer-debug-1920x1080", params: `scenario=active&freeze=${FREEZE_AT}&debug=geometry`, w: 1920, h: 1080 },
+  { name: "01-idle-1280x720", scenario: "idle", w: 1280, h: 720 },
+  { name: "02-idle-1920x1080", scenario: "idle", w: 1920, h: 1080 },
+  { name: "03-idle-2560x1440", scenario: "idle", w: 2560, h: 1440 },
+  { name: "04-idle-ultrawide-2560x1080", scenario: "idle", w: 2560, h: 1080 },
+  { name: "05-download-import", scenario: "downloads", w: 1920, h: 1080 },
+  { name: "06-download-plus-seed", scenario: "seeding", w: 1920, h: 1080 },
+  { name: "07-direct-play", scenario: "direct-play", w: 1920, h: 1080 },
+  { name: "08-transcode-reported-bitrate", scenario: "transcode", w: 1920, h: 1080 },
+  { name: "09-transcode-measured-fallback", scenario: "transcode-fallback", w: 1920, h: 1080 },
+  { name: "10-mixed-session-coverage", scenario: "mixed-session", w: 1920, h: 1080 },
+  { name: "11-pool-io", scenario: "importing", w: 1920, h: 1080 },
+  { name: "12-resource-container-field", scenario: "container-mixed", w: 1920, h: 1080 },
+  { name: "13-unhealthy-unknown-container", scenario: "container-mixed", w: 1920, h: 1080, action: "container-detail" },
+  { name: "14-data-flow-tooltip", scenario: "downloads", w: 1920, h: 1080, action: "data-flow" },
+  { name: "15-control-flow-tooltip", scenario: "downloads", w: 1920, h: 1080, action: "control-flow" },
+  { name: "16-request-media-hover", scenario: "idle", w: 1920, h: 1080, action: "request-hover" },
+  { name: "17-request-media-focus", scenario: "idle", w: 1920, h: 1080, action: "request-focus" },
+  { name: "18-media-search-open", scenario: "idle", w: 1920, h: 1080, action: "media-search" },
+  { name: "19-command-palette-open", scenario: "idle", w: 1920, h: 1080, action: "command-palette" },
+  { name: "20-notifications-open", scenario: "attention", w: 1920, h: 1080, action: "notifications" },
+  { name: "21-host-detail-open", scenario: "active", w: 1920, h: 1080, action: "host-detail" },
+  { name: "22-transport-fallback", scenario: "idle", transport: "fallback", w: 1920, h: 1080 },
+  { name: "23-data-delayed", scenario: "idle", transport: "delayed", w: 1920, h: 1080 },
+  { name: "24-offline", scenario: "idle", transport: "offline", w: 1920, h: 1080 },
+  { name: "25-connector-unavailable", scenario: "connector-unavailable", w: 1920, h: 1080 },
+  { name: "26-stale-telemetry", scenario: "stale", w: 1920, h: 1080 },
+  { name: "27-zfs-degraded", scenario: "zfs-degraded", w: 1920, h: 1080 },
+  { name: "28-reduced-motion", scenario: "active", w: 1920, h: 1080, reducedMotion: true },
+  // Equivalent zoom emulation: CSS viewport = physical 1920×1080 divided by
+  // the requested browser zoom. This exercises the same responsive breakpoints.
+  { name: "29-zoom-125", scenario: "idle", w: 1536, h: 864, zoom: 1.25 },
+  { name: "30-zoom-150", scenario: "idle", w: 1280, h: 720, zoom: 1.5 },
+  { name: "31-small-window-drawer", scenario: "active", w: 1280, h: 720, action: "host-detail" },
+  { name: "32-renderer-debug", scenario: "active", w: 1920, h: 1080, debug: true },
 ];
 
 function arg(flag, fallback = null) {
@@ -55,9 +72,10 @@ function arg(flag, fallback = null) {
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
-const OUT_DIR = arg("--out", "docs/review/v2-living-topology");
+const OUT_DIR = arg("--out", "docs/review/v21-living-topology");
 const ONLY = arg("--only");
 const MOTION = process.argv.includes("--motion");
+const PERFORMANCE = process.argv.includes("--performance");
 const LAB = process.argv.includes("--lab");
 const PORT = 3911;
 
@@ -73,6 +91,156 @@ async function waitForServer(url, timeoutMs = 60_000) {
     await new Promise((r) => setTimeout(r, 500));
   }
   throw new Error(`server at ${url} did not become ready`);
+}
+
+async function pageBox(page) {
+  return page.evaluate(() => ({
+    docH: document.documentElement.scrollHeight,
+    docW: document.documentElement.scrollWidth,
+    bodyH: document.body.scrollHeight,
+    bodyW: document.body.scrollWidth,
+    winH: window.innerHeight,
+    winW: window.innerWidth,
+  }));
+}
+
+function assertNoPageScroll(box, shot) {
+  if (
+    box.docH > box.winH ||
+    box.bodyH > box.winH ||
+    box.docW > box.winW ||
+    box.bodyW > box.winW
+  ) {
+    throw new Error(
+      `page scrolls at ${shot.w}x${shot.h} (${shot.name}): ` +
+        `doc ${box.docW}x${box.docH}, body ${box.bodyW}x${box.bodyH}, ` +
+        `window ${box.winW}x${box.winH}`,
+    );
+  }
+}
+
+async function focusFlow(page, needles) {
+  const targets = page.locator("[data-flow-target]");
+  const count = await targets.count();
+  for (let i = 0; i < count; i++) {
+    const target = targets.nth(i);
+    const label = (await target.getAttribute("aria-label")) ?? "";
+    if (needles.every((needle) => label.includes(needle))) {
+      await target.focus();
+      return;
+    }
+  }
+  throw new Error(`no flow focus target matched: ${needles.join(" + ")}`);
+}
+
+async function performShotAction(page, action) {
+  switch (action) {
+    case undefined:
+      return;
+    case "container-detail":
+      await page.getByRole("button", { name: /unpackerr container detail/i }).focus();
+      await page.keyboard.press("Enter");
+      return;
+    case "data-flow":
+      await focusFlow(page, ["network → qBittorrent"]);
+      return;
+    case "control-flow":
+      await focusFlow(page, ["Sonarr → qBittorrent"]);
+      return;
+    case "request-hover":
+      await page.getByRole("button", { name: "Request media" }).hover();
+      return;
+    case "request-focus":
+      await page.getByRole("button", { name: "Request media" }).focus();
+      return;
+    case "media-search":
+      await page.getByRole("button", { name: "Request media" }).focus();
+      await page.keyboard.press("Enter");
+      return;
+    case "command-palette":
+      await page.keyboard.press("Control+K");
+      return;
+    case "notifications":
+      await page.getByRole("button", { name: /Notifications:/ }).focus();
+      await page.keyboard.press("Enter");
+      return;
+    case "host-detail":
+      await page.getByRole("button", { name: "Host compute detail" }).focus();
+      await page.keyboard.press("Enter");
+      return;
+    default:
+      throw new Error(`unknown screenshot action: ${action}`);
+  }
+}
+
+async function assertInsideViewport(locator, page, label) {
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error(`no viewport while checking ${label}`);
+  const count = await locator.count();
+  for (let i = 0; i < count; i++) {
+    const element = locator.nth(i);
+    if (!(await element.isVisible())) continue;
+    const rect = await element.boundingBox();
+    if (
+      !rect ||
+      rect.x < -0.5 ||
+      rect.y < -0.5 ||
+      rect.x + rect.width > viewport.width + 0.5 ||
+      rect.y + rect.height > viewport.height + 0.5
+    ) {
+      throw new Error(`${label} ${i} is outside ${viewport.width}x${viewport.height}: ${JSON.stringify(rect)}`);
+    }
+  }
+}
+
+async function validateShot(page, shot, beforeActionBox) {
+  const after = await pageBox(page);
+  assertNoPageScroll(after, shot);
+  if (
+    beforeActionBox &&
+    (beforeActionBox.docW !== after.docW || beforeActionBox.docH !== after.docH ||
+      beforeActionBox.bodyW !== after.bodyW || beforeActionBox.bodyH !== after.bodyH)
+  ) {
+    throw new Error(`overlay/action changed page scroll dimensions (${shot.name})`);
+  }
+
+  const healthyChatter = await page.getByText(/updated just now/i).count();
+  if (healthyChatter > 0) {
+    throw new Error(`forbidden healthy freshness chatter found (${shot.name})`);
+  }
+
+  await assertInsideViewport(page.locator("header button, header [role=status]"), page, "control");
+  await assertInsideViewport(page.locator("main [role=status], [data-overlay-panel]"), page, "tooltip/overlay");
+
+  const containerTargets = page.locator('button[aria-label*=" container detail"]');
+  if ((await containerTargets.count()) !== 14) {
+    throw new Error(`representative container population was truncated (${shot.name})`);
+  }
+  if ((await page.locator('button[aria-label$=" detail"]').count()) < 6) {
+    throw new Error(`scene body focus targets are missing (${shot.name})`);
+  }
+
+  if (shot.action === "data-flow" || shot.action === "control-flow") {
+    const tooltip = page.locator("main [role=status]");
+    if ((await tooltip.count()) !== 1) throw new Error(`flow tooltip missing (${shot.name})`);
+    const text = (await tooltip.innerText()).trim();
+    if (/basis|coverage|source updated|provenance/i.test(text)) {
+      throw new Error(`visible flow tooltip leaked verbose provenance (${shot.name}): ${text}`);
+    }
+  }
+
+  const overlay = page.locator("[data-overlay-panel]");
+  if (await overlay.count()) {
+    const appIsInert = await page.locator("[data-app-shell]").evaluate((node) => node.inert);
+    if (!appIsInert) throw new Error(`overlay did not inert the app shell (${shot.name})`);
+    const focusInside = await overlay.evaluate((panel) => panel.contains(document.activeElement));
+    if (!focusInside) throw new Error(`overlay did not contain focus (${shot.name})`);
+  }
+
+  if (shot.reducedMotion) {
+    const motion = await page.locator("[data-app-shell]").getAttribute("data-motion");
+    if (motion !== "off") throw new Error("reduced-motion still retained an active animation loop");
+  }
 }
 
 async function main() {
@@ -97,6 +265,8 @@ async function main() {
   try {
     if (MOTION) {
       await captureMotion(browser, baseUrl);
+    } else if (PERFORMANCE) {
+      await capturePerformance(browser, baseUrl);
     } else if (LAB) {
       // Flow-design study (PLA-266 v2): the eleven canonical flow states under
       // each tunnel treatment, at one fixed animation clock so particle
@@ -115,28 +285,34 @@ async function main() {
     } else {
       for (const shot of SHOTS) {
         if (ONLY && !shot.name.includes(ONLY)) continue;
-        const page = await browser.newPage({ viewport: { width: shot.w, height: shot.h } });
-        await page.goto(`${baseUrl}/?${shot.params}`, { waitUntil: "networkidle" });
+        const page = await browser.newPage({
+          viewport: { width: shot.w, height: shot.h },
+          reducedMotion: shot.reducedMotion ? "reduce" : "no-preference",
+        });
+        const params = new URLSearchParams({
+          scenario: shot.scenario,
+          freeze: String(FREEZE_AT),
+        });
+        if (shot.transport) params.set("transport", shot.transport);
+        if (shot.debug) params.set("debug", "geometry");
+        await page.goto(`${baseUrl}/?${params}`, { waitUntil: "networkidle" });
         // Fonts + SSR hydration settle; frozen mode has no further changes.
         await page.waitForTimeout(1_200);
-        // HARD assertion (PLA-270): the primary surface must never scroll at
-        // the target viewports — enforced here, not merely claimed in the PR.
-        const box = await page.evaluate(() => ({
-          docH: document.documentElement.scrollHeight,
-          docW: document.documentElement.scrollWidth,
-          bodyH: document.body.scrollHeight,
-          winH: window.innerHeight,
-          winW: window.innerWidth,
-        }));
-        if (box.docH > box.winH || box.bodyH > box.winH || box.docW > box.winW) {
-          throw new Error(
-            `page scrolls at ${shot.w}x${shot.h} (${shot.name}): ` +
-              `doc ${box.docW}x${box.docH}, body h ${box.bodyH}, window ${box.winW}x${box.winH}`,
-          );
-        }
+        const beforeActionBox = await pageBox(page);
+        assertNoPageScroll(beforeActionBox, shot);
+        await performShotAction(page, shot.action);
+        await page.waitForTimeout(250);
+        await validateShot(page, shot, beforeActionBox);
         const path = `${OUT_DIR}/${shot.name}.png`;
         await page.screenshot({ path });
         console.log(`captured ${path}`);
+        if (await page.locator("[data-overlay-panel]").count()) {
+          await page.keyboard.press("Escape");
+          await page.waitForTimeout(50);
+          if (await page.locator("[data-overlay-panel]").count()) {
+            throw new Error(`Escape did not close the top overlay (${shot.name})`);
+          }
+        }
         await page.close();
       }
     }
@@ -144,6 +320,102 @@ async function main() {
     await browser.close();
     if (server) server.kill();
   }
+}
+
+function metricMap(entries) {
+  return Object.fromEntries(entries.map(({ name, value }) => [name, value]));
+}
+
+async function measurePerformanceProfile(browser, baseUrl, profile) {
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    reducedMotion: profile.reducedMotion ? "reduce" : "no-preference",
+  });
+  const page = await context.newPage();
+  await page.goto(`${baseUrl}/?scenario=${profile.scenario}&switcher=off`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.waitForSelector("[data-app-shell]");
+  await page.waitForTimeout(2_000);
+  const client = await context.newCDPSession(page);
+  await client.send("Performance.enable");
+
+  let hiddenMethod = null;
+  if (profile.hidden) {
+    try {
+      await client.send("Emulation.setPageVisibilityOverride", { visibilityState: "hidden" });
+      await page.waitForFunction(() => document.hidden === true, null, { timeout: 2_000 });
+      hiddenMethod = "cdp-page-visibility";
+    } catch {
+      // Current Playwright Chromium does not expose the experimental CDP
+      // visibility override. Dispatch the exact lifecycle signal the app
+      // consumes so its stop-on-hidden behavior remains measurable. This does
+      // not claim to reproduce browser-level timer throttling.
+      await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          get: () => "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      hiddenMethod = "visibility-event-emulation";
+    }
+  }
+
+  const start = metricMap((await client.send("Performance.getMetrics")).metrics);
+  await page.waitForTimeout(5_000);
+  const end = metricMap((await client.send("Performance.getMetrics")).metrics);
+  const wallSeconds = Math.max(0.001, end.Timestamp - start.Timestamp);
+  const deltaMsPerSecond = (name) =>
+    Number((((end[name] - start[name]) * 1_000) / wallSeconds).toFixed(2));
+  const result = {
+    profile: profile.name,
+    scenario: profile.scenario,
+    reducedMotion: profile.reducedMotion,
+    hiddenRequested: profile.hidden,
+    hiddenMethod,
+    documentHidden: await page.evaluate(() => document.hidden),
+    sampleSeconds: Number(wallSeconds.toFixed(2)),
+    mainThreadTaskMsPerSecond: deltaMsPerSecond("TaskDuration"),
+    scriptMsPerSecond: deltaMsPerSecond("ScriptDuration"),
+    layoutMsPerSecond: deltaMsPerSecond("LayoutDuration"),
+    styleRecalcMsPerSecond: deltaMsPerSecond("RecalcStyleDuration"),
+    jsHeapUsedMiB: Number((end.JSHeapUsedSize / 1024 / 1024).toFixed(2)),
+    domNodes: end.Nodes,
+    documents: end.Documents,
+    appMotionState: await page.locator("[data-app-shell]").getAttribute("data-motion"),
+  };
+  await context.close();
+  return result;
+}
+
+async function capturePerformance(browser, baseUrl) {
+  const profiles = [
+    { name: "idle", scenario: "idle", reducedMotion: false, hidden: false },
+    { name: "representative-active", scenario: "active", reducedMotion: false, hidden: false },
+    { name: "reduced-motion", scenario: "active", reducedMotion: true, hidden: false },
+    { name: "hidden-tab", scenario: "active", reducedMotion: false, hidden: true },
+  ];
+  const measurements = [];
+  for (const profile of profiles) {
+    console.log(`measuring browser cost: ${profile.name}…`);
+    measurements.push(await measurePerformanceProfile(browser, baseUrl, profile));
+  }
+  const evidence = {
+    viewport: { width: 1920, height: 1080 },
+    method: "Chromium CDP Performance.getMetrics; 5-second samples after a 2-second settle",
+    units: {
+      mainThreadTaskMsPerSecond: "milliseconds of main-thread task time per wall second",
+      scriptMsPerSecond: "milliseconds of script execution per wall second",
+      layoutMsPerSecond: "milliseconds of layout work per wall second",
+      styleRecalcMsPerSecond: "milliseconds of style recalculation per wall second",
+    },
+    measurements,
+  };
+  const path = `${OUT_DIR}/performance-1920x1080.json`;
+  writeFileSync(path, `${JSON.stringify(evidence, null, 2)}\n`);
+  console.log(`captured ${path}`);
 }
 
 /**

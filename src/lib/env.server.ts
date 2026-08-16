@@ -36,10 +36,28 @@ const boolFlag = z
 const envSchema = z.object({
   /** Master switch between deterministic fake data and live connectors. */
   HOMELAB_DATA_MODE: z.enum(["fake", "live"]).default("fake"),
+  /** Deliberate browser-facing host label; never derived from DNS or interfaces. */
+  HOMELAB_HOST_LABEL: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/)
+    .optional()
+    .or(z.literal("").transform(() => undefined)),
+  /** Selected interface capacity in megabits/sec for truthful visual scaling. */
+  HOMELAB_NETWORK_LINK_MBPS: z.coerce.number().int().min(100).max(100_000).optional(),
 
   // --- Jellyfin ---
   JELLYFIN_URL: optionalUrl,
   JELLYFIN_API_KEY: optionalSecret,
+  /** Exact Docker container name used for Jellyfin telemetry attribution. */
+  HOMELAB_JELLYFIN_CONTAINER: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .or(z.literal("").transform(() => undefined)),
 
   // --- Sonarr ---
   SONARR_URL: optionalUrl,

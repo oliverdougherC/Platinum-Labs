@@ -188,7 +188,10 @@ describe("deriveFlows — motion only from real state (PLA-267)", () => {
   });
 
   it("playback scenario produces storage→jellyfin→egress, no acquisition", () => {
-    const flows = flowsOf(makeFakeSnapshot("direct-play", NOW));
+    const flows = flowsOf({
+      ...makeFakeSnapshot("direct-play", NOW),
+      jellyfinContainer: null,
+    });
     expect(flows.map((f) => f.id)).toEqual([
       "playback:pool:DataStore->jellyfin",
       "egress:jellyfin->network",
@@ -463,13 +466,14 @@ describe("deriveFlows — staleness and unavailability (PLA-273)", () => {
     expect(flows.some((f) => f.kind === "import-copy")).toBe(false);
   });
 
-  it("a Jellyfin session without bitrate is state-only with a null rate", () => {
+  it("a Jellyfin session without any supported rate source stays state-only", () => {
     const snap = makeFakeSnapshot("direct-play", NOW);
     const noBitrate = {
       ...snap,
+      jellyfinContainer: null,
       jellyfin: {
         ...snap.jellyfin,
-        sessions: snap.jellyfin.sessions.map((s) => ({ ...s, bitrateBps: null })),
+        sessions: snap.jellyfin.sessions.map((s) => ({ ...s, rate: null })),
       },
     };
     const playback = byId(noBitrate, "playback:pool:DataStore->jellyfin")!;
@@ -478,41 +482,142 @@ describe("deriveFlows — staleness and unavailability (PLA-273)", () => {
     expect(primaryRate(playback)).toBeNull();
   });
 
-  it("partially-known Jellyfin session bitrates stay state-only and unknown", () => {
+  it("preserves the known lower bound for partially-known Jellyfin sessions", () => {
     const snap = makeFakeSnapshot("multi-session", NOW);
     const partial = {
       ...snap,
+      jellyfinContainer: null,
       jellyfin: {
         ...snap.jellyfin,
         sessions: snap.jellyfin.sessions.map((s, index) =>
-          index === 0 ? { ...s, bitrateBps: null } : s,
+          index === 0 ? { ...s, rate: null } : s,
         ),
       },
     };
     const playback = byId(partial, "playback:pool:DataStore->jellyfin")!;
     const egress = byId(partial, "egress:jellyfin->network")!;
-    expect(playback.evidence).toBe("state-only");
-    expect(egress.evidence).toBe("state-only");
-    expect(playback.channels[0]!.bytesPerSecond).toBeNull();
-    expect(egress.channels[0]!.bytesPerSecond).toBeNull();
-    expect(playback.provenance).toContain("one or more session bitrates unavailable");
+    expect(playback.evidence).toBe("derived");
+    expect(egress.evidence).toBe("derived");
+    expect(playback.channels[0]!.bytesPerSecond).toBe(1_187_500);
+    expect(egress.channels[0]!.bytesPerSecond).toBe(1_187_500);
+    expect(egress.rate).toMatchObject({
+      knownBytesPerSecond: 1_187_500,
+      unknownContributors: 1,
+      coverage: "partial",
+      basis: "jellyfin-session-output",
+      evidence: "reported",
+    });
   });
 
-  it("aggregates multiple Jellyfin sessions only when every bitrate is known", () => {
+  it("aggregates multiple known Jellyfin session rates", () => {
     const snap = makeFakeSnapshot("multi-session", NOW);
     const allKnown = {
       ...snap,
+      jellyfinContainer: null,
       jellyfin: {
         ...snap.jellyfin,
         sessions: snap.jellyfin.sessions.map((s, index) => ({
           ...s,
-          bitrateBps: index === 0 ? 8_000_000 : 16_000_000,
+          rate: {
+            bytesPerSecond: index === 0 ? 1_000_000 : 2_000_000,
+            basis: "jellyfin-session-output" as const,
+            evidence: "reported" as const,
+          },
         })),
       },
     };
     const playback = byId(allKnown, "playback:pool:DataStore->jellyfin")!;
     expect(playback.evidence).toBe("derived");
     expect(playback.channels[0]!.bytesPerSecond).toBe(3_000_000);
+  });
+
+  it("prefers live explicitly mapped container egress and block reads", () => {
+    const snap = makeFakeSnapshot("transcode", NOW);
+    const egress = byId(snap, "egress:jellyfin->network")!;
+    const playback = byId(snap, "playback:pool:DataStore->jellyfin")!;
+    expect(egress.evidence).toBe("measured");
+    expect(egress.rate).toMatchObject({
+      knownBytesPerSecond: 12_000_000,
+      basis: "container-egress",
+      evidence: "measured",
+      coverage: "complete",
+      freshness: "live",
+    });
+    expect(playback.rate).toMatchObject({
+      knownBytesPerSecond: 55_000_000,
+      basis: "container-block-read",
+      evidence: "measured",
+    });
+  });
+
+  it("uses exact container mapping rather than fuzzy substring matching", () => {
+    const snap = {
+      ...makeFakeSnapshot("transcode", NOW),
+      jellyfinContainer: "jellyfin-not-the-real-container",
+    };
+    const egress = byId(snap, "egress:jellyfin->network")!;
+    expect(egress.rate).toMatchObject({
+      knownBytesPerSecond: 1_500_000,
+      basis: "jellyfin-session-output",
+      evidence: "reported",
+    });
+  });
+
+  it("retains stale mapped container telemetry as a frozen last-known rate", () => {
+    const base = makeFakeSnapshot("transcode", NOW);
+    const snap = {
+      ...base,
+      jellyfin: {
+        ...base.jellyfin,
+        sessions: base.jellyfin.sessions.map((session) => ({ ...session, rate: null })),
+      },
+      telemetry: {
+        ...base.telemetry,
+        docker: { ...base.telemetry.docker, status: "stale" as const },
+      },
+    };
+    const egress = byId(snap, "egress:jellyfin->network")!;
+    expect(egress.freshness).toBe("stale");
+    expect(egress.rate).toMatchObject({
+      knownBytesPerSecond: 12_000_000,
+      basis: "container-egress",
+      freshness: "stale",
+    });
+  });
+
+  it("falls back to explicit unknown when mapping and sessions have no rate", () => {
+    const base = makeFakeSnapshot("transcode", NOW);
+    const snap = {
+      ...base,
+      jellyfin: {
+        ...base.jellyfin,
+        sessions: base.jellyfin.sessions.map((session) => ({ ...session, rate: null })),
+      },
+      telemetry: {
+        ...base.telemetry,
+        docker: { ...base.telemetry.docker, status: "unavailable" as const, value: null },
+      },
+    };
+    const egress = byId(snap, "egress:jellyfin->network")!;
+    expect(egress.evidence).toBe("state-only");
+    expect(egress.channels[0]!.bytesPerSecond).toBeNull();
+    expect(egress.rate).toMatchObject({
+      knownBytesPerSecond: null,
+      unknownContributors: 1,
+      coverage: "unknown",
+      basis: null,
+      evidence: null,
+    });
+  });
+
+  it("labels session-rate storage use as cache-aware attribution", () => {
+    const snap = { ...makeFakeSnapshot("direct-play", NOW), jellyfinContainer: null };
+    const playback = byId(snap, "playback:pool:DataStore->jellyfin")!;
+    expect(playback.rate).toMatchObject({
+      basis: "storage-attribution",
+      evidence: "derived",
+    });
+    expect(playback.provenance).toContain("cache and ARC");
   });
 });
 

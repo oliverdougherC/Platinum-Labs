@@ -74,6 +74,7 @@ export function fillConnectorHealth(
 
 export interface AggregateParts {
   now: number;
+  hostLabel?: string;
   health: ConnectorHealth[];
   jellyfin: JellyfinSnapshot | null;
   sonarr: AcquisitionItem[] | null;
@@ -92,6 +93,9 @@ export interface AggregateParts {
   mediaPool?: string | null;
   /** Operator-declared download/staging pool; null/undefined when not configured. */
   downloadPool?: string | null;
+  /** Exact operator-declared Docker container name for Jellyfin. */
+  jellyfinContainer?: string | null;
+  networkLinkBytesPerSecond?: number | null;
 }
 
 const JELLYFIN_UNAVAILABLE: JellyfinSnapshot = {
@@ -256,6 +260,7 @@ export function assembleSnapshot(parts: AggregateParts): DashboardSnapshot {
   return {
     mode: "live",
     generatedAt: parts.now,
+    hostLabel: parts.hostLabel?.trim() || "host",
     health: parts.health,
     jellyfin: parts.jellyfin ?? JELLYFIN_UNAVAILABLE,
     acquisition: mergeAcquisition(parts.sonarr, parts.radarr, parts.qbittorrent),
@@ -269,5 +274,7 @@ export function assembleSnapshot(parts: AggregateParts): DashboardSnapshot {
     history: parts.history,
     mediaPool: parts.mediaPool ?? null,
     downloadPool: parts.downloadPool ?? null,
+    jellyfinContainer: parts.jellyfinContainer ?? null,
+    networkLinkBytesPerSecond: parts.networkLinkBytesPerSecond ?? null,
   };
 }

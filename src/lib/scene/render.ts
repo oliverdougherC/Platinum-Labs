@@ -36,7 +36,12 @@ import { makeRng } from "@/lib/scene/rng";
 import { intensityFromRate, particlePeriodSeconds } from "@/lib/topology/smoothing";
 import type { BackgroundField } from "@/lib/scene/background";
 import type { BodyGeom, SceneLayout } from "@/lib/scene/layout";
-import type { SceneModel, ServiceBodyModel, StorageBodyModel } from "@/lib/scene/model";
+import type {
+  DockerContainerModel,
+  SceneModel,
+  ServiceBodyModel,
+  StorageBodyModel,
+} from "@/lib/scene/model";
 import type { SceneMotion, LiveFlow } from "@/lib/scene/motion";
 import type { FlowGeom } from "@/lib/scene/routing";
 import type { ChannelRole, FlowChannel } from "@/lib/topology/activity";
@@ -734,15 +739,100 @@ function drawFlows(ctx: CanvasRenderingContext2D, s: RenderState, style: FlowSty
   }
 }
 
-// --- docker belt --------------------------------------------------------------
+// --- container asteroid field -------------------------------------------------
+
+export function containerMotionOffset(
+  container: DockerContainerModel,
+  t: number,
+  motionEnabled: boolean,
+  phase = 0,
+): { x: number; y: number } {
+  if (!motionEnabled || container.freshness !== "live") return { x: 0, y: 0 };
+  const energy = Math.max(container.resourceScore, container.ioIntensity);
+  return {
+    x: Math.cos(t / 19 + phase) * energy * 2.4,
+    y: Math.sin(t / 23 + phase) * energy * 2.4,
+  };
+}
+
+function drawContainerAsteroid(
+  ctx: CanvasRenderingContext2D,
+  s: RenderState,
+  container: DockerContainerModel,
+  geom: BodyGeom,
+): void {
+  const live = container.freshness === "live";
+  const stale = container.freshness === "stale";
+  const energy = live ? Math.max(container.resourceScore, container.ioIntensity) : 0;
+  const phase = (makeRng(container.name.length + container.name.charCodeAt(0))() * TAU);
+  const offset = containerMotionOffset(container, s.t, s.motionEnabled, phase);
+  const cx = geom.center.x + offset.x;
+  const cy = geom.center.y + offset.y;
+  const r = geom.r;
+  const hovered = s.hovered === geom.id;
+
+  if (live && container.ioIntensity > 0.02) {
+    const net = (container.netRxBps ?? 0) + (container.netTxBps ?? 0);
+    const block = (container.blockReadBps ?? 0) + (container.blockWriteBps ?? 0);
+    if (net > 0) {
+      ctx.strokeStyle = rgba("flow-in", 0.12 + container.ioIntensity * 0.22);
+      ctx.lineWidth = 1 + container.ioIntensity * 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + 4 + container.ioIntensity * 5, -Math.PI * 0.9, Math.PI * 0.15);
+      ctx.stroke();
+    }
+    if (block > 0) {
+      ctx.strokeStyle = rgba("flow-out", 0.1 + container.ioIntensity * 0.2);
+      ctx.lineWidth = 1 + container.ioIntensity * 1.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + 7 + container.ioIntensity * 7, Math.PI * 0.15, Math.PI * 1.05);
+      ctx.stroke();
+    }
+  }
+
+  const alpha = stale ? 0.24 : container.bad ? 0.78 : 0.3 + energy * 0.32;
+  const stateToken: ColorTokenName = container.bad
+    ? "danger"
+    : container.unverified
+      ? "faint"
+      : "fg";
+  ctx.fillStyle = rgba(stateToken, container.unverified ? 0.05 : alpha * 0.45);
+  ctx.strokeStyle = rgba(stateToken, container.unverified ? 0.55 : alpha);
+  ctx.lineWidth = container.bad ? 1.8 : 1;
+  if (container.unverified) ctx.setLineDash([2, 2]);
+  ctx.beginPath();
+  if (container.bad) {
+    // Angular silhouette distinguishes stopped/unhealthy state without color.
+    for (let i = 0; i < 6; i++) {
+      const a = phase + (i / 6) * TAU;
+      const rr = r * (i % 2 === 0 ? 1 : 0.72);
+      const x = cx + Math.cos(a) * rr;
+      const y = cy + Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  } else {
+    ctx.arc(cx, cy, r, 0, TAU);
+  }
+  ctx.fill();
+  ctx.stroke();
+  if (container.unverified) ctx.setLineDash([]);
+
+  if (hovered || container.bad) {
+    ctx.fillStyle = rgba(container.bad ? "danger" : "muted", stale ? 0.5 : 0.82);
+    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(container.name, cx, cy + r + 16);
+  }
+}
 
 function drawDockerBelt(ctx: CanvasRenderingContext2D, s: RenderState): void {
   const docker = s.model.docker;
   if (docker.status === "not-configured") return;
   const belt = s.layout.dockerBelt;
-  const rng = makeRng(0xbe17);
-  if (docker.status === "unavailable" || docker.dots.length === 0) {
-    // Honest absence: a whisper of the belt path, no fabricated asteroids.
+  if (docker.status === "unavailable" || docker.containers.length === 0) {
+    // Honest absence: a whisper of the field boundary, no fabricated bodies.
     ctx.strokeStyle = rgba("hairline", 0.3);
     ctx.setLineDash([2, 7]);
     ctx.lineWidth = 1;
@@ -752,26 +842,25 @@ function drawDockerBelt(ctx: CanvasRenderingContext2D, s: RenderState): void {
     ctx.setLineDash([]);
     return;
   }
-  const span = belt.a1 - belt.a0;
-  const stale = docker.status === "stale";
-  for (let i = 0; i < docker.dots.length; i++) {
-    const dot = docker.dots[i]!;
-    const fi = docker.dots.length === 1 ? 0.5 : i / (docker.dots.length - 1);
-    const a = belt.a0 + span * fi + (rng() - 0.5) * (span / docker.dots.length) * 0.5;
-    const rr = belt.r + (rng() - 0.5) * 12;
-    const size = 1.1 + rng() * 1.1;
-    const p = pointOnCircle(belt.center, rr, a);
-    if (dot.bad) {
-      ctx.fillStyle = rgba("danger", stale ? 0.4 : 0.85);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, size + 0.7, 0, TAU);
-      ctx.fill();
-    } else {
-      ctx.fillStyle = rgba("fg", stale ? 0.14 : 0.26 + rng() * 0.14);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, size, 0, TAU);
-      ctx.fill();
-    }
+  for (const container of docker.containers) {
+    const geom = s.layout.containerField.get(container.name);
+    if (geom) drawContainerAsteroid(ctx, s, container, geom);
+  }
+  if (s.layout.containerOverflow && s.layout.containerOverflowCount > 0) {
+    const { center, r } = s.layout.containerOverflow;
+    ctx.fillStyle = rgba("surface-2", 0.8);
+    ctx.strokeStyle = rgba("muted", 0.55);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, r, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = rgba("fg", 0.8);
+    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`+${s.layout.containerOverflowCount}`, center.x, center.y);
+    ctx.textBaseline = "alphabetic";
   }
 }
 

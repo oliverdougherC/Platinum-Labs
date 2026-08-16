@@ -1,0 +1,27 @@
+[
+  {
+    "NowPlayingItem": {
+      "Type": "Movie",
+      "Container": "mkv",
+      "Height": 1600,
+      "MediaStreams": [
+        {
+          "Type": "Video",
+          "Codec": "hevc",
+          "BitRate": 32678656,
+          "Width": 3840,
+          "Height": 1600
+        },
+        {
+          "Type": "Audio",
+          "Codec": "eac3",
+          "BitRate": 768000
+        }
+      ]
+    },
+    "PlayState": {
+      "PlayMethod": "Transcode",
+      "IsPaused": true
+    }
+  }
+]

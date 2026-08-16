@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { MediaSearch, MediaSearchLauncher } from "@/components/media-search";
+import { MediaSearch } from "@/components/media-search";
 import type { SeerrRequestOutcome, SeerrSearchResult } from "@/lib/seerr/api";
 
 const martian: SeerrSearchResult = {
@@ -83,15 +83,6 @@ async function typeQuery(text: string) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-});
-
-describe("MediaSearchLauncher", () => {
-  it("renders the quiet entry point and opens on click", () => {
-    const onOpen = vi.fn();
-    render(<MediaSearchLauncher onOpen={onOpen} />);
-    fireEvent.click(screen.getByRole("button", { name: /request media/i }));
-    expect(onOpen).toHaveBeenCalledOnce();
-  });
 });
 
 describe("MediaSearch — searching", () => {

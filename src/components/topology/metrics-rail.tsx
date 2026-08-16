@@ -10,10 +10,9 @@ import type {
 } from "@/lib/types";
 
 /**
- * Exact-metrics rail (PLA-269): one thin strip of precise numbers along the
- * bottom edge. Typography and hairline separators only — no cards. Tabular
- * numerals keep the strip stable while values change. Missing telemetry reads
- * as an explicit em dash + status word, never zero.
+ * Telemetry horizon (PLA-269): the four strongest ambient host signals form
+ * one quiet strip. Lower-priority GPU, ARC, load and Docker detail lives in the
+ * host/container drawers. Missing telemetry is explicit and never zero.
  */
 
 function Spark({ points, max }: { points: TelemetryHistoryPoint[]; max?: number }) {
@@ -47,16 +46,21 @@ function Cell({
   status,
   spark,
   title,
+  className,
 }: {
   label: string;
   value: string | null;
   status?: TelemetryDomain<unknown>["status"];
   spark?: React.ReactNode;
   title?: string;
+  className?: string;
 }) {
   const missing = value === null;
   return (
-    <div className="flex min-w-0 items-baseline gap-2 px-4" title={title}>
+    <div
+      className={`flex min-w-0 items-baseline gap-2 px-[clamp(0.65rem,1.2vw,1rem)] ${className ?? ""}`}
+      title={title}
+    >
       <span className="text-[10.5px] uppercase tracking-[0.16em] text-faint">
         {label}
       </span>
@@ -83,20 +87,24 @@ export function MetricsRail({ snapshot }: { snapshot: DashboardSnapshot }) {
   const t = snapshot.telemetry;
   const h = snapshot.telemetryHistory;
 
-  const docker = t.docker;
   return (
-    <footer className="flex h-11 shrink-0 items-center divide-x divide-hairline overflow-hidden border-t border-hairline">
+    <footer
+      aria-label="Live telemetry"
+      className="grid shrink-0 grid-cols-2 border-t border-hairline sm:h-11 sm:grid-cols-4 sm:items-center"
+    >
       <Cell
+        className="border-r border-b border-hairline py-2 sm:border-b-0"
         label="cpu"
         status={t.cpu.status}
         value={
           t.cpu.value
-            ? `${formatPercent(t.cpu.value.totalFraction)}${t.cpu.value.load1 === null ? "" : ` · load ${t.cpu.value.load1.toFixed(2)}`}`
+            ? formatPercent(t.cpu.value.totalFraction)
             : null
         }
-        spark={h ? <Spark points={h.cpuTotal} max={1} /> : undefined}
+        spark={h ? <span className="max-[1100px]:hidden"><Spark points={h.cpuTotal} max={1} /></span> : undefined}
       />
       <Cell
+        className="border-b border-hairline py-2 sm:border-r sm:border-b-0"
         label="mem"
         status={t.memory.status}
         value={
@@ -106,18 +114,7 @@ export function MetricsRail({ snapshot }: { snapshot: DashboardSnapshot }) {
         }
       />
       <Cell
-        label="gpu"
-        status={t.gpu.status}
-        title={t.gpu.value?.name}
-        value={
-          t.gpu.value
-            ? `${formatPercent(t.gpu.value.utilizationFraction)} · ${formatBytes(t.gpu.value.vramUsedBytes, { system: "binary" })} vram${
-                t.gpu.value.temperatureC !== null ? ` · ${t.gpu.value.temperatureC}°` : ""
-              }`
-            : null
-        }
-      />
-      <Cell
+        className="border-r border-hairline py-2"
         label="net"
         status={t.network.status}
         value={
@@ -125,9 +122,10 @@ export function MetricsRail({ snapshot }: { snapshot: DashboardSnapshot }) {
             ? `↓ ${formatRate(t.network.value.rxBps)} ↑ ${formatRate(t.network.value.txBps)}`
             : null
         }
-        spark={h ? <Spark points={h.netRx} /> : undefined}
+        spark={h ? <span className="max-[1100px]:hidden"><Spark points={h.netRx} /></span> : undefined}
       />
       <Cell
+        className="py-2"
         label="disk"
         status={t.disk.status}
         value={
@@ -135,30 +133,8 @@ export function MetricsRail({ snapshot }: { snapshot: DashboardSnapshot }) {
             ? `r ${formatRate(t.disk.value.readBps)} w ${formatRate(t.disk.value.writeBps)}`
             : null
         }
-        spark={h ? <Spark points={h.diskWrite} /> : undefined}
+        spark={h ? <span className="max-[1100px]:hidden"><Spark points={h.diskWrite} /></span> : undefined}
       />
-      <Cell
-        label="docker"
-        status={docker.status}
-        value={
-          docker.value
-            ? `${docker.value.running}/${docker.value.total} running${
-                docker.value.unhealthy > 0 ? ` · ${docker.value.unhealthy} unhealthy` : ""
-              }`
-            : null
-        }
-      />
-      {t.arc.value && (
-        <Cell
-          label="arc"
-          status={t.arc.status}
-          value={`${formatBytes(t.arc.value.sizeBytes, { system: "binary" })}${
-            t.arc.value.hitRatio !== null
-              ? ` · ${formatPercent(t.arc.value.hitRatio)} hit`
-              : ""
-          }`}
-        />
-      )}
     </footer>
   );
 }

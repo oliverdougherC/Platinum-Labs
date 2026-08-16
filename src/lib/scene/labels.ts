@@ -194,10 +194,9 @@ export function buildLabels(model: SceneModel, layout: SceneLayout, now: number)
     }),
   );
 
-  // --- docker belt ------------------------------------------------------------
+  // --- container field --------------------------------------------------------
   if (model.docker.status !== "not-configured") {
-    const beltMid = (layout.dockerBelt.a0 + layout.dockerBelt.a1) / 2;
-    const anchor = pointOnCircle(layout.dockerBelt.center, layout.dockerBelt.r + 44, beltMid);
+    const anchor = layout.containerCaption;
     labels.push(
       label("docker", anchor, "containers", {
         primaryTone: "faint",
@@ -224,44 +223,86 @@ const ROLE_WORD: Record<string, string> = {
   write: "write",
 };
 
+const FLOW_SERVICE_LABEL: Record<string, string> = {
+  jellyfin: "Jellyfin",
+  sonarr: "Sonarr",
+  radarr: "Radarr",
+  qbittorrent: "qBittorrent",
+};
+
+function endpointLabel(endpoint: FlowObservation["from"]): string {
+  switch (endpoint.kind) {
+    case "network":
+      return "network";
+    case "service":
+      return FLOW_SERVICE_LABEL[endpoint.id] ?? endpoint.id;
+    case "pool":
+      return endpoint.name;
+    case "storage":
+      return "storage";
+  }
+}
+
+function shortAge(at: number, now: number): string {
+  return formatRelativeTime(at, now).replace(/ ago$/, "");
+}
+
+function visibleFlowValue(obs: FlowObservation, now: number): string {
+  if (obs.freshness === "stale") {
+    return obs.updatedAt === null ? "stale" : `stale ${shortAge(obs.updatedAt, now)}`;
+  }
+  if (obs.rate) {
+    if (obs.rate.knownBytesPerSecond === null) return "rate unknown";
+    const unknown = obs.rate.unknownContributors;
+    return `${formatRate(obs.rate.knownBytesPerSecond)}${
+      unknown > 0 ? ` + ${unknown} unknown` : ""
+    }`;
+  }
+  const rated = obs.channels.filter((channel) => channel.bytesPerSecond !== null);
+  if (rated.length === 1) return formatRate(rated[0]!.bytesPerSecond!);
+  if (rated.length > 1) {
+    return rated
+      .map((channel) => `${ROLE_WORD[channel.role] ?? channel.role} ${formatRate(channel.bytesPerSecond!)}`)
+      .join(" · ");
+  }
+  if (obs.plane === "data") return "rate unknown";
+  if (obs.kind === "control") return "orchestrating";
+  if (obs.kind === "organize") return "organizing";
+  return "active";
+}
+
 /**
- * The hover/focus description of a flow (PLA-266 v2 inspectability): semantic
- * label, evidence class, exact directional rates where known, and freshness —
- * e.g. "qBittorrent download · measured · in 6.1 MB/s · updated 1s ago".
- * `detail` carries the provenance sentence for the second line.
+ * Flow copy has two layers: a terse two-line visible contract and a complete
+ * accessibility/provenance sentence. Technical evidence never leaks back into
+ * the primary hover card merely because it remains available to screen readers.
  */
 export function describeFlow(
   obs: FlowObservation,
   now: number,
-): { summary: string; detail: string } {
-  const parts: string[] = [obs.label];
-  parts.push(
-    obs.evidence === "measured"
-      ? "measured"
-      : obs.evidence === "derived"
-        ? "derived"
-        : "state confirmed",
-  );
-  const rated = obs.channels.filter((c) => c.bytesPerSecond !== null);
-  if (rated.length > 0) {
-    parts.push(
-      rated
-        .map((c) => `${ROLE_WORD[c.role] ?? c.role} ${formatRate(c.bytesPerSecond!)}`)
-        .join(" · "),
-    );
-  } else if (obs.plane === "data") {
-    parts.push("byte rate unavailable");
-  }
-  if (obs.freshness === "stale") {
-    parts.push(
-      obs.updatedAt !== null
-        ? `stale · last seen ${formatRelativeTime(obs.updatedAt, now)}`
-        : "stale",
-    );
-  } else if (obs.updatedAt !== null) {
-    parts.push(`updated ${formatRelativeTime(obs.updatedAt, now)}`);
-  }
-  return { summary: parts.join(" · "), detail: obs.provenance };
+): { title: string; value: string; accessible: string; detail: string } {
+  const title = `${endpointLabel(obs.from)} → ${endpointLabel(obs.to)}`;
+  const value = visibleFlowValue(obs, now);
+  const evidence =
+    obs.rate?.evidence ??
+    (obs.evidence === "state-only" ? "state evidence only" : obs.evidence);
+  const basis = obs.rate?.basis ? `, basis ${obs.rate.basis}` : "";
+  const coverage = obs.rate
+    ? `, ${obs.rate.coverage} coverage${
+        obs.rate.unknownContributors > 0
+          ? ` with ${obs.rate.unknownContributors} unknown contributor${obs.rate.unknownContributors === 1 ? "" : "s"}`
+          : ""
+      }`
+    : "";
+  const freshness =
+    obs.updatedAt === null
+      ? `, ${obs.freshness}`
+      : `, ${obs.freshness}, source updated ${formatRelativeTime(obs.updatedAt, now)}`;
+  return {
+    title,
+    value,
+    accessible: `${title}. ${value}. ${evidence}${basis}${coverage}${freshness}. ${obs.provenance}`,
+    detail: obs.provenance,
+  };
 }
 
 /** Axis-aligned overlap test between two label boxes (for tests). */

@@ -40,6 +40,7 @@ export type TelemetryProfileName =
   | "seeding"
   | "importing"
   | "active"
+  | "container-mixed"
   | "busy"
   | "unavailable"
   | "unconfigured";
@@ -55,7 +56,10 @@ interface Profile {
   netTxBps: number;
   /** Per-pool read/write rates in bytes/sec. */
   poolIo: Record<string, { read: number; write: number }>;
+  jellyfinNetTxBps?: number;
+  jellyfinBlockReadBps?: number;
   unhealthyContainers?: string[];
+  unknownContainers?: string[];
 }
 
 const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigured">, Profile> = {
@@ -79,6 +83,8 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
       DataStore: { read: 42_000_000, write: 0 },
       NVME: { read: 500_000, write: 200_000 },
     },
+    jellyfinNetTxBps: 39_000_000,
+    jellyfinBlockReadBps: 42_000_000,
   },
   transcode: {
     cpu: 0.34,
@@ -91,6 +97,8 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
       DataStore: { read: 55_000_000, write: 0 },
       NVME: { read: 800_000, write: 6_000_000 },
     },
+    jellyfinNetTxBps: 12_000_000,
+    jellyfinBlockReadBps: 55_000_000,
   },
   // The fake universe stages downloads on NVME (HOMELAB_DOWNLOAD_POOL) and
   // keeps the library on DataStore (HOMELAB_MEDIA_POOL): downloads write the
@@ -141,6 +149,24 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
       DataStore: { read: 42_000_000, write: 24_000_000 },
       NVME: { read: 3_000_000, write: 46_000_000 },
     },
+    jellyfinNetTxBps: 12_000_000,
+    jellyfinBlockReadBps: 42_000_000,
+  },
+  "container-mixed": {
+    cpu: 0.48,
+    hotCores: 18,
+    memFraction: 0.58,
+    gpuUtil: 0.35,
+    netRxBps: 44_000_000,
+    netTxBps: 31_000_000,
+    poolIo: {
+      DataStore: { read: 58_000_000, write: 36_000_000 },
+      NVME: { read: 12_000_000, write: 48_000_000 },
+    },
+    jellyfinNetTxBps: 31_000_000,
+    jellyfinBlockReadBps: 58_000_000,
+    unhealthyContainers: ["flaresolverr"],
+    unknownContainers: ["unpackerr"],
   },
   busy: {
     cpu: 0.55,
@@ -188,23 +214,35 @@ function fakeContainers(
   profile: Profile,
 ): DockerContainerTelemetry[] {
   const unhealthy = new Set(profile.unhealthyContainers ?? []);
+  const unknown = new Set(profile.unknownContainers ?? []);
   return FAKE_CONTAINERS.map((name, i) => {
     const bad = unhealthy.has(name);
+    const unverified = unknown.has(name);
     return {
       name,
-      state: bad ? "exited" : "running",
-      health: bad ? "unhealthy" : i % 3 === 0 ? "healthy" : null,
-      restartCount: bad ? 3 : 0,
-      cpuFraction: bad
+      state: bad ? "exited" : unverified ? "unknown" : "running",
+      health: bad ? "unhealthy" : unverified ? null : i % 3 === 0 ? "healthy" : null,
+      restartCount: bad ? 3 : unverified ? null : 0,
+      cpuFraction: bad || unverified
         ? null
         : clamp(0.01 + 0.2 * profile.cpu * wave(now, 45_000, i), 0, 2),
-      memoryBytes: bad ? null : Math.round((0.2 + (i % 5) * 0.35) * GiB),
+      memoryBytes: bad || unverified ? null : Math.round((0.2 + (i % 5) * 0.35) * GiB),
       // A few containers deliberately report unknown I/O so the null path
       // stays exercised in fake mode (unknown ≠ zero, PLA-273).
-      netRxBps: bad || i % 4 === 3 ? null : Math.round(20_000 * (1 + (i % 3))),
-      netTxBps: bad || i % 4 === 3 ? null : Math.round(12_000 * (1 + (i % 3))),
-      blockReadBps: bad || i % 5 === 4 ? null : Math.round(80_000 * (1 + (i % 2))),
-      blockWriteBps: bad || i % 5 === 4 ? null : Math.round(45_000 * (1 + (i % 2))),
+      netRxBps: bad || unverified || i % 4 === 3 ? null : Math.round(20_000 * (1 + (i % 3))),
+      netTxBps:
+        name === "jellyfin" && profile.jellyfinNetTxBps !== undefined
+          ? profile.jellyfinNetTxBps
+          : bad || unverified || i % 4 === 3
+            ? null
+            : Math.round(12_000 * (1 + (i % 3))),
+      blockReadBps:
+        name === "jellyfin" && profile.jellyfinBlockReadBps !== undefined
+          ? profile.jellyfinBlockReadBps
+          : bad || unverified || i % 5 === 4
+            ? null
+            : Math.round(80_000 * (1 + (i % 2))),
+      blockWriteBps: bad || unverified || i % 5 === 4 ? null : Math.round(45_000 * (1 + (i % 2))),
     };
   });
 }

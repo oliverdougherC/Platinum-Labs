@@ -39,7 +39,13 @@
 
 import { FLOW_DEADBAND_BPS } from "@/lib/topology/smoothing";
 import { isConnectorStale } from "@/lib/types";
-import type { DashboardSnapshot } from "@/lib/types";
+import type {
+  AggregateRateObservation,
+  DashboardSnapshot,
+  JellyfinSession,
+  RateBasis,
+  RateEvidence,
+} from "@/lib/types";
 
 export type ServiceEndpointId = "jellyfin" | "sonarr" | "radarr" | "qbittorrent";
 
@@ -92,6 +98,8 @@ export interface FlowObservation {
   label: string;
   /** Epoch ms of the justifying source's last success, when known. */
   updatedAt: number | null;
+  /** Typed aggregate rate for flows whose coverage/source needs explanation. */
+  rate?: AggregateRateObservation;
 }
 
 function endpointKey(e: FlowEndpoint): string {
@@ -211,6 +219,84 @@ function earliestUpdatedAt(...times: Array<number | null | undefined>): number |
 
 const rate = (bps: number | null | undefined): number | null =>
   typeof bps === "number" && Number.isFinite(bps) ? Math.max(0, bps) : null;
+
+function weakestEvidence(values: RateEvidence[]): RateEvidence {
+  if (values.includes("estimated")) return "estimated";
+  if (values.includes("derived")) return "derived";
+  if (values.includes("reported")) return "reported";
+  return "measured";
+}
+
+function sessionRateAggregate(
+  sessions: JellyfinSession[],
+  freshness: FlowFreshness,
+): AggregateRateObservation {
+  const known = sessions.flatMap((session) => (session.rate ? [session.rate] : []));
+  const unknownContributors = sessions.length - known.length;
+  const knownBytesPerSecond =
+    known.length > 0
+      ? known.reduce((sum, observation) => sum + observation.bytesPerSecond, 0)
+      : null;
+  const bases = new Set(known.map((observation) => observation.basis));
+  const basis: RateBasis | null =
+    bases.size === 0
+      ? null
+      : bases.size === 1
+        ? known[0]!.basis
+        : "mixed-session-sources";
+  return {
+    knownBytesPerSecond,
+    unknownContributors,
+    coverage:
+      known.length === 0
+        ? "unknown"
+        : unknownContributors > 0
+          ? "partial"
+          : "complete",
+    basis,
+    evidence: known.length > 0 ? weakestEvidence(known.map((o) => o.evidence)) : null,
+    freshness,
+  };
+}
+
+function mappedJellyfinContainer(snapshot: DashboardSnapshot) {
+  const configuredName = snapshot.jellyfinContainer;
+  if (!configuredName) return null;
+  const docker = snapshot.telemetry.docker;
+  const container = docker.value?.containers.find((item) => item.name === configuredName);
+  return container ? { container, status: docker.status, updatedAt: docker.updatedAt } : null;
+}
+
+function containerRate(
+  snapshot: DashboardSnapshot,
+  field: "netTxBps" | "blockReadBps",
+): AggregateRateObservation | null {
+  const mapped = mappedJellyfinContainer(snapshot);
+  if (!mapped) return null;
+  const value = rate(mapped.container[field]);
+  if (value === null || (mapped.status !== "available" && mapped.status !== "stale")) {
+    return null;
+  }
+  return {
+    knownBytesPerSecond: value,
+    unknownContributors: 0,
+    coverage: "complete",
+    basis: field === "netTxBps" ? "container-egress" : "container-block-read",
+    evidence: "measured",
+    freshness: mapped.status === "available" ? "live" : "stale",
+  };
+}
+
+function storageAttribution(
+  aggregate: AggregateRateObservation,
+): AggregateRateObservation {
+  if (aggregate.knownBytesPerSecond === null) return aggregate;
+  return {
+    ...aggregate,
+    basis: "storage-attribution",
+    evidence: aggregate.evidence === "estimated" ? "estimated" : "derived",
+  };
+}
 
 /** Derive every observable flow from the snapshot. Idle input → empty array. */
 export function deriveFlows(
@@ -389,10 +475,30 @@ export function deriveFlows(
   // --- playback: media storage → Jellyfin → network --------------------------
   const sessions = snapshot.jellyfin.sessions;
   if (jellyfin.usable && sessions.length > 0) {
-    const bitrateKnown = sessions.every((s) => s.bitrateBps !== null);
-    const totalBps = bitrateKnown
-      ? sessions.reduce((sum, s) => sum + (s.bitrateBps ?? 0), 0) / 8
-      : null;
+    const sessionAggregate = sessionRateAggregate(sessions, jellyfin.freshness);
+    const containerEgress = containerRate(snapshot, "netTxBps");
+    const containerReads = containerRate(snapshot, "blockReadBps");
+    const egressRate =
+      containerEgress?.freshness === "live"
+        ? containerEgress
+        : sessionAggregate.knownBytesPerSecond !== null
+          ? sessionAggregate
+          : containerEgress ?? sessionAggregate;
+    const attributedStorage = storageAttribution(sessionAggregate);
+    const playbackRate =
+      containerReads?.freshness === "live"
+        ? containerReads
+        : attributedStorage.knownBytesPerSecond !== null
+          ? attributedStorage
+          : containerReads ?? attributedStorage;
+    const egressFreshness: FlowFreshness =
+      jellyfin.freshness === "stale" || egressRate.freshness === "stale"
+        ? "stale"
+        : "live";
+    const playbackFreshness: FlowFreshness =
+      jellyfin.freshness === "stale" || playbackRate.freshness === "stale"
+        ? "stale"
+        : "live";
     const transcoding = sessions.some((s) => s.method === "transcode");
     const label =
       sessions.length > 1
@@ -400,32 +506,62 @@ export function deriveFlows(
         : transcoding
           ? "Jellyfin transcode"
           : "Jellyfin direct play";
-    // Session bitrate is a real measurement of the STREAM; using it for the
-    // storage read leg is an attribution (ARC/caching may serve part of it).
     flows.push(
       makeFlow("playback", mediaStorage, { kind: "service", id: "jellyfin" }, {
         plane: "data",
-        evidence: bitrateKnown ? "derived" : "state-only",
-        freshness: jellyfin.freshness,
-        channels: [{ direction: "forward", role: "read", bytesPerSecond: totalBps }],
-        provenance: bitrateKnown
-          ? "derived from Jellyfin session bitrate (cache may serve part of the reads)"
-          : "session state reported by Jellyfin; one or more session bitrates unavailable",
+        evidence:
+          playbackRate.knownBytesPerSecond === null
+            ? "state-only"
+            : playbackRate.basis === "container-block-read"
+              ? "measured"
+              : "derived",
+        freshness: playbackFreshness,
+        channels: [{
+          direction: "forward",
+          role: "read",
+          bytesPerSecond: playbackRate.knownBytesPerSecond,
+        }],
+        rate: { ...playbackRate, freshness: playbackFreshness },
+        provenance:
+          playbackRate.basis === "container-block-read"
+            ? "measured Jellyfin container block reads; cache and ARC may still serve media without disk I/O"
+            : playbackRate.knownBytesPerSecond !== null
+              ? "derived media demand from available Jellyfin session rates; cache and ARC may satisfy reads"
+              : "playback reported by Jellyfin; storage rate unavailable",
         label,
-        updatedAt: jellyfin.updatedAt,
+        updatedAt:
+          playbackRate.basis === "container-block-read"
+            ? snapshot.telemetry.docker.updatedAt
+            : jellyfin.updatedAt,
       }),
     );
     flows.push(
       makeFlow("egress", { kind: "service", id: "jellyfin" }, { kind: "network" }, {
         plane: "data",
-        evidence: bitrateKnown ? "derived" : "state-only",
-        freshness: jellyfin.freshness,
-        channels: [{ direction: "forward", role: "egress", bytesPerSecond: totalBps }],
-        provenance: bitrateKnown
-          ? "derived from Jellyfin session bitrate"
-          : "session state reported by Jellyfin; one or more session bitrates unavailable",
+        evidence:
+          egressRate.knownBytesPerSecond === null
+            ? "state-only"
+            : egressRate.basis === "container-egress"
+              ? "measured"
+              : "derived",
+        freshness: egressFreshness,
+        channels: [{
+          direction: "forward",
+          role: "egress",
+          bytesPerSecond: egressRate.knownBytesPerSecond,
+        }],
+        rate: { ...egressRate, freshness: egressFreshness },
+        provenance:
+          egressRate.basis === "container-egress"
+            ? "measured Jellyfin container egress; not an exact per-session bitrate"
+            : egressRate.knownBytesPerSecond !== null
+              ? "aggregated from available Jellyfin session rate observations"
+              : "playback reported by Jellyfin; egress rate unavailable",
         label,
-        updatedAt: jellyfin.updatedAt,
+        updatedAt:
+          egressRate.basis === "container-egress"
+            ? snapshot.telemetry.docker.updatedAt
+            : jellyfin.updatedAt,
       }),
     );
   }

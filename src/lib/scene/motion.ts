@@ -105,6 +105,32 @@ function held(current: number | null, fallback: number): number {
   return current ?? fallback;
 }
 
+/** Conservative 10 GbE fallback when the operator has not declared a link. */
+export const UNKNOWN_LINK_BYTES_PER_SECOND = 1_250_000_000;
+
+/**
+ * Stable aperture energy against configured link capacity. Square-root easing
+ * keeps low traffic visible without saturating ordinary multi-gigabit bursts;
+ * SceneMotion's EMA provides the temporal smoothing.
+ */
+export function networkIntensity(
+  rateBytesPerSecond: number | null,
+  linkBytesPerSecond: number | null,
+): number {
+  if (
+    rateBytesPerSecond === null ||
+    !Number.isFinite(rateBytesPerSecond) ||
+    rateBytesPerSecond <= 0
+  ) return 0;
+  const capacity =
+    linkBytesPerSecond !== null &&
+    Number.isFinite(linkBytesPerSecond) &&
+    linkBytesPerSecond > 0
+      ? linkBytesPerSecond
+      : UNKNOWN_LINK_BYTES_PER_SECOND;
+  return Math.min(1, Math.sqrt(rateBytesPerSecond / capacity));
+}
+
 /**
  * All smoothed visual state. `applyModel` sets targets; `advance` moves the
  * current values and returns nothing — read the public fields after it.
@@ -193,16 +219,19 @@ export class SceneMotion {
       nowMs,
     );
 
-    // Network normalized against a gigabit-ish full scale, log-free (the rim
-    // treatment is subtle; flows carry the log scale).
-    const full = 120_000_000;
+    // Normalize against the operator-declared link capacity. An unknown link
+    // uses a conservative 10 GbE visual fallback (without claiming metadata).
     const networkLive = m.network.status === "available";
     this.rxNorm = this.rxEma.update(
-      networkLive ? Math.min(1, (m.network.rxBps ?? 0) / full) : 0,
+      networkLive
+        ? networkIntensity(m.network.rxBps, m.network.linkBytesPerSecond)
+        : 0,
       nowMs,
     );
     this.txNorm = this.txEma.update(
-      networkLive ? Math.min(1, (m.network.txBps ?? 0) / full) : 0,
+      networkLive
+        ? networkIntensity(m.network.txBps, m.network.linkBytesPerSecond)
+        : 0,
       nowMs,
     );
 

@@ -17,7 +17,7 @@ import {
   mediaStorageEndpoint,
 } from "@/lib/topology/activity";
 import type { FlowObservation } from "@/lib/topology/activity";
-import type { DashboardSnapshot, ZfsPool } from "@/lib/types";
+import type { ContainerState, DashboardSnapshot, ZfsPool } from "@/lib/types";
 
 export type ServiceId = "jellyfin" | "sonarr" | "radarr" | "qbittorrent" | "seerr";
 
@@ -95,17 +95,33 @@ export interface NetworkModel {
   status: "available" | "stale" | "unavailable" | "not-configured";
   rxBps: number | null;
   txBps: number | null;
+  linkBytesPerSecond: number | null;
 }
 
-export interface DockerDotModel {
+export interface DockerContainerModel {
   name: string;
-  /** Unhealthy or not running. */
+  state: ContainerState;
+  health: "healthy" | "unhealthy" | "starting" | null;
+  restartCount: number | null;
+  cpuFraction: number | null;
+  memoryBytes: number | null;
+  memoryScore: number;
+  netRxBps: number | null;
+  netTxBps: number | null;
+  blockReadBps: number | null;
+  blockWriteBps: number | null;
+  freshness: "live" | "stale" | "unavailable";
+  serviceAssociation: ServiceId | null;
+  resourceScore: number;
+  radius: number;
+  ioIntensity: number;
+  unverified: boolean;
   bad: boolean;
 }
 
 export interface DockerModel {
   status: "available" | "stale" | "unavailable" | "not-configured";
-  dots: DockerDotModel[];
+  containers: DockerContainerModel[];
   running: number | null;
   total: number | null;
   unhealthy: number | null;
@@ -147,6 +163,45 @@ export function capacityTone(fraction: number): CapacityTone {
   if (fraction >= storageCriticalFraction) return "critical";
   if (fraction >= storageWarnFraction) return "warn";
   return "ok";
+}
+
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+
+/** Absolute memory pressure score with a soft logarithmic 64 MiB→8 GiB range. */
+export function containerMemoryScore(bytes: number | null): number {
+  if (bytes === null || !Number.isFinite(bytes) || bytes <= 0) return 0;
+  const unit = 64 * 1024 ** 2;
+  return clamp01(Math.log1p(bytes / unit) / Math.log1p((8 * 1024 ** 3) / unit));
+}
+
+/** Bounded nonlinear workload score; unknown metrics remain quiet, never fake zero. */
+export function containerResourceScore(
+  cpuFraction: number | null,
+  memoryBytes: number | null,
+): number {
+  const cpu = cpuFraction === null || !Number.isFinite(cpuFraction)
+    ? 0
+    : clamp01(1 - Math.exp(-Math.max(0, cpuFraction) / 0.7));
+  const memory = containerMemoryScore(memoryBytes);
+  return clamp01(Math.max(cpu, memory) * 0.72 + Math.min(cpu, memory) * 0.28);
+}
+
+export function containerRadius(resourceScore: number): number {
+  // Quiet workloads stay physically small; genuinely hot containers still
+  // approach the 13-unit ceiling without letting modest memory residency turn
+  // every idle process into a primary body.
+  return 3 + 10 * Math.pow(clamp01(resourceScore), 1.15);
+}
+
+export function containerIoIntensity(rates: Array<number | null>): number {
+  const total = rates.reduce<number>((sum, rate) => sum + Math.max(0, rate ?? 0), 0);
+  if (total <= 0) return 0;
+  const floor = 64_000;
+  const ceiling = 200_000_000;
+  return clamp01(
+    (Math.log10(Math.max(floor, total)) - Math.log10(floor)) /
+      (Math.log10(ceiling) - Math.log10(floor)),
+  );
 }
 
 function serviceStatus(
@@ -259,7 +314,7 @@ export function buildSceneModel(
       : null;
 
   const core: CoreModel = {
-    hostname: "p910",
+    hostname: snapshot.hostLabel?.trim() || "host",
     status: t.cpu.status,
     perCore,
     totalFraction: t.cpu.value?.totalFraction ?? null,
@@ -308,10 +363,33 @@ export function buildSceneModel(
 
   const docker: DockerModel = {
     status: t.docker.status,
-    dots: (t.docker.value?.containers ?? []).slice(0, 64).map((c) => ({
-      name: c.name,
-      bad: c.health === "unhealthy" || c.state !== "running",
-    })),
+    containers: (t.docker.value?.containers ?? []).map((c) => {
+      const resourceScore = containerResourceScore(c.cpuFraction, c.memoryBytes);
+      return {
+        ...c,
+        memoryScore: containerMemoryScore(c.memoryBytes),
+        freshness:
+          t.docker.status === "available"
+            ? "live" as const
+            : t.docker.status === "stale"
+              ? "stale" as const
+              : "unavailable" as const,
+        serviceAssociation:
+          snapshot.jellyfinContainer === c.name ? "jellyfin" as const : null,
+        resourceScore,
+        radius: containerRadius(resourceScore),
+        ioIntensity: containerIoIntensity([
+          c.netRxBps,
+          c.netTxBps,
+          c.blockReadBps,
+          c.blockWriteBps,
+        ]),
+        unverified: c.state === "unknown",
+        bad:
+          c.health === "unhealthy" ||
+          (c.state !== "running" && c.state !== "unknown"),
+      };
+    }),
     running: t.docker.value?.running ?? null,
     total: t.docker.value?.total ?? null,
     unhealthy: t.docker.value?.unhealthy ?? null,
@@ -340,6 +418,7 @@ export function buildSceneModel(
       status: t.network.status,
       rxBps: t.network.value?.rxBps ?? null,
       txBps: t.network.value?.txBps ?? null,
+      linkBytesPerSecond: snapshot.networkLinkBytesPerSecond ?? null,
     },
     docker,
     flows: deriveFlows(snapshot, now),

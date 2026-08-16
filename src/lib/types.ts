@@ -64,6 +64,39 @@ export function isConnectorStale(
 
 export type PlaybackMethod = "direct-play" | "direct-stream" | "transcode";
 
+/** What a playback rate actually describes. */
+export type RateBasis =
+  | "container-egress"
+  | "container-block-read"
+  | "jellyfin-session-output"
+  | "transcode-target"
+  | "source-media"
+  | "mixed-session-sources"
+  | "storage-attribution";
+
+/** How the numeric value was obtained. */
+export type RateEvidence = "measured" | "reported" | "derived" | "estimated";
+
+/** One truthful byte-rate observation. Unknown rates are represented by null. */
+export interface RateObservation {
+  bytesPerSecond: number;
+  basis: RateBasis;
+  evidence: RateEvidence;
+}
+
+/**
+ * Aggregate rate with explicit partial-knowledge semantics. The known value is
+ * a lower bound whenever coverage is partial; it is never padded with zeroes.
+ */
+export interface AggregateRateObservation {
+  knownBytesPerSecond: number | null;
+  unknownContributors: number;
+  coverage: "complete" | "partial" | "unknown";
+  basis: RateBasis | null;
+  evidence: RateEvidence | null;
+  freshness: "live" | "stale";
+}
+
 export interface JellyfinSession {
   id: string;
   user: string;
@@ -75,8 +108,8 @@ export interface JellyfinSession {
   progress: number;
   /** e.g. "1080p", "4K". */
   resolution: string | null;
-  /** Total stream bitrate in bits/sec, when known. */
-  bitrateBps: number | null;
+  /** Best truthful session-rate observation, in bytes/sec, when available. */
+  rate: RateObservation | null;
 }
 
 export interface JellyfinSnapshot {
@@ -319,7 +352,8 @@ export type ContainerState =
   | "restarting"
   | "exited"
   | "dead"
-  | "created";
+  | "created"
+  | "unknown";
 
 export interface DockerContainerTelemetry {
   name: string;
@@ -459,12 +493,9 @@ export interface ThroughputSamplePoint {
   bps: number;
 }
 
-/**
- * History windows powering the charts. Kept in the aggregate contract so the
- * client fetches everything in one request (no N+1).
- */
+/** Historical windows retained in the aggregate contract for trends and diagnostics. */
 export interface DashboardHistory {
-  /** Recent aggregate throughput (media chart). */
+  /** Recent aggregate throughput observations. */
   throughput: ThroughputSamplePoint[];
   /** Pool names present as series in `storage`. */
   storageSeries: string[];
@@ -477,6 +508,8 @@ export interface DashboardSnapshot {
   mode: DataMode;
   /** Epoch ms this snapshot was generated. */
   generatedAt: number;
+  /** Operator-approved display label for the host; never inferred from network metadata. */
+  hostLabel?: string;
   health: ConnectorHealth[];
   jellyfin: JellyfinSnapshot;
   acquisition: AcquisitionSnapshot;
@@ -510,4 +543,8 @@ export interface DashboardSnapshot {
    * from whichever pool happens to be busiest.
    */
   downloadPool?: string | null;
+  /** Exact operator-declared Docker container name for Jellyfin telemetry. */
+  jellyfinContainer?: string | null;
+  /** Configured network link capacity in bytes/sec; null means unknown. */
+  networkLinkBytesPerSecond?: number | null;
 }

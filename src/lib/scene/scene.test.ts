@@ -1,9 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { buildSceneModel, capacityTone } from "@/lib/scene/model";
-import { computeLayout, WORLD_H, type SceneLayout } from "@/lib/scene/layout";
+import {
+  buildSceneModel,
+  capacityTone,
+  containerRadius,
+  containerResourceScore,
+} from "@/lib/scene/model";
+import {
+  computeLayout,
+  MAX_RENDERED_CONTAINERS,
+  WORLD_H,
+  type SceneLayout,
+} from "@/lib/scene/layout";
 import { buildLabels, describeFlow, labelsOverlap } from "@/lib/scene/labels";
 import {
   flowOverlayIsLive,
+  containerMotionOffset,
   tunnelBodyIsBidirectional,
   tunnelEndpointTokens,
 } from "@/lib/scene/render";
@@ -14,7 +25,7 @@ import {
   routeFlows,
   sweepThrough,
 } from "@/lib/scene/routing";
-import { SceneMotion } from "@/lib/scene/motion";
+import { networkIntensity, SceneMotion } from "@/lib/scene/motion";
 import { dist } from "@/lib/scene/geom";
 import { buildBackground } from "@/lib/scene/background";
 import { appConfig } from "@/lib/config";
@@ -24,6 +35,7 @@ import { FAKE_CORE_COUNT } from "@/lib/fake/telemetry";
 import { testPool } from "@/lib/test/factories";
 import type { BodyGeom } from "@/lib/scene/layout";
 import type { SceneModel } from "@/lib/scene/model";
+import { placeTooltip } from "@/components/topology/scene";
 
 const NOW = 1_754_000_000_000;
 
@@ -111,6 +123,51 @@ describe("scene model semantics", () => {
     expect(network.secondary).toContain("stale");
     expect(network.secondaryTone).toBe("warn");
   });
+
+  it("bounds nonlinear container resource size and keeps unknown metrics quiet", () => {
+    expect(containerResourceScore(null, null)).toBe(0);
+    expect(containerRadius(containerResourceScore(null, null))).toBe(3);
+    expect(containerRadius(-10)).toBe(3);
+    expect(containerRadius(10)).toBe(13);
+    expect(containerResourceScore(8, 64 * 1024 ** 3)).toBeLessThanOrEqual(1);
+  });
+
+  it("retains container metrics and gates motion for stale and reduced-motion state", () => {
+    const live = model("active").docker.containers.find((container) => container.name === "jellyfin")!;
+    expect(live.netTxBps).not.toBeNull();
+    expect(live.blockReadBps).not.toBeNull();
+    expect(live.serviceAssociation).toBe("jellyfin");
+    expect(containerMotionOffset(live, 0, true).x).not.toBe(0);
+    expect(containerMotionOffset(live, 0, false)).toEqual({ x: 0, y: 0 });
+
+    const snapshot = makeFakeSnapshot("active", NOW);
+    snapshot.telemetry.docker.status = "stale";
+    const stale = buildSceneModel(snapshot, { seerrConfigured: true, now: NOW })
+      .docker.containers.find((container) => container.name === "jellyfin")!;
+    expect(stale.freshness).toBe("stale");
+    expect(containerMotionOffset(stale, 0, true)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("uses an explicit safe host label and a generic fallback", () => {
+    const snapshot = makeFakeSnapshot("idle", NOW);
+    snapshot.hostLabel = "Lab compute";
+    expect(buildSceneModel(snapshot, { seerrConfigured: true, now: NOW }).core.hostname)
+      .toBe("Lab compute");
+    delete snapshot.hostLabel;
+    expect(buildSceneModel(snapshot, { seerrConfigured: true, now: NOW }).core.hostname)
+      .toBe("host");
+  });
+
+  it("scales network energy against 1 GbE, 10 GbE, and a conservative unknown link", () => {
+    const oneGbE = 125_000_000;
+    const tenGbE = 1_250_000_000;
+    expect(networkIntensity(oneGbE, oneGbE)).toBe(1);
+    expect(networkIntensity(oneGbE, tenGbE)).toBeCloseTo(Math.sqrt(0.1), 6);
+    expect(networkIntensity(oneGbE, null)).toBeCloseTo(Math.sqrt(0.1), 6);
+    expect(networkIntensity(40_000, tenGbE)).toBeLessThan(0.01);
+    expect(networkIntensity(tenGbE * 4, tenGbE)).toBe(1);
+    expect(networkIntensity(null, oneGbE)).toBe(0);
+  });
 });
 
 describe("layout determinism and bounds", () => {
@@ -119,6 +176,63 @@ describe("layout determinism and bounds", () => {
     const a = computeLayout(m, 1920 / 992);
     const b = computeLayout(m, 1920 / 992);
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it("keeps container positions stable across telemetry ordering changes", () => {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const forward = buildSceneModel(snapshot, { seerrConfigured: true, now: NOW });
+    const reversed = buildSceneModel({
+      ...snapshot,
+      telemetry: {
+        ...snapshot.telemetry,
+        docker: {
+          ...snapshot.telemetry.docker,
+          value: snapshot.telemetry.docker.value
+            ? {
+                ...snapshot.telemetry.docker.value,
+                containers: [...snapshot.telemetry.docker.value.containers].reverse(),
+              }
+            : null,
+        },
+      },
+    }, { seerrConfigured: true, now: NOW });
+    const a = computeLayout(forward, 16 / 9);
+    const b = computeLayout(reversed, 16 / 9);
+    expect([...a.containerField.entries()]).toEqual([...b.containerField.entries()]);
+  });
+
+  it("uses a truthful overflow body instead of silently truncating large populations", () => {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const docker = snapshot.telemetry.docker.value!;
+    const base = docker.containers[0]!;
+    docker.containers = Array.from({ length: MAX_RENDERED_CONTAINERS + 9 }, (_, index) => ({
+      ...base,
+      name: `container-${String(index).padStart(3, "0")}`,
+    }));
+    docker.total = docker.containers.length;
+    docker.running = docker.containers.length;
+    const large = buildSceneModel(snapshot, { seerrConfigured: true, now: NOW });
+    const layout = computeLayout(large, 16 / 9);
+    expect(large.docker.containers).toHaveLength(MAX_RENDERED_CONTAINERS + 9);
+    expect(layout.containerField.size).toBe(MAX_RENDERED_CONTAINERS);
+    expect(layout.containerOverflowCount).toBe(9);
+    expect(layout.containerOverflow).not.toBeNull();
+  });
+
+  it("keeps the representative container field clear of primary bodies", () => {
+    const layout = computeLayout(model("active"), 16 / 9);
+    const primary = [
+      ...layout.services.values(),
+      ...layout.storage.values(),
+      ...(layout.genericStorage ? [layout.genericStorage] : []),
+    ];
+    for (const container of layout.containerField.values()) {
+      for (const body of primary) {
+        expect(dist(container.center, body.center)).toBeGreaterThanOrEqual(
+          body.atmosphereR + container.r + 12,
+        );
+      }
+    }
   });
 
   it.each(VIEWPORTS)("keeps every body + label inside safe bounds at %ox", (vp) => {
@@ -300,14 +414,16 @@ describe("gateway + dormant topology", () => {
 });
 
 describe("flow inspection text", () => {
-  it("describes a measured flow with evidence, rates, and freshness", () => {
+  it("keeps measured flow copy concise while accessibility retains evidence", () => {
     const flows = deriveFlows(makeFakeSnapshot("seeding", NOW), NOW);
     const wan = flows.find((f) => f.kind === "wan-transfer")!;
     const d = describeFlow(wan, NOW);
-    expect(d.summary).toContain("measured");
-    expect(d.summary).toMatch(/in \d/);
-    expect(d.summary).toMatch(/out \d/);
-    expect(d.summary).toContain("updated");
+    expect(d.title).toBe("network → qBittorrent");
+    expect(d.value).toMatch(/in \d/);
+    expect(d.value).toMatch(/out \d/);
+    expect(`${d.title}\n${d.value}`).not.toMatch(/measured|updated|derived/);
+    expect(d.accessible).toContain("measured");
+    expect(d.accessible).toContain("source updated");
     expect(d.detail).toContain("qBittorrent");
   });
 
@@ -315,15 +431,46 @@ describe("flow inspection text", () => {
     const snap = makeFakeSnapshot("direct-play", NOW);
     const noBitrate = {
       ...snap,
+      jellyfinContainer: null,
       jellyfin: {
         ...snap.jellyfin,
-        sessions: snap.jellyfin.sessions.map((s) => ({ ...s, bitrateBps: null })),
+        sessions: snap.jellyfin.sessions.map((s) => ({ ...s, rate: null })),
       },
     };
     const playback = deriveFlows(noBitrate, NOW).find((f) => f.kind === "playback")!;
     const d = describeFlow(playback, NOW);
-    expect(d.summary).toContain("state confirmed");
-    expect(d.summary).toContain("byte rate unavailable");
+    expect(d.title).toBe("DataStore → Jellyfin");
+    expect(d.value).toBe("rate unknown");
+    expect(d.accessible).toContain("state evidence only");
+  });
+
+  it("shows a concise lower bound for partial session coverage", () => {
+    const snap = makeFakeSnapshot("multi-session", NOW);
+    const partial = {
+      ...snap,
+      jellyfinContainer: null,
+      jellyfin: {
+        ...snap.jellyfin,
+        sessions: snap.jellyfin.sessions.map((session, index) =>
+          index === 0 ? { ...session, rate: null } : session,
+        ),
+      },
+    };
+    const egress = deriveFlows(partial, NOW).find((flow) => flow.kind === "egress")!;
+    const description = describeFlow(egress, NOW);
+    expect(description.title).toBe("Jellyfin → network");
+    expect(description.value).toBe("1.2 MB/s + 1 unknown");
+    expect(description.accessible).toContain("partial coverage");
+  });
+
+  it("uses endpoint copy for control signals", () => {
+    const control = deriveFlows(makeFakeSnapshot("downloads", NOW), NOW).find(
+      (flow) => flow.kind === "control" && flow.from.kind === "service" && flow.from.id === "radarr",
+    )!;
+    expect(describeFlow(control, NOW)).toMatchObject({
+      title: "Radarr → qBittorrent",
+      value: "orchestrating",
+    });
   });
 
   it("a stale flow says so", () => {
@@ -335,7 +482,19 @@ describe("flow inspection text", () => {
       ),
     };
     const wan = deriveFlows(stale, NOW).find((f) => f.kind === "wan-transfer")!;
-    expect(describeFlow(wan, NOW).summary).toContain("stale");
+    expect(describeFlow(wan, NOW).value).toMatch(/^stale /);
+  });
+});
+
+describe("viewport-aware flow tooltip placement", () => {
+  const viewport = { w: 320, h: 180 };
+  const tooltip = { w: 120, h: 54 };
+
+  it("flips and clamps on every viewport edge", () => {
+    expect(placeTooltip({ x: 2, y: 2 }, tooltip, viewport)).toEqual({ left: 16, top: 16 });
+    expect(placeTooltip({ x: 318, y: 2 }, tooltip, viewport)).toEqual({ left: 184, top: 16 });
+    expect(placeTooltip({ x: 2, y: 178 }, tooltip, viewport)).toEqual({ left: 16, top: 110 });
+    expect(placeTooltip({ x: 318, y: 178 }, tooltip, viewport)).toEqual({ left: 184, top: 110 });
   });
 });
 

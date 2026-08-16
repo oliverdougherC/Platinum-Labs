@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
+import { DrawerShell } from "@/components/ui/overlay-shell";
 import type { TopologySelection } from "@/components/topology/scene";
 import { SERVICE_LABELS } from "@/lib/scene/model";
 import { appConfig } from "@/lib/config";
@@ -61,7 +62,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function ActivityList({ events, now }: { events: ActivityEvent[]; now: number }) {
   if (events.length === 0) {
-    return <p className="text-[12px] text-faint">No recent events.</p>;
+    return <p className="text-[12px] text-faint">No recent activity.</p>;
   }
   return (
     <ul className="space-y-1.5">
@@ -475,7 +476,7 @@ function ServiceDetail({
                   <p className="tnum mt-0.5 text-[10.5px] text-faint">
                     {formatPercent(s.progress)} · {s.method}
                     {s.resolution ? ` · ${s.resolution}` : ""}
-                    {s.bitrateBps ? ` · ${formatRate(s.bitrateBps / 8)}` : ""}
+                    {s.rate ? ` · ${formatRate(s.rate.bytesPerSecond)}` : ""}
                   </p>
                 </li>
               ))}
@@ -496,7 +497,7 @@ function ServiceDetail({
         </Section>
       )}
       <Section title="Recent activity">
-        <ActivityList events={events.length > 0 ? events : snapshot.activity} now={now} />
+        <ActivityList events={events} now={now} />
       </Section>
     </>
   );
@@ -539,7 +540,12 @@ function DockerDetail({ snapshot }: { snapshot: DashboardSnapshot }) {
             <li key={c.name} className="flex items-baseline justify-between gap-3">
               <span
                 className={`min-w-0 flex-1 truncate text-[12px] ${
-                  c.health === "unhealthy" || c.state !== "running" ? "text-danger" : "text-muted"
+                  c.health === "unhealthy" ||
+                  (c.state !== "running" && c.state !== "unknown")
+                    ? "text-danger"
+                    : c.state === "unknown"
+                      ? "text-faint"
+                      : "text-muted"
                 }`}
               >
                 {c.name}
@@ -559,6 +565,60 @@ function DockerDetail({ snapshot }: { snapshot: DashboardSnapshot }) {
   );
 }
 
+function ContainerDetail({ name, snapshot }: { name: string; snapshot: DashboardSnapshot }) {
+  const docker = snapshot.telemetry.docker;
+  const container = docker.value?.containers.find((candidate) => candidate.name === name);
+  if (!container) {
+    return (
+      <Section title="Container">
+        <p className="text-[12px] text-faint">Container is not present in the latest telemetry.</p>
+      </Section>
+    );
+  }
+  return (
+    <>
+      <Section title="Runtime">
+        <dl>
+          <Row
+            label="State"
+            value={container.state}
+            tone={
+              container.state !== "running" && container.state !== "unknown"
+                ? "danger"
+                : undefined
+            }
+          />
+          <Row
+            label="Health"
+            value={container.health ?? "no healthcheck"}
+            tone={container.health === "unhealthy" ? "danger" : undefined}
+          />
+          <Row label="Restarts" value={container.restartCount === null ? "—" : String(container.restartCount)} />
+          <Row label="Freshness" value={docker.status === "available" ? "live" : docker.status} />
+        </dl>
+      </Section>
+      <Section title="Resources">
+        <dl>
+          <Row label="CPU" value={container.cpuFraction === null ? "—" : `${container.cpuFraction.toFixed(2)} cores`} />
+          <Row label="Memory" value={container.memoryBytes === null ? "—" : formatBytes(container.memoryBytes, { system: "binary" })} />
+        </dl>
+      </Section>
+      <Section title="Network I/O">
+        <dl>
+          <Row label="Receive" value={container.netRxBps === null ? "—" : formatRate(container.netRxBps)} />
+          <Row label="Transmit" value={container.netTxBps === null ? "—" : formatRate(container.netTxBps)} />
+        </dl>
+      </Section>
+      <Section title="Block I/O">
+        <dl>
+          <Row label="Read" value={container.blockReadBps === null ? "—" : formatRate(container.blockReadBps)} />
+          <Row label="Write" value={container.blockWriteBps === null ? "—" : formatRate(container.blockWriteBps)} />
+        </dl>
+      </Section>
+    </>
+  );
+}
+
 // --- drawer shell ------------------------------------------------------------
 
 export function DetailDrawer({
@@ -570,27 +630,22 @@ export function DetailDrawer({
   snapshot: DashboardSnapshot;
   onClose: () => void;
 }) {
-  useEffect(() => {
-    if (!selection) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selection, onClose]);
-
   const now = Date.now();
   const title = useMemo(() => {
     if (!selection) return "";
     switch (selection.kind) {
       case "host":
-        return "Host · p910";
+        return snapshot.hostLabel?.trim() || "host";
       case "pool":
         return `Pool · ${selection.name}`;
       case "service":
         return SERVICE_LABELS[selection.id] ?? selection.id;
+      case "container":
+        return `Container · ${selection.name}`;
       case "docker":
         return "Docker";
     }
-  }, [selection]);
+  }, [selection, snapshot.hostLabel]);
 
   const pool =
     selection?.kind === "pool"
@@ -598,32 +653,23 @@ export function DetailDrawer({
       : null;
 
   return (
-    <aside
-      aria-label={title || "Detail"}
-      aria-hidden={!selection}
-      className={`fixed right-0 top-0 z-30 flex h-full w-[400px] flex-col border-l border-hairline bg-surface/95 backdrop-blur-sm transition-transform duration-200 ${
-        selection ? "translate-x-0" : "translate-x-full"
-      }`}
+    <DrawerShell
+      open={selection !== null}
+      onClose={onClose}
+      title={title || "Detail"}
+      closeLabel="Close detail"
     >
-      <header className="flex items-center justify-between border-b border-hairline px-5 py-4">
-        <h2 className="text-[11px] uppercase tracking-[0.18em] text-faint">{title}</h2>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close detail"
-          className="text-[13px] text-faint transition-colors hover:text-muted"
-        >
-          ✕
-        </button>
-      </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6">
         {selection?.kind === "host" && <HostDetail snapshot={snapshot} now={now} />}
         {pool && <PoolDetail pool={pool} snapshot={snapshot} now={now} />}
         {selection?.kind === "service" && (
           <ServiceDetail id={selection.id} snapshot={snapshot} now={now} />
         )}
+        {selection?.kind === "container" && (
+          <ContainerDetail name={selection.name} snapshot={snapshot} />
+        )}
         {selection?.kind === "docker" && <DockerDetail snapshot={snapshot} />}
       </div>
-    </aside>
+    </DrawerShell>
   );
 }

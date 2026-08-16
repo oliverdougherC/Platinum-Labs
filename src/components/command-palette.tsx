@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { runCommand, suggestions, type CommandResult } from "@/lib/commands";
+import { OverlayShell } from "@/components/ui/overlay-shell";
+import { OBSERVATORY_CONTROL_CLASS, SearchIcon } from "@/components/ui/icons";
 import { cn } from "@/lib/utils";
 import type { QuickLink } from "@/lib/quicklinks";
 import type { DashboardSnapshot } from "@/lib/types";
@@ -20,12 +22,15 @@ export function CommandPalette({
   links,
   now,
   onMediaSearch,
+  onOpen,
 }: {
   snapshot: DashboardSnapshot;
   links: QuickLink[];
   now: number;
   /** Present when the Seerr media search surface is available (PLA-259). */
   onMediaSearch?: (query: string) => void;
+  /** Lets the app close mutually-exclusive drawers before this modal opens. */
+  onOpen?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -54,6 +59,11 @@ export function CommandPalette({
     setSelected(0);
   }, []);
 
+  const openPalette = useCallback(() => {
+    onOpen?.();
+    setOpen(true);
+  }, [onOpen]);
+
   const execute = useCallback(
     (input: string) => {
       const r = runCommand(input, ctx);
@@ -79,16 +89,13 @@ export function CommandPalette({
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setOpen((o) => !o);
+        if (open) close();
+        else openPalette();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  useEffect(() => {
-    if (open) inputRef.current?.focus();
-  }, [open]);
+  }, [close, open, openPalette]);
 
   // Keep the selection in range as the filtered list changes.
   useEffect(() => {
@@ -99,11 +106,16 @@ export function CommandPalette({
     return (
       <button
         type="button"
-        onClick={() => setOpen(true)}
-        className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-meta text-faint ring-1 ring-hairline transition-colors hover:text-muted"
+        onClick={openPalette}
+        className={OBSERVATORY_CONTROL_CLASS}
         aria-keyshortcuts="Meta+K Control+K"
+        aria-label="Search and commands"
+        aria-haspopup="dialog"
+        aria-expanded="false"
+        title="Search and commands"
       >
-        <span>Search &amp; commands</span>
+        <SearchIcon />
+        <span className="hidden 2xl:inline">Commands</span>
         <kbd className="tnum rounded bg-surface px-1.5 py-0.5 text-eyebrow text-muted">⌘K</kbd>
       </button>
     );
@@ -115,7 +127,7 @@ export function CommandPalette({
       close();
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelected((s) => Math.min(s + 1, filtered.length - 1));
+      setSelected((s) => Math.min(s + 1, Math.max(0, filtered.length - 1)));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelected((s) => Math.max(s - 1, 0));
@@ -126,16 +138,15 @@ export function CommandPalette({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-[15vh] backdrop-blur-sm"
-      onClick={close}
+    <OverlayShell
+      open={open}
+      onClose={close}
+      label="Command palette"
+      initialFocusRef={inputRef}
+      panelClassName="mt-[3dvh]"
     >
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Command palette"
-        className="w-full max-w-xl overflow-hidden rounded-xl bg-surface ring-1 ring-hairline"
-        onClick={(e) => e.stopPropagation()}
+        className="overflow-hidden"
         onKeyDown={onKeyDown}
       >
         <input
@@ -176,7 +187,7 @@ export function CommandPalette({
           </ul>
         )}
       </div>
-    </div>
+    </OverlayShell>
   );
 }
 

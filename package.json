@@ -24,6 +24,7 @@
     "compose:prod:config": "HOMEPAGE_ENV_FILE=.env.example MEDIA_NETWORK_NAME=media_default JELLYFIN_NETWORK_NAME=jellyfin_default HOMEPAGE_BIND_ADDRESS=127.0.0.1 HOMEPAGE_PORT=3000 HOMEPAGE_VOLUME_NAME=homelab-homepage-data ZFS_COLLECTOR_TOKEN=placeholder docker compose -f docker-compose.yml -f docker-compose.production.yml --profile zfs-sidecar config",
     "screenshots": "node scripts/screenshots.mjs",
     "screenshots:motion": "node scripts/screenshots.mjs --motion",
+    "screenshots:performance": "node scripts/screenshots.mjs --performance",
     "dev:fake": "HOMELAB_DATA_MODE=fake HOMELAB_ENABLE_DEV_CONTROLS=1 next dev -p 3911"
   },
   "dependencies": {
@@ -31,7 +32,6 @@
     "next": "^15.1.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "recharts": "^2.15.0",
     "server-only": "^0.0.1",
     "zod": "^3.24.1"
   },
