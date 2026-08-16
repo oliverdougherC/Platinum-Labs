@@ -59,7 +59,11 @@ const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 
 /** Compact relative time, e.g. "just now", "18m ago", "3h ago", "5d ago". */
-export function formatRelativeTime(at: number, now: number = Date.now()): string {
+// `now` is deliberately NOT defaulted to Date.now(): relative-time copy must
+// derive from the app's authoritative clock (frozen snapshot time under the
+// review harness), and a silent wall-clock default is how nondeterminism
+// leaks back in (V2.1 review blocker).
+export function formatRelativeTime(at: number, now: number): string {
   const delta = Math.max(0, now - at);
   if (delta < 45 * SECOND) return "just now";
   if (delta < HOUR_MS) return `${Math.round(delta / MINUTE_MS)}m ago`;

@@ -35,6 +35,15 @@ describe("runCommand — queries operate on normalized state", () => {
     expect(r.kind).toBe("answer");
     if (r.kind === "answer") expect(r.lines.join(" ")).toMatch(/oliver/i);
   });
+  it("who is watching marks a paused session as paused", () => {
+    const r = runCommand("who is watching", ctx("paused"));
+    expect(r.kind).toBe("answer");
+    if (r.kind === "answer") expect(r.lines.join(" ")).toMatch(/· paused/);
+  });
+  it("who is watching does not mark active playback as paused", () => {
+    const r = runCommand("who is watching", ctx("direct-play"));
+    if (r.kind === "answer") expect(r.lines.join(" ")).not.toMatch(/paused/i);
+  });
   it("who is watching (idle)", () => {
     const r = runCommand("who is watching", ctx("idle"));
     if (r.kind === "answer") expect(r.lines[0]).toMatch(/nobody/i);

@@ -16,14 +16,6 @@ import {
   type DashboardSnapshot,
 } from "@/lib/types";
 
-/** Connectors that make up the media system surface. */
-export const MEDIA_CONNECTORS: ConnectorId[] = [
-  "jellyfin",
-  "sonarr",
-  "radarr",
-  "qbittorrent",
-];
-
 /** Connectors that feed the acquisition queue. */
 export const ACQUISITION_CONNECTORS: ConnectorId[] = [
   "sonarr",
@@ -69,21 +61,6 @@ export function hasAttentionFrom(
 ): boolean {
   const set = new Set(sources);
   return snapshot.attention.some((a) => set.has(a.source));
-}
-
-/** Visual state for the media module. */
-export function mediaVisualState(snapshot: DashboardSnapshot): VisualState {
-  if (hasAttentionFrom(snapshot, MEDIA_CONNECTORS)) return "attention";
-
-  const jf = healthById(snapshot.health, "jellyfin");
-  if (jf && jf.configured && jf.status === "unavailable") return "attention";
-
-  const { rollup } = snapshot.acquisition;
-  const busy =
-    snapshot.jellyfin.sessions.length > 0 ||
-    rollup.downloading > 0 ||
-    rollup.importing > 0;
-  return busy ? "active" : "ambient";
 }
 
 /** Visual state for the storage module. */

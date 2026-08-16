@@ -6,6 +6,8 @@ import {
   type HttpGet,
 } from "@/lib/connectors/jellyfin";
 import { ConnectorValidationError } from "@/lib/connectors/connector";
+import pausedMissingRateFixture from "@/lib/connectors/__fixtures__/jellyfin-transcode-paused-missing-rate.json";
+import playingTranscodeFixture from "@/lib/connectors/__fixtures__/jellyfin-transcode-playing.json";
 
 const NOW = 1_754_000_000_000;
 
@@ -64,8 +66,140 @@ describe("normalizeJellyfin", () => {
     expect(s.title).toBe("The Bear");
     expect(s.subtitle).toBe("S03E01 — Tomorrow");
     expect(s.method).toBe("transcode");
-    expect(s.bitrateBps).toBe(12_000_000);
+    expect(s.rate).toEqual({
+      bytesPerSecond: 1_500_000,
+      basis: "jellyfin-session-output",
+      evidence: "reported",
+    });
     expect(s.resolution).toBe("1080p");
+  });
+
+  it("keeps the sanitized real missing-rate transcode unknown AND paused", () => {
+    // The real captured case is a PAUSED transcode (PlayState.IsPaused: true).
+    // It must normalize as paused — not as an active playback session.
+    const snap = normalizeJellyfin(
+      { system: SYSTEM, sessions: pausedMissingRateFixture },
+      NOW,
+    );
+    expect(snap.sessions).toHaveLength(1);
+    expect(snap.sessions[0]).toMatchObject({
+      method: "transcode",
+      rate: null,
+      paused: true,
+    });
+  });
+
+  it("normalizes the sanitized real GENUINELY PLAYING transcode (IsPaused: false)", () => {
+    // Captured 2026-08-16 from the production Jellyfin during a real, active
+    // HLS transcode (h264/aac, ContainerBitrateExceedsLimit). Note what this
+    // capture shows: a PLAYING transcode with a REPORTED output rate
+    // (TranscodingInfo.Bitrate). The original missing-output-rate case has
+    // only ever been captured PAUSED — the playing+missing-rate combination
+    // remains covered by unit fixtures, not by a production capture.
+    const snap = normalizeJellyfin(
+      { system: SYSTEM, sessions: playingTranscodeFixture },
+      NOW,
+    );
+    expect(snap.sessions).toHaveLength(1);
+    expect(snap.sessions[0]).toMatchObject({
+      method: "transcode",
+      paused: false,
+      rate: {
+        bytesPerSecond: 1_564_000 / 8,
+        basis: "jellyfin-session-output",
+        evidence: "reported",
+      },
+    });
+  });
+
+  it("normalizes pause state from PlayState.IsPaused only", () => {
+    const playingTranscode = {
+      ...EPISODE_TRANSCODE,
+      PlayState: { ...EPISODE_TRANSCODE.PlayState, IsPaused: false },
+    };
+    const pausedDirectPlay = {
+      ...MOVIE_SESSION,
+      Id: "paused-dp",
+      PlayState: { ...MOVIE_SESSION.PlayState, IsPaused: true },
+    };
+    const snap = normalizeJellyfin(
+      { system: SYSTEM, sessions: [playingTranscode, pausedDirectPlay, MOVIE_SESSION] },
+      NOW,
+    );
+    // Explicit IsPaused: false and an absent IsPaused both mean playing.
+    expect(snap.sessions[0]).toMatchObject({ method: "transcode", paused: false });
+    // A paused direct play keeps method and pause state separate.
+    expect(snap.sessions[1]).toMatchObject({ method: "direct-play", paused: true });
+    expect(snap.sessions[2]).toMatchObject({ paused: false });
+  });
+
+  it("never infers pause from a missing or zero rate", () => {
+    const missingRatePlaying = {
+      ...EPISODE_TRANSCODE,
+      Id: "no-rate",
+      TranscodingInfo: undefined,
+    };
+    const snap = normalizeJellyfin(
+      { system: SYSTEM, sessions: [missingRatePlaying] },
+      NOW,
+    );
+    expect(snap.sessions[0]!.paused).toBe(false);
+  });
+
+  it("classifies source-media bitrate as an estimate for a transcode", () => {
+    const raw = {
+      ...EPISODE_TRANSCODE,
+      TranscodingInfo: undefined,
+      MediaSource: { Bitrate: 24_000_000 },
+    };
+    const snap = normalizeJellyfin({ system: SYSTEM, sessions: [raw] }, NOW);
+    expect(snap.sessions[0]!.rate).toEqual({
+      bytesPerSecond: 3_000_000,
+      basis: "source-media",
+      evidence: "estimated",
+    });
+  });
+
+  it("normalizes direct stream and direct play without fabricating a rate", () => {
+    const directStream = {
+      ...MOVIE_SESSION,
+      Id: "stream",
+      PlayState: { ...MOVIE_SESSION.PlayState, PlayMethod: "DirectStream" },
+      NowPlayingItem: { ...MOVIE_SESSION.NowPlayingItem, Bitrate: 8_000_000 },
+    };
+    const snap = normalizeJellyfin(
+      { system: SYSTEM, sessions: [MOVIE_SESSION, directStream] },
+      NOW,
+    );
+    expect(snap.sessions[0]).toMatchObject({ method: "direct-play", rate: null });
+    // A direct stream REMUXES the media, so its output rate differs from the
+    // source-media bitrate — that bitrate is an estimate, never "reported"
+    // output (V2.1 rate-truth correction).
+    expect(snap.sessions[1]).toMatchObject({
+      method: "direct-stream",
+      rate: {
+        bytesPerSecond: 1_000_000,
+        basis: "source-media",
+        evidence: "estimated",
+      },
+    });
+  });
+
+  it("keeps direct-play source-media bitrate reported (bytes are sent as-is)", () => {
+    const directPlay = {
+      ...MOVIE_SESSION,
+      Id: "dp",
+      NowPlayingItem: { ...MOVIE_SESSION.NowPlayingItem, Bitrate: 8_000_000 },
+    };
+    const snap = normalizeJellyfin({ system: SYSTEM, sessions: [directPlay] }, NOW);
+    expect(snap.sessions[0]).toMatchObject({
+      method: "direct-play",
+      rate: {
+        bytesPerSecond: 1_000_000,
+        basis: "source-media",
+        evidence: "reported",
+      },
+    });
   });
 
   it("ignores sessions with nothing playing", () => {

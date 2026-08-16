@@ -128,7 +128,9 @@ function whoIsWatching(ctx: CommandContext): CommandResult {
     kind: "answer",
     title: "Who is watching",
     lines: jf.sessions.map(
-      (s) => `${s.user} — ${s.title}${s.subtitle ? ` (${s.subtitle})` : ""} · ${Math.round(s.progress * 100)}% · ${s.method}`,
+      // An open-but-paused session must never read as active watching (V2.1
+      // pause truth) — same ` · paused` convention as the flow detail drawer.
+      (s) => `${s.user} — ${s.title}${s.subtitle ? ` (${s.subtitle})` : ""} · ${Math.round(s.progress * 100)}% · ${s.method}${s.paused ? " · paused" : ""}`,
     ),
   };
 }

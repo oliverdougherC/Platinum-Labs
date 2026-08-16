@@ -1,12 +1,12 @@
 # Homelab Homepage
 
-An ambient, data-rich homelab operations homepage — useful at a glance, pleasant
-to leave on a secondary monitor all day, and quiet when nothing needs attention.
+A living topology for homelab operations: quiet at rest, explicit about missing
+evidence, and useful at a glance on a secondary monitor.
 
-It models the homelab as a few meaningful systems and elevates information only
-when it becomes relevant: a media/acquisition pipeline (Jellyfin + Sonarr +
-Radarr + qBittorrent), ZFS storage with capacity projection, a terse "does
-anything need me?" attention line, and a normalized recent-activity feed.
+The scene models the host, network gateway, Docker containers, media/acquisition
+pipeline (Jellyfin + Sonarr + Radarr + qBittorrent), and ZFS pools. Activity
+flows appear only when telemetry supports them, while the metric rail and
+drawers preserve exact values, provenance, freshness, and uncertainty.
 
 This repository tracks the Linear project **Homelab Homepage** (team `PLA`);
 Linear is the source of truth for scope and acceptance criteria.
@@ -17,7 +17,6 @@ Linear is the source of truth for scope and acceptance criteria.
 - **TypeScript** (strict, `noUncheckedIndexedAccess`)
 - **Tailwind CSS** with CSS-variable design tokens (no remote fonts)
 - **Zod** for runtime validation of config + all external connector responses
-- **Recharts** for data visualization
 - **better-sqlite3** for bounded local history/event persistence
 - **Vitest** + Testing Library (jsdom)
 
@@ -47,9 +46,19 @@ Set `HOMELAB_FAKE_SCENARIO` (or use the dev switcher / `?scenario=` in dev):
 
 `idle`, `direct-play`, `transcode`, `multi-session`, `downloads`, `stalled`,
 `connector-unavailable`, `stale`, `zfs-warning`, `zfs-degraded`, `unconfigured`,
-`active`, `attention`.
+`active`, `attention`, `container-field-real` (a sanitized 44-container
+real-scale population), `container-field-stress` (above the 96-body render
+budget, proving truthful overflow).
 
-A deterministic gallery of states lives at `/gallery`.
+The screenshot harness drives the same scenarios with a frozen clock and stable
+query parameters (`?scenario=…&freeze=…`, plus optional `panel=` / `drawer=`),
+so review evidence is reproducible from a clean checkout.
+
+**Committed review evidence is captured from a production build** (`--prod`:
+`next build` + `next start`, dev controls enabled at runtime) with a headful
+browser — dev-mode numbers include compile/HMR overhead and headless Chromium
+has no real GPU path, so neither may back performance claims. Every artifact
+records its build mode; the default dev-mode harness remains for iteration.
 
 ## Configuration
 
@@ -62,7 +71,10 @@ full annotated list. Highlights:
 | `HOMELAB_DATA_MODE` | `fake` or `live` |
 | `HOMELAB_DB_PATH` | SQLite file (default `./data/homelab.db`) |
 | `HOMELAB_QUICK_LINKS` | **Browser-facing** launcher links as JSON (see below) |
+| `HOMELAB_HOST_LABEL` | Deliberate, non-secret topology label for the host |
+| `HOMELAB_NETWORK_LINK_MBPS` | Physical link capacity used to scale gateway intensity |
 | `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Jellyfin connector |
+| `HOMELAB_JELLYFIN_CONTAINER` | Exact Docker container name for measured Jellyfin egress/block-I/O fallback |
 | `SONARR_URL` / `SONARR_API_KEY` | Sonarr connector |
 | `RADARR_URL` / `RADARR_API_KEY` | Radarr connector |
 | `QBITTORRENT_URL` / `_USERNAME` / `_PASSWORD` | qBittorrent connector |
@@ -129,8 +141,8 @@ compatible with the Seerr v3 `/api/v1` contract.
 
 ## Persistence, attention & activity
 
-- **History** (`better-sqlite3`): throughput samples (≈45 min media chart),
-  per-pool storage samples (30/90/365-day trend + capacity projection), activity
+- **History** (`better-sqlite3`): recent throughput samples, per-pool storage
+  samples (30/90/365-day trend + capacity projection), activity
   events, health transitions, and alert lifecycle. Migrations run automatically
   on boot; a failed write is logged but never crashes rendering.
 - **Bounded growth**: an hourly maintenance pass downsamples old high-frequency
@@ -158,6 +170,15 @@ compatible with the Seerr v3 `/api/v1` contract.
 | `npm run lint` | `next lint` |
 | `npm run test` | Vitest suite once |
 | `npm run verify` | typecheck + lint + test + build (the full gate) |
+| `npm run audit:prod` | production dependency policy audit |
+| `npm run compose:prod:config` | validate the production Compose topology |
+| `npm run screenshots` | deterministic stills (dev server; iteration only) |
+| `npm run screenshots:prod` | deterministic stills from a production build (committed evidence) |
+| `npm run screenshots:motion` | deterministic motion/reduced-motion evidence |
+| `npm run screenshots:performance:prod` | production-build performance JSON (headful GPU) |
+| `npm run screenshots:determinism` | frozen-frame pixel identity under two system dates |
+| `npm run smoke:example-env` | boots a production build under `.env.example` and asserts health + homepage |
+| `npm run soak -- …` | deployed long-run RSS/DB-growth sampler |
 
 CI (`.github/workflows/ci.yml`) runs `verify`, a secret scan (gitleaks) +
 `npm audit`, and a Docker image build from a clean checkout.
@@ -212,7 +233,7 @@ The dashboard never runs browser-controlled shell. Pick one safe mode:
 
 ## Security & network model
 
-- **Trust boundary**: V1 assumes a **private / LAN / Tailscale** network. There is
+- **Trust boundary**: the dashboard assumes a **private / LAN / Tailscale** network. There is
   no built-in authentication subsystem by design.
 - **Reverse proxy**: if you expose the dashboard through Nginx Proxy Manager or
   similar, terminate **TLS** and add **authentication / access control** there,
@@ -230,7 +251,7 @@ The dashboard never runs browser-controlled shell. Pick one safe mode:
   sanitized diagnostic server-side; connector errors never echo URLs/headers/
   bodies. No credentials, tokens, peer data, or paths are logged.
 - **HTTP headers**: a tight CSP (self-only; `unsafe-inline` limited to
-  script/style for Next + Recharts), `X-Content-Type-Options`, `X-Frame-Options:
+  script/style required by Next), `X-Content-Type-Options`, `X-Frame-Options:
   DENY`, `Referrer-Policy: no-referrer`, and a minimal `Permissions-Policy`.
 - **No third-party analytics, telemetry, or remote fonts.**
 
@@ -239,11 +260,14 @@ The dashboard never runs browser-controlled shell. Pick one safe mode:
 ```
 src/
   app/
-    page.tsx                     # SSR wrapper → LiveDashboard (client, polls /api/dashboard)
+    page.tsx                     # SSR shell → the Living Topology client
     api/dashboard/route.ts       # the single normalized aggregate contract
+    api/stream/route.ts          # SSE updates; client falls back to bounded polling
     api/health/route.ts          # liveness probe
-    gallery/page.tsx             # deterministic scenario gallery
-  components/                    # design system, modules, charts, command palette
+    dev/flow-lab/page.tsx        # deterministic development-only flow fixture lab
+  components/
+    topology/                    # scene, overlays, metric rail, live-data transport
+    ui/                          # shared accessible controls and overlay shell
   lib/
     types.ts                     # normalized, connector-agnostic domain types
     env.server.ts                # typed server config (server-only)
@@ -261,7 +285,15 @@ One failed service never breaks the homepage: the hub isolates each connector
 (`Promise.allSettled`), the runtime keeps last-known-good across failures, and the
 aggregate always returns a partial-but-valid snapshot.
 
+The scene keeps two representations deliberately separate: the complete
+normalized container set remains available to search and detail drawers, while
+the canvas renders a deterministic bounded subset with an explicit `+N`
+overflow marker. Unknown Docker states remain unknown; stale samples render
+statically; network and flow intensity use measured counters, declared link
+capacity, and explicit attribution rather than decorative estimates.
+
 ## Roadmap
 
-See the Linear project for current status. V1 remaining items (e.g. deeper
-Servarr history correlation, the 24-hour soak validation) are tracked there.
+See the Linear project for current status. Production deployment and the final
+live-host smoke/soak gate are tracked separately from implementation; code in a
+review branch is never assumed to be running production code.

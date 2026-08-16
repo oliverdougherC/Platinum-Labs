@@ -1,7 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CommandPalette } from "@/components/command-palette";
+import {
+  ConnectionWarningIcon,
+  MediaRequestIcon,
+  OBSERVATORY_CONTROL_CLASS,
+} from "@/components/ui/icons";
 import { MediaSearch } from "@/components/media-search";
 import { DetailDrawer } from "@/components/topology/detail-drawer";
 import { MetricsRail } from "@/components/topology/metrics-rail";
@@ -11,11 +16,13 @@ import {
   useNotificationCenter,
 } from "@/components/topology/notification-center";
 import { TopologyScene, type TopologySelection } from "@/components/topology/scene";
-import { useLiveData } from "@/components/topology/use-live-data";
+import {
+  useLiveData,
+  type ShellTransportState,
+} from "@/components/topology/use-live-data";
 import { appConfig } from "@/lib/config";
-import { formatRelativeTime } from "@/lib/utils";
 import type { QuickLink } from "@/lib/quicklinks";
-import type { DashboardSnapshot } from "@/lib/types";
+import type { AttentionItem, DashboardSnapshot } from "@/lib/types";
 import type { ServiceId } from "@/lib/scene/model";
 
 /**
@@ -35,21 +42,31 @@ export interface InitialPanels {
   drawer?: string | null;
 }
 
-function Freshness({ generatedAt, stale, frozen }: { generatedAt: number; stale: boolean; frozen: boolean }) {
-  const [, force] = useState(0);
-  useEffect(() => {
-    if (frozen) return;
-    const id = setInterval(() => force((n) => n + 1), 5_000);
-    return () => clearInterval(id);
-  }, [frozen]);
-  return (
-    <span className="flex items-center gap-1.5 text-[11px] text-faint">
+function TransportStatus({ state }: { state: ShellTransportState }) {
+  if (state === "healthy") return null;
+  const tone = state === "offline" ? "text-danger" : "text-warn";
+  if (state === "reconnecting-with-fallback") {
+    return (
       <span
-        className={`h-1.5 w-1.5 rounded-full ${stale ? "bg-warn" : "bg-ok"}`}
-        style={{ opacity: 0.8 }}
-        aria-hidden
-      />
-      {stale ? "reconnecting…" : frozen ? "frozen" : `updated ${formatRelativeTime(generatedAt, Date.now())}`}
+        role="status"
+        aria-label="Live stream reconnecting; fallback active"
+        title="Live stream reconnecting · fallback active"
+        className={`${OBSERVATORY_CONTROL_CLASS} ${tone}`}
+      >
+        <ConnectionWarningIcon />
+        <span className="hidden xl:inline">Fallback</span>
+      </span>
+    );
+  }
+  return (
+    <span
+      role="status"
+      aria-label={state === "offline" ? "Dashboard offline" : "Dashboard data delayed"}
+      title={state === "offline" ? "Dashboard offline" : "Dashboard data delayed"}
+      className={`${OBSERVATORY_CONTROL_CLASS} ${tone}`}
+    >
+      <ConnectionWarningIcon />
+      <span>{state === "offline" ? "Offline" : "Delayed"}</span>
     </span>
   );
 }
@@ -62,6 +79,12 @@ function parseDrawer(value: string | null | undefined): TopologySelection | null
   if (value.startsWith("service:")) {
     return { kind: "service", id: value.slice(8) as ServiceId };
   }
+  if (value.startsWith("container:")) {
+    return { kind: "container", name: value.slice(10) };
+  }
+  if (value.startsWith("flow:")) {
+    return { kind: "flow", id: value.slice(5) };
+  }
   return null;
 }
 
@@ -72,6 +95,7 @@ export function TopologyApp({
   scenario,
   frozen,
   initialPanels,
+  transportOverride,
   devControls = false,
 }: {
   initial: DashboardSnapshot;
@@ -81,6 +105,8 @@ export function TopologyApp({
   /** Screenshot-harness mode: no transport, no clock-driven changes, animations paused. */
   frozen: boolean;
   initialPanels?: InitialPanels;
+  /** Deterministic dev-only shell state used by the regression harness. */
+  transportOverride?: ShellTransportState;
   /** Enables the same-page scenario hook for the motion harness (dev only). */
   devControls?: boolean;
 }) {
@@ -97,7 +123,7 @@ export function TopologyApp({
     };
   }, [devControls]);
 
-  const { snapshot, stale, generatedAt, referenceNow } = useLiveData(initial, {
+  const { snapshot, referenceNow, transport } = useLiveData(initial, {
     scenario: scenarioOverride ?? scenario,
     frozen,
   });
@@ -126,26 +152,76 @@ export function TopologyApp({
     return new URLSearchParams(window.location.search).get("debug") === "geometry";
   });
 
-  const notifications = useNotificationCenter(snapshot.attention, frozen);
+  const shellTransportState = transportOverride ?? transport.shellState;
+  const transportAttention = useMemo<AttentionItem[]>(() => {
+    if (
+      shellTransportState !== "data-delayed" &&
+      shellTransportState !== "offline"
+    ) {
+      return [];
+    }
+    const offline = shellTransportState === "offline";
+    const lastSeen = Math.max(
+      transport.lastSnapshotReceivedAt,
+      transport.lastTelemetryReceivedAt ?? 0,
+      transport.lastFallbackSuccessAt ?? 0,
+    );
+    return [{
+      ruleId: offline ? "shell.transport.offline" : "shell.transport.delayed",
+      alertId: offline ? "shell.transport.offline" : "shell.transport.delayed",
+      severity: offline ? "critical" : "warning",
+      title: offline ? "Dashboard offline" : "Dashboard data delayed",
+      detail: offline
+        ? "Neither the live stream nor snapshot fallback is responding."
+        : "The full snapshot or high-frequency telemetry stream is delayed.",
+      source: "host",
+      firstSeenAt: lastSeen + 20_000,
+      // referenceNow, never Date.now(): with a frozen snapshot plus a
+      // transport override, the harness must render identical pixels on any
+      // machine date (V2.1 determinism blocker).
+      lastSeenAt: referenceNow,
+    }];
+  }, [shellTransportState, transport, referenceNow]);
+  const notifications = useNotificationCenter(
+    [...snapshot.attention, ...transportAttention],
+    frozen,
+    referenceNow,
+  );
   const activeCount = notifications.groups.reduce((sum, g) => sum + g.items.length, 0);
 
-  const openMediaSearch = useCallback(
-    (seed = "") => setMediaSearch({ open: true, seed }),
-    [],
-  );
+  const closeMediaSearch = useCallback(() => {
+    setMediaSearch({ open: false, seed: "" });
+  }, []);
+
+  const closeTransientOverlays = useCallback(() => {
+    setNotifOpen(false);
+    closeMediaSearch();
+  }, [closeMediaSearch]);
+
+  const openMediaSearch = useCallback((seed = "") => {
+    closeTransientOverlays();
+    setSelection(null);
+    setMediaSearch({ open: true, seed });
+  }, [closeTransientOverlays]);
+
+  const prepareModalOpen = useCallback(() => {
+    closeTransientOverlays();
+    setSelection(null);
+  }, [closeTransientOverlays]);
 
   const onSelect = useCallback((sel: TopologySelection) => {
-    setNotifOpen(false);
+    closeTransientOverlays();
     setSelection((prev) =>
       prev &&
       JSON.stringify(prev) === JSON.stringify(sel)
         ? null
         : sel,
     );
-  }, []);
+  }, [closeTransientOverlays]);
 
   return (
     <div
+      data-app-shell
       data-motion={frozen || reducedMotion ? "off" : "on"}
       className="flex h-dvh w-full flex-col overflow-hidden bg-bg"
     >
@@ -166,32 +242,45 @@ export function TopologyApp({
             {snapshot.mode === "fake" ? "demo data" : "live"}
           </span>
         </div>
-        <div className="flex items-center gap-3">
-          <Freshness generatedAt={generatedAt} stale={stale} frozen={frozen} />
-          {seerr.search && (
-            <button
-              type="button"
-              onClick={() => openMediaSearch()}
-              className="rounded-full px-2.5 py-1 text-[11px] uppercase tracking-[0.12em] text-faint ring-1 ring-hairline transition-colors hover:text-muted"
-            >
-              ⌕ request media
-            </button>
-          )}
-          <CommandPalette
-            snapshot={snapshot}
-            links={quickLinks}
-            now={referenceNow}
-            onMediaSearch={seerr.search ? openMediaSearch : undefined}
-          />
-          <NotificationBell
-            count={activeCount}
-            critical={notifications.critical}
-            open={notifOpen}
-            onToggle={() => {
-              setSelection(null);
-              setNotifOpen((o) => !o);
-            }}
-          />
+        <div className="flex items-center gap-2">
+          <div
+            role="group"
+            aria-label="Observatory controls"
+            className="flex items-center gap-0.5 rounded-xl border border-hairline/50 bg-transparent p-0.5"
+          >
+            <TransportStatus state={shellTransportState} />
+            {seerr.search && (
+              <button
+                type="button"
+                onClick={() => openMediaSearch()}
+                className={OBSERVATORY_CONTROL_CLASS}
+                aria-label="Request media"
+                aria-haspopup="dialog"
+                aria-expanded={mediaSearch.open}
+                title="Request media"
+              >
+                <MediaRequestIcon />
+                <span className="hidden xl:inline">Request media</span>
+              </button>
+            )}
+            <CommandPalette
+              snapshot={snapshot}
+              links={quickLinks}
+              now={referenceNow}
+              onMediaSearch={seerr.search ? openMediaSearch : undefined}
+              onOpen={prepareModalOpen}
+            />
+            <NotificationBell
+              count={activeCount}
+              critical={notifications.critical}
+              open={notifOpen}
+              onToggle={() => {
+                closeMediaSearch();
+                setSelection(null);
+                setNotifOpen((o) => !o);
+              }}
+            />
+          </div>
         </div>
       </header>
 
@@ -214,12 +303,14 @@ export function TopologyApp({
         groups={notifications.groups}
         hiddenCount={notifications.hiddenCount}
         prefs={notifications.prefs}
+        now={referenceNow}
         onUpdatePrefs={notifications.update}
         onClose={() => setNotifOpen(false)}
       />
       <DetailDrawer
         selection={selection}
         snapshot={snapshot}
+        now={referenceNow}
         onClose={() => setSelection(null)}
       />
 
@@ -228,7 +319,7 @@ export function TopologyApp({
           open={mediaSearch.open}
           initialQuery={mediaSearch.seed}
           requestsEnabled={seerr.requests}
-          onClose={() => setMediaSearch({ open: false, seed: "" })}
+          onClose={closeMediaSearch}
         />
       )}
     </div>

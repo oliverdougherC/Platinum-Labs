@@ -59,7 +59,9 @@ beforeAll(() => {
     rafCb = cb;
     return 1;
   });
-  vi.stubGlobal("cancelAnimationFrame", () => {});
+  vi.stubGlobal("cancelAnimationFrame", () => {
+    rafCb = null;
+  });
 });
 
 beforeEach(() => {
@@ -105,5 +107,21 @@ describe("TopologyScene render loop", () => {
     view.rerender(<TopologyScene {...sceneProps(NOW + 4_000)} />);
     frame(4_000);
     expect(renderedTs).toEqual([0, 1, 2, 3]);
+  });
+
+  it("does not restart the animation loop on a hidden-tab data update", () => {
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    const view = render(<TopologyScene {...sceneProps(NOW)} />);
+    expect(rafCb).not.toBeNull();
+
+    hidden.mockReturnValue(true);
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(rafCb).toBeNull();
+
+    // This is the regression edge: fresh telemetry changes drawFrame identity
+    // and re-runs the effect while the document is still hidden.
+    view.rerender(<TopologyScene {...sceneProps(NOW + 2_000)} />);
+    expect(rafCb).toBeNull();
+    hidden.mockRestore();
   });
 });

@@ -60,6 +60,15 @@ the full, commented list. Key points:
   Docker networks that already contain Sonarr/Radarr/qBittorrent/Jellyfin.
 - `HOMELAB_QUICK_LINKS` are browser-facing launch tiles and intentionally separate
   from the backend connector URLs the server uses.
+- `HOMELAB_HOST_LABEL` is a deliberate, non-secret display label. The topology
+  does not derive host identity from IP addresses, DNS names, or connector data.
+- `HOMELAB_NETWORK_LINK_MBPS` is the negotiated physical link capacity used to
+  scale gateway intensity. Leave it unset when unknown; a traffic sample is not
+  treated as proof of capacity.
+- `HOMELAB_JELLYFIN_CONTAINER` is the exact Docker container name used to
+  attribute measured egress and block-I/O to Jellyfin. It is never inferred by
+  substring matching; stale or unavailable container counters are never treated
+  as live throughput.
 - Never commit `.env`. On the deployment host, keep it `chmod 600`.
 
 ### Seerr / Jellyseerr media requests (optional)
@@ -159,6 +168,7 @@ values for the server-owned `.env` at the next intentional deployment:
 ```env
 HOMELAB_DOWNLOAD_POOL=DataStore
 HOMELAB_MEDIA_POOL=DataStore
+HOMELAB_HOST_LABEL=p910
 HOST_NET_INTERFACES=ens6f1
 ```
 
@@ -172,6 +182,15 @@ Docker virtual-interface counters from gateway throughput.
 These variables were unset or empty when audited. This document does not
 authorize editing the production `.env`; apply them only as part of a separate,
 intentional deployment/configuration change.
+
+Set `HOMELAB_NETWORK_LINK_MBPS` only after checking the negotiated speed of
+`ens6f1` on the host (for example with `ethtool`). Do not copy a nominal 1 GbE or
+10 GbE value from review fixtures into production without that check.
+
+Deterministic review frames are generated with `npm run screenshots` and
+`npm run screenshots:motion` under `docs/review/`. They prove the branch UI,
+not a production deployment. A real-host screenshot and live dashboard smoke
+test belong to the later intentional deployment gate.
 
 ## Routine redeploy (the normal path)
 

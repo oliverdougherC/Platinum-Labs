@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
+import { DrawerShell } from "@/components/ui/overlay-shell";
 import type { TopologySelection } from "@/components/topology/scene";
 import { SERVICE_LABELS } from "@/lib/scene/model";
+import { endpointLabel, visibleFlowValue } from "@/lib/scene/labels";
+import { deriveFlows } from "@/lib/topology/activity";
 import { appConfig } from "@/lib/config";
 import { formatBytes, formatRate } from "@/lib/format/bytes";
 import {
@@ -10,6 +13,7 @@ import {
   formatPercent,
   formatRelativeTime,
 } from "@/lib/utils";
+import type { AggregateRateObservation } from "@/lib/types";
 import type {
   AcquisitionItem,
   ActivityEvent,
@@ -61,7 +65,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function ActivityList({ events, now }: { events: ActivityEvent[]; now: number }) {
   if (events.length === 0) {
-    return <p className="text-[12px] text-faint">No recent events.</p>;
+    return <p className="text-[12px] text-faint">No recent activity.</p>;
   }
   return (
     <ul className="space-y-1.5">
@@ -403,9 +407,17 @@ function ServiceDetail({
   now: number;
 }) {
   const health = snapshot.health.find((h) => h.id === id);
-  const container = snapshot.telemetry.docker.value?.containers.find(
-    (c) => c.name.toLowerCase().includes(id === "seerr" ? "seerr" : id),
-  );
+  // Container telemetry appears ONLY through an explicit operator mapping.
+  // Jellyfin uses the exact configured container name; no other service has a
+  // declared mapping today, so their drawers omit the section entirely.
+  // Substring matching is banned: "jellyfin-exporter" or a similarly named
+  // sidecar must never impersonate the service's own container (V2.1 blocker).
+  const container =
+    id === "jellyfin" && snapshot.jellyfinContainer
+      ? snapshot.telemetry.docker.value?.containers.find(
+          (c) => c.name === snapshot.jellyfinContainer,
+        )
+      : undefined;
   const queue = snapshot.acquisition.items.filter(
     (i) => (id === "qbittorrent" ? true : i.source === id) && i.state !== "completed",
   );
@@ -474,8 +486,19 @@ function ServiceDetail({
                   </div>
                   <p className="tnum mt-0.5 text-[10.5px] text-faint">
                     {formatPercent(s.progress)} · {s.method}
+                    {s.paused ? " · paused" : ""}
                     {s.resolution ? ` · ${s.resolution}` : ""}
-                    {s.bitrateBps ? ` · ${formatRate(s.bitrateBps / 8)}` : ""}
+                  </p>
+                  {/* Rate evidence stays visible per session: estimated values
+                      carry the ≈ prefix (shared V2.1 convention) and every
+                      value names its basis/evidence — a source-media estimate
+                      must never read like measured output. */}
+                  <p className="tnum text-[10.5px] text-faint">
+                    {s.rate
+                      ? `${s.rate.evidence === "estimated" ? "≈ " : ""}${formatRate(
+                          s.rate.bytesPerSecond,
+                        )} · ${s.rate.basis} (${s.rate.evidence})`
+                      : "rate unknown"}
                   </p>
                 </li>
               ))}
@@ -496,7 +519,7 @@ function ServiceDetail({
         </Section>
       )}
       <Section title="Recent activity">
-        <ActivityList events={events.length > 0 ? events : snapshot.activity} now={now} />
+        <ActivityList events={events} now={now} />
       </Section>
     </>
   );
@@ -539,7 +562,12 @@ function DockerDetail({ snapshot }: { snapshot: DashboardSnapshot }) {
             <li key={c.name} className="flex items-baseline justify-between gap-3">
               <span
                 className={`min-w-0 flex-1 truncate text-[12px] ${
-                  c.health === "unhealthy" || c.state !== "running" ? "text-danger" : "text-muted"
+                  c.health === "unhealthy" ||
+                  (c.state !== "running" && c.state !== "unknown")
+                    ? "text-danger"
+                    : c.state === "unknown"
+                      ? "text-faint"
+                      : "text-muted"
                 }`}
               >
                 {c.name}
@@ -559,38 +587,227 @@ function DockerDetail({ snapshot }: { snapshot: DashboardSnapshot }) {
   );
 }
 
+function ContainerDetail({ name, snapshot }: { name: string; snapshot: DashboardSnapshot }) {
+  const docker = snapshot.telemetry.docker;
+  const container = docker.value?.containers.find((candidate) => candidate.name === name);
+  if (!container) {
+    return (
+      <Section title="Container">
+        <p className="text-[12px] text-faint">Container is not present in the latest telemetry.</p>
+      </Section>
+    );
+  }
+  return (
+    <>
+      <Section title="Runtime">
+        <dl>
+          <Row
+            label="State"
+            value={container.state}
+            tone={
+              container.state !== "running" && container.state !== "unknown"
+                ? "danger"
+                : undefined
+            }
+          />
+          <Row
+            label="Health"
+            value={container.health ?? "no healthcheck"}
+            tone={container.health === "unhealthy" ? "danger" : undefined}
+          />
+          <Row label="Restarts" value={container.restartCount === null ? "—" : String(container.restartCount)} />
+          <Row label="Freshness" value={docker.status === "available" ? "live" : docker.status} />
+        </dl>
+      </Section>
+      <Section title="Resources">
+        <dl>
+          <Row label="CPU" value={container.cpuFraction === null ? "—" : `${container.cpuFraction.toFixed(2)} cores`} />
+          <Row label="Memory" value={container.memoryBytes === null ? "—" : formatBytes(container.memoryBytes, { system: "binary" })} />
+        </dl>
+      </Section>
+      <Section title="Network I/O">
+        <dl>
+          <Row label="Receive" value={container.netRxBps === null ? "—" : formatRate(container.netRxBps)} />
+          <Row label="Transmit" value={container.netTxBps === null ? "—" : formatRate(container.netTxBps)} />
+        </dl>
+      </Section>
+      <Section title="Block I/O">
+        <dl>
+          <Row label="Read" value={container.blockReadBps === null ? "—" : formatRate(container.blockReadBps)} />
+          <Row label="Write" value={container.blockWriteBps === null ? "—" : formatRate(container.blockWriteBps)} />
+        </dl>
+      </Section>
+    </>
+  );
+}
+
+// --- flow --------------------------------------------------------------------
+
+/** Honest wording for the flow-path evidence classes. */
+const FLOW_EVIDENCE_WORDING = {
+  measured: "measured on this exact path",
+  derived: "derived — a real measurement attributed to this path",
+  "state-only": "state evidence only — no byte rate is measured",
+} as const;
+
+function supportingRateValue(rate: AggregateRateObservation): string {
+  const value =
+    rate.knownBytesPerSecond === null
+      ? "rate unknown"
+      : `${rate.evidence === "estimated" ? "≈ " : ""}${formatRate(rate.knownBytesPerSecond)}`;
+  const qualifiers = [rate.evidence ?? "unknown evidence"];
+  if (rate.freshness === "stale") qualifiers.push("stale");
+  return `${value} (${qualifiers.join(", ")})`;
+}
+
+/**
+ * Compact technical flow detail (V2.1 evidence-display blocker): the full
+ * evidence a rate claim rests on — basis, coverage, unknown contributors,
+ * freshness, provenance, attribution caveats, and retained non-headline
+ * observations — rendered straight from the FlowObservation through the
+ * shared drawer architecture (focus trap, Escape, focus return included).
+ */
+function FlowDetail({
+  id,
+  snapshot,
+  now,
+}: {
+  id: string;
+  snapshot: DashboardSnapshot;
+  now: number;
+}) {
+  const flow = deriveFlows(snapshot, now).find((f) => f.id === id) ?? null;
+  if (!flow) {
+    return (
+      <Section title="Flow">
+        <p className="text-[12px] text-faint">
+          This flow is not observed in the latest snapshot — the activity that
+          justified it has stopped or its source is unavailable.
+        </p>
+      </Section>
+    );
+  }
+  const rate = flow.rate ?? null;
+  return (
+    <>
+      <Section title="Route">
+        <dl>
+          <Row
+            label="Path"
+            value={`${endpointLabel(flow.from)} → ${endpointLabel(flow.to)}`}
+          />
+          <Row label="Activity" value={flow.label} />
+          <Row
+            label="Plane"
+            value={flow.plane === "data" ? "data — bytes move" : "control — orchestration only"}
+          />
+        </dl>
+      </Section>
+      <Section title="Rate">
+        <dl>
+          <Row label="Headline" value={visibleFlowValue(flow, now)} />
+          {flow.channels.map((channel) => (
+            <Row
+              key={`${channel.direction}:${channel.role}`}
+              label={`${channel.direction === "forward" ? "→" : "←"} ${channel.role}`}
+              value={
+                channel.bytesPerSecond === null
+                  ? "rate unknown"
+                  : formatRate(channel.bytesPerSecond)
+              }
+            />
+          ))}
+          {rate && (
+            <Row
+              label="Coverage"
+              value={`${rate.coverage}${
+                rate.unknownContributors > 0
+                  ? ` · ${rate.unknownContributors} unknown contributor${
+                      rate.unknownContributors === 1 ? "" : "s"
+                    }`
+                  : ""
+              }`}
+            />
+          )}
+          {rate?.basis && <Row label="Basis" value={rate.basis} />}
+          {rate?.evidence && <Row label="Value evidence" value={rate.evidence} />}
+        </dl>
+      </Section>
+      <Section title="Evidence">
+        <dl>
+          <Row label="Path evidence" value={FLOW_EVIDENCE_WORDING[flow.evidence]} />
+          <Row
+            label="Freshness"
+            value={flow.freshness}
+            tone={flow.freshness === "stale" ? "warn" : undefined}
+          />
+          {flow.updatedAt !== null && (
+            <Row label="Source updated" value={formatRelativeTime(flow.updatedAt, now)} />
+          )}
+        </dl>
+        <p className="mt-1 text-[11px] leading-snug text-faint">{flow.provenance}</p>
+      </Section>
+      {(flow.supportingRates?.length ?? 0) > 0 && (
+        <Section title="Also observed">
+          <dl>
+            {flow.supportingRates!.map((supporting, index) => (
+              <Row
+                key={`${supporting.basis ?? "unknown"}-${index}`}
+                label={supporting.basis ?? "unknown basis"}
+                value={supportingRateValue(supporting)}
+              />
+            ))}
+          </dl>
+          <p className="mt-1 text-[11px] leading-snug text-faint">
+            Observations considered but not the headline — retained rather than
+            erased (e.g. a measured zero sampling window during buffered
+            playback).
+          </p>
+        </Section>
+      )}
+    </>
+  );
+}
+
 // --- drawer shell ------------------------------------------------------------
 
 export function DetailDrawer({
   selection,
   snapshot,
+  now,
   onClose,
 }: {
   selection: TopologySelection | null;
   snapshot: DashboardSnapshot;
+  /**
+   * Authoritative clock (`referenceNow`): the frozen snapshot clock under the
+   * review harness, wall time in production — every relative-time string in
+   * the drawer derives from it (V2.1 determinism blocker).
+   */
+  now: number;
   onClose: () => void;
 }) {
-  useEffect(() => {
-    if (!selection) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selection, onClose]);
-
-  const now = Date.now();
   const title = useMemo(() => {
     if (!selection) return "";
     switch (selection.kind) {
       case "host":
-        return "Host · p910";
+        return snapshot.hostLabel?.trim() || "host";
       case "pool":
         return `Pool · ${selection.name}`;
       case "service":
         return SERVICE_LABELS[selection.id] ?? selection.id;
+      case "container":
+        return `Container · ${selection.name}`;
       case "docker":
         return "Docker";
+      case "flow": {
+        const flow = deriveFlows(snapshot, now).find((f) => f.id === selection.id);
+        return flow
+          ? `Flow · ${endpointLabel(flow.from)} → ${endpointLabel(flow.to)}`
+          : "Flow";
+      }
     }
-  }, [selection]);
+  }, [selection, snapshot, now]);
 
   const pool =
     selection?.kind === "pool"
@@ -598,32 +815,26 @@ export function DetailDrawer({
       : null;
 
   return (
-    <aside
-      aria-label={title || "Detail"}
-      aria-hidden={!selection}
-      className={`fixed right-0 top-0 z-30 flex h-full w-[400px] flex-col border-l border-hairline bg-surface/95 backdrop-blur-sm transition-transform duration-200 ${
-        selection ? "translate-x-0" : "translate-x-full"
-      }`}
+    <DrawerShell
+      open={selection !== null}
+      onClose={onClose}
+      title={title || "Detail"}
+      closeLabel="Close detail"
     >
-      <header className="flex items-center justify-between border-b border-hairline px-5 py-4">
-        <h2 className="text-[11px] uppercase tracking-[0.18em] text-faint">{title}</h2>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close detail"
-          className="text-[13px] text-faint transition-colors hover:text-muted"
-        >
-          ✕
-        </button>
-      </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6">
         {selection?.kind === "host" && <HostDetail snapshot={snapshot} now={now} />}
         {pool && <PoolDetail pool={pool} snapshot={snapshot} now={now} />}
         {selection?.kind === "service" && (
           <ServiceDetail id={selection.id} snapshot={snapshot} now={now} />
         )}
+        {selection?.kind === "container" && (
+          <ContainerDetail name={selection.name} snapshot={snapshot} />
+        )}
         {selection?.kind === "docker" && <DockerDetail snapshot={snapshot} />}
+        {selection?.kind === "flow" && (
+          <FlowDetail id={selection.id} snapshot={snapshot} now={now} />
+        )}
       </div>
-    </aside>
+    </DrawerShell>
   );
 }

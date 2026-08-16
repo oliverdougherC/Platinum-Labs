@@ -268,6 +268,7 @@ function currentTelemetry(reg: LiveRegistry, now: number): {
 }
 
 function assemble(reg: LiveRegistry, now: number): DashboardSnapshot {
+  const env = getServerEnv();
   const health = fillConnectorHealth(reg.hub.health(), reg.configStatus);
   const { telemetry, history: telemetryHist } = currentTelemetry(reg, now);
   const snapshot = assembleSnapshot({
@@ -282,8 +283,13 @@ function assemble(reg: LiveRegistry, now: number): DashboardSnapshot {
     telemetryNotConfigured: !reg.configStatus.host?.configured,
     telemetryHistory: telemetryHist,
     history: readHistory(now),
-    mediaPool: getServerEnv().HOMELAB_MEDIA_POOL ?? null,
-    downloadPool: getServerEnv().HOMELAB_DOWNLOAD_POOL ?? null,
+    hostLabel: env.HOMELAB_HOST_LABEL ?? "host",
+    mediaPool: env.HOMELAB_MEDIA_POOL ?? null,
+    downloadPool: env.HOMELAB_DOWNLOAD_POOL ?? null,
+    jellyfinContainer: env.HOMELAB_JELLYFIN_CONTAINER ?? null,
+    networkLinkBytesPerSecond: env.HOMELAB_NETWORK_LINK_MBPS
+      ? (env.HOMELAB_NETWORK_LINK_MBPS * 1_000_000) / 8
+      : null,
   });
 
   // Jellyfin's /Sessions only reports *current* playback, so its lastPlaybackAt
@@ -436,7 +442,7 @@ function persist(
   attention: EvaluateResult,
 ): void {
   tryPersist((db) => {
-    // Throughput sampled every cycle (feeds the ~45m media chart).
+    // Throughput sampled every cycle for recent-history diagnostics.
     if (snapshot.acquisition.rollup.aggregateRateBps !== null) {
       insertThroughput(db, {
         t: now,

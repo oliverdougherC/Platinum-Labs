@@ -32,11 +32,17 @@
 
 import { colorTokens, type ColorTokenName } from "@/lib/design/tokens";
 import { pointAtLength, pointOnCircle, tangentAtLength, TAU } from "@/lib/scene/geom";
+import { containerHash } from "@/lib/scene/layout";
 import { makeRng } from "@/lib/scene/rng";
 import { intensityFromRate, particlePeriodSeconds } from "@/lib/topology/smoothing";
 import type { BackgroundField } from "@/lib/scene/background";
 import type { BodyGeom, SceneLayout } from "@/lib/scene/layout";
-import type { SceneModel, ServiceBodyModel, StorageBodyModel } from "@/lib/scene/model";
+import type {
+  DockerContainerModel,
+  SceneModel,
+  ServiceBodyModel,
+  StorageBodyModel,
+} from "@/lib/scene/model";
 import type { SceneMotion, LiveFlow } from "@/lib/scene/motion";
 import type { FlowGeom } from "@/lib/scene/routing";
 import type { ChannelRole, FlowChannel } from "@/lib/topology/activity";
@@ -734,15 +740,144 @@ function drawFlows(ctx: CanvasRenderingContext2D, s: RenderState, style: FlowSty
   }
 }
 
-// --- docker belt --------------------------------------------------------------
+// --- container asteroid field -------------------------------------------------
+
+/**
+ * Deterministic ambient-drift phase from the FULL container name (the shared
+ * stable FNV-1a hash). Names of equal length sharing a first letter must not
+ * synchronize — the previous `length + firstCharCode` seed made e.g.
+ * "sonarr"/"seerrr" twins (V2.1 phase blocker).
+ */
+export function containerMotionPhase(name: string): number {
+  return makeRng(containerHash(name))() * TAU;
+}
+
+export function containerMotionOffset(
+  container: DockerContainerModel,
+  t: number,
+  motionEnabled: boolean,
+  phase = 0,
+): { x: number; y: number } {
+  // Stale or metric-less containers must sit perfectly still: motion is an
+  // activity claim, and unknown metrics support no such claim (PLA-273).
+  if (
+    !motionEnabled ||
+    container.freshness !== "live" ||
+    container.metricCoverage === "unavailable"
+  ) {
+    return { x: 0, y: 0 };
+  }
+  // Motion energy is WORK (CPU + network + block I/O), never memory
+  // residency: a large idle process keeps its size but not a drift. Null
+  // metrics contribute zero — no unsupported movement (V2.1 motion truth).
+  const energy = container.workScore;
+  return {
+    x: Math.cos(t / 19 + phase) * energy * 2.4,
+    y: Math.sin(t / 23 + phase) * energy * 2.4,
+  };
+}
+
+/**
+ * Pure stroke/dash decision for a container body — exported so the unknown ≠
+ * idle distinction is unit-testable without rasterizing. Confirmed-idle bodies
+ * keep a solid quiet outline; metric-less bodies get a NEUTRAL dashed static
+ * treatment (distinct from the tighter dash of an unknown-STATE container).
+ */
+export function containerStrokeTreatment(container: DockerContainerModel): {
+  token: ColorTokenName;
+  dash: number[] | null;
+} {
+  if (container.bad) return { token: "danger", dash: null };
+  if (container.unverified) return { token: "faint", dash: [2, 2] };
+  if (container.metricCoverage === "unavailable") return { token: "muted", dash: [4, 3] };
+  return { token: "fg", dash: null };
+}
+
+function drawContainerAsteroid(
+  ctx: CanvasRenderingContext2D,
+  s: RenderState,
+  container: DockerContainerModel,
+  geom: BodyGeom,
+): void {
+  const live = container.freshness === "live";
+  const stale = container.freshness === "stale";
+  const energy = live ? Math.max(container.resourceScore, container.ioIntensity) : 0;
+  const phase = containerMotionPhase(container.name);
+  const offset = containerMotionOffset(container, s.t, s.motionEnabled, phase);
+  const cx = geom.center.x + offset.x;
+  const cy = geom.center.y + offset.y;
+  const r = geom.r;
+  const hovered = s.hovered === geom.id;
+
+  if (live && container.ioIntensity > 0.02) {
+    const net = (container.netRxBps ?? 0) + (container.netTxBps ?? 0);
+    const block = (container.blockReadBps ?? 0) + (container.blockWriteBps ?? 0);
+    if (net > 0) {
+      ctx.strokeStyle = rgba("flow-in", 0.12 + container.ioIntensity * 0.22);
+      ctx.lineWidth = 1 + container.ioIntensity * 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + 4 + container.ioIntensity * 5, -Math.PI * 0.9, Math.PI * 0.15);
+      ctx.stroke();
+    }
+    if (block > 0) {
+      ctx.strokeStyle = rgba("flow-out", 0.1 + container.ioIntensity * 0.2);
+      ctx.lineWidth = 1 + container.ioIntensity * 1.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + 7 + container.ioIntensity * 7, Math.PI * 0.15, Math.PI * 1.05);
+      ctx.stroke();
+    }
+  }
+
+  const metricsUnknown =
+    container.metricCoverage === "unavailable" && !container.bad && !container.unverified;
+  const alpha = stale
+    ? 0.24
+    : container.bad
+      ? 0.78
+      : metricsUnknown
+        ? 0.42 // quiet but present — NOT the dimmer confirmed-idle floor
+        : 0.3 + energy * 0.32;
+  const treatment = containerStrokeTreatment(container);
+  ctx.fillStyle = rgba(
+    treatment.token,
+    container.unverified ? 0.05 : metricsUnknown ? 0.03 : alpha * 0.45,
+  );
+  ctx.strokeStyle = rgba(treatment.token, container.unverified ? 0.55 : alpha);
+  ctx.lineWidth = container.bad ? 1.8 : 1;
+  if (treatment.dash) ctx.setLineDash(treatment.dash);
+  ctx.beginPath();
+  if (container.bad) {
+    // Angular silhouette distinguishes stopped/unhealthy state without color.
+    for (let i = 0; i < 6; i++) {
+      const a = phase + (i / 6) * TAU;
+      const rr = r * (i % 2 === 0 ? 1 : 0.72);
+      const x = cx + Math.cos(a) * rr;
+      const y = cy + Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  } else {
+    ctx.arc(cx, cy, r, 0, TAU);
+  }
+  ctx.fill();
+  ctx.stroke();
+  if (treatment.dash) ctx.setLineDash([]);
+
+  if (hovered || container.bad) {
+    ctx.fillStyle = rgba(container.bad ? "danger" : "muted", stale ? 0.5 : 0.82);
+    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(container.name, cx, cy + r + 16);
+  }
+}
 
 function drawDockerBelt(ctx: CanvasRenderingContext2D, s: RenderState): void {
   const docker = s.model.docker;
   if (docker.status === "not-configured") return;
   const belt = s.layout.dockerBelt;
-  const rng = makeRng(0xbe17);
-  if (docker.status === "unavailable" || docker.dots.length === 0) {
-    // Honest absence: a whisper of the belt path, no fabricated asteroids.
+  if (docker.status === "unavailable" || docker.containers.length === 0) {
+    // Honest absence: a whisper of the field boundary, no fabricated bodies.
     ctx.strokeStyle = rgba("hairline", 0.3);
     ctx.setLineDash([2, 7]);
     ctx.lineWidth = 1;
@@ -752,26 +887,25 @@ function drawDockerBelt(ctx: CanvasRenderingContext2D, s: RenderState): void {
     ctx.setLineDash([]);
     return;
   }
-  const span = belt.a1 - belt.a0;
-  const stale = docker.status === "stale";
-  for (let i = 0; i < docker.dots.length; i++) {
-    const dot = docker.dots[i]!;
-    const fi = docker.dots.length === 1 ? 0.5 : i / (docker.dots.length - 1);
-    const a = belt.a0 + span * fi + (rng() - 0.5) * (span / docker.dots.length) * 0.5;
-    const rr = belt.r + (rng() - 0.5) * 12;
-    const size = 1.1 + rng() * 1.1;
-    const p = pointOnCircle(belt.center, rr, a);
-    if (dot.bad) {
-      ctx.fillStyle = rgba("danger", stale ? 0.4 : 0.85);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, size + 0.7, 0, TAU);
-      ctx.fill();
-    } else {
-      ctx.fillStyle = rgba("fg", stale ? 0.14 : 0.26 + rng() * 0.14);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, size, 0, TAU);
-      ctx.fill();
-    }
+  for (const container of docker.containers) {
+    const geom = s.layout.containerField.get(container.name);
+    if (geom) drawContainerAsteroid(ctx, s, container, geom);
+  }
+  if (s.layout.containerOverflow && s.layout.containerOverflowCount > 0) {
+    const { center, r } = s.layout.containerOverflow;
+    ctx.fillStyle = rgba("surface-2", 0.8);
+    ctx.strokeStyle = rgba("muted", 0.55);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, r, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = rgba("fg", 0.8);
+    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`+${s.layout.containerOverflowCount}`, center.x, center.y);
+    ctx.textBaseline = "alphabetic";
   }
 }
 

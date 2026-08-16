@@ -1,0 +1,40 @@
+[
+  {
+    "NowPlayingItem": {
+      "Type": "Episode",
+      "Container": "mkv",
+      "Height": 1080,
+      "MediaStreams": [
+        {
+          "Type": "Video",
+          "Codec": "hevc",
+          "BitRate": 1698433,
+          "Width": 1440,
+          "Height": 1080
+        },
+        {
+          "Type": "Audio",
+          "Codec": "aac",
+          "BitRate": 192000
+        }
+      ]
+    },
+    "PlayState": {
+      "PlayMethod": "Transcode",
+      "IsPaused": false
+    },
+    "TranscodingInfo": {
+      "VideoCodec": "h264",
+      "AudioCodec": "aac",
+      "Container": "ts",
+      "IsVideoDirect": false,
+      "IsAudioDirect": true,
+      "Bitrate": 1564000,
+      "Width": 1280,
+      "Height": 960,
+      "TranscodeReasons": [
+        "ContainerBitrateExceedsLimit"
+      ]
+    }
+  }
+]

@@ -249,6 +249,32 @@ describe("normalizeHostTelemetry", () => {
     expect(broken.state).toBe("exited");
   });
 
+  it("keeps unfamiliar Docker runtime states explicitly unknown", () => {
+    const first = sample(1000);
+    const current = advance(3000);
+    if (
+      first.docker.status !== "ok" ||
+      !first.docker.containers ||
+      current.docker.status !== "ok" ||
+      !current.docker.containers
+    ) throw new Error("fixture docker telemetry missing");
+    first.docker.containers.push({
+      ...first.docker.containers[0]!,
+      name: "future-runtime",
+      state: "migrating",
+    });
+    current.docker.containers.push({
+      ...current.docker.containers[0]!,
+      name: "future-runtime",
+      state: "migrating",
+    });
+
+    const docker = normalizeHostTelemetry(first, current).docker.value!;
+    expect(docker.containers.find((c) => c.name === "future-runtime")?.state).toBe("unknown");
+    expect(docker.total).toBe(3);
+    expect(docker.running).toBe(1);
+  });
+
   it("uses docker section sampledAt for deltas and preserves repeated cached samples", () => {
     const first = sample(1000, {
       docker: {

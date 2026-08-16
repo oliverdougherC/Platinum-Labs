@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { DrawerShell } from "@/components/ui/overlay-shell";
+import { BellIcon, OBSERVATORY_CONTROL_CLASS } from "@/components/ui/icons";
 import {
   dismissGroup,
   groupNotifications,
@@ -120,10 +122,22 @@ function GroupRow({
   );
 }
 
-export function useNotificationCenter(attention: AttentionItem[], frozen: boolean) {
+/**
+ * `now` is the app's authoritative clock (`referenceNow`): the frozen
+ * snapshot clock under the review harness, wall time in production. Every
+ * visible grouping/relative-time decision derives from it so frozen frames
+ * are bit-identical regardless of the machine's system date (V2.1 review
+ * blocker). Persistence WRITES still use real time outside frozen mode.
+ */
+export function useNotificationCenter(
+  attention: AttentionItem[],
+  frozen: boolean,
+  now: number,
+) {
   const [prefs, setPrefs] = useState<NotificationPrefs | null>(null);
 
   // Load persisted prefs client-side once (SSR renders with none applied).
+  // Snooze pruning is a persistence concern and may use real time.
   useEffect(() => {
     setPrefs(loadPrefs(Date.now()));
   }, []);
@@ -138,11 +152,9 @@ export function useNotificationCenter(attention: AttentionItem[], frozen: boolea
     if (!frozen) savePrefs(next, Date.now());
   };
 
-  const now = Date.now();
   const grouped = useMemo(
     () => groupNotifications(attention, effectivePrefs, now),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `now` is a render-time clock read
-    [attention, effectivePrefs],
+    [attention, effectivePrefs, now],
   );
   return {
     prefs: effectivePrefs,
@@ -169,16 +181,18 @@ export function NotificationBell({
       type="button"
       onClick={onToggle}
       aria-expanded={open}
-      aria-label={`Notifications${count > 0 ? ` (${count} active)` : ""}`}
-      className="relative flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] uppercase tracking-[0.12em] text-faint ring-1 ring-hairline transition-colors hover:text-muted"
+      aria-label={`Notifications: ${count > 0 ? `${count} active${critical ? ", critical" : ""}` : "quiet"}`}
+      title={`Notifications: ${count > 0 ? `${count} active` : "quiet"}`}
+      className={`relative ${OBSERVATORY_CONTROL_CLASS}`}
     >
+      <BellIcon />
       <span
         className={`h-1.5 w-1.5 rounded-full ${
           critical ? "bg-danger" : count > 0 ? "bg-warn" : "bg-hairline"
         }`}
         aria-hidden
       />
-      <span>{count > 0 ? `${count} alert${count === 1 ? "" : "s"}` : "quiet"}</span>
+      {count > 0 ? <span className="tnum">{count}</span> : null}
     </button>
   );
 }
@@ -188,6 +202,7 @@ export function NotificationDrawer({
   groups,
   hiddenCount,
   prefs,
+  now,
   onUpdatePrefs,
   onClose,
 }: {
@@ -195,41 +210,18 @@ export function NotificationDrawer({
   groups: NotificationGroup[];
   hiddenCount: number;
   prefs: NotificationPrefs;
+  /** Authoritative clock (frozen snapshot time under the review harness). */
+  now: number;
   onUpdatePrefs: (next: NotificationPrefs) => void;
   onClose: () => void;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  const now = Date.now();
   return (
-    <aside
-      ref={panelRef}
-      aria-label="Notifications"
-      aria-hidden={!open}
-      className={`fixed right-0 top-0 z-40 flex h-full w-[360px] flex-col border-l border-hairline bg-surface/95 backdrop-blur-sm transition-transform duration-200 ${
-        open ? "translate-x-0" : "translate-x-full"
-      }`}
+    <DrawerShell
+      open={open}
+      onClose={onClose}
+      title="Notifications"
+      closeLabel="Close notifications"
     >
-      <header className="flex items-center justify-between border-b border-hairline px-5 py-4">
-        <h2 className="text-[11px] uppercase tracking-[0.18em] text-faint">
-          Notifications
-        </h2>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close notifications"
-          className="text-[13px] text-faint transition-colors hover:text-muted"
-        >
-          ✕
-        </button>
-      </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-5">
         {groups.length === 0 ? (
           <p className="py-8 text-[13px] text-faint">
@@ -257,6 +249,6 @@ export function NotificationDrawer({
           </p>
         )}
       </div>
-    </aside>
+    </DrawerShell>
   );
 }

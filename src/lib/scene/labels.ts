@@ -194,10 +194,9 @@ export function buildLabels(model: SceneModel, layout: SceneLayout, now: number)
     }),
   );
 
-  // --- docker belt ------------------------------------------------------------
+  // --- container field --------------------------------------------------------
   if (model.docker.status !== "not-configured") {
-    const beltMid = (layout.dockerBelt.a0 + layout.dockerBelt.a1) / 2;
-    const anchor = pointOnCircle(layout.dockerBelt.center, layout.dockerBelt.r + 44, beltMid);
+    const anchor = layout.containerCaption;
     labels.push(
       label("docker", anchor, "containers", {
         primaryTone: "faint",
@@ -224,44 +223,119 @@ const ROLE_WORD: Record<string, string> = {
   write: "write",
 };
 
+const FLOW_SERVICE_LABEL: Record<string, string> = {
+  jellyfin: "Jellyfin",
+  sonarr: "Sonarr",
+  radarr: "Radarr",
+  qbittorrent: "qBittorrent",
+};
+
+export function endpointLabel(endpoint: FlowObservation["from"]): string {
+  switch (endpoint.kind) {
+    case "network":
+      return "network";
+    case "service":
+      return FLOW_SERVICE_LABEL[endpoint.id] ?? endpoint.id;
+    case "pool":
+      return endpoint.name;
+    case "storage":
+      return "storage";
+  }
+}
+
+function shortAge(at: number, now: number): string {
+  return formatRelativeTime(at, now).replace(/ ago$/, "");
+}
+
 /**
- * The hover/focus description of a flow (PLA-266 v2 inspectability): semantic
- * label, evidence class, exact directional rates where known, and freshness —
- * e.g. "qBittorrent download · measured · in 6.1 MB/s · updated 1s ago".
- * `detail` carries the provenance sentence for the second line.
+ * The VISIBLE rate convention (V2.1 evidence-display blocker) — sighted
+ * users must be able to tell estimate from measurement without opening the
+ * detail surface:
+ *
+ *   measured/reported complete   `5.8 MB/s`
+ *   estimated                    `≈ 5.8 MB/s`
+ *   partial known lower bound    `5.8 MB/s + 1 unknown`
+ *   estimated partial            `≈ 5.8 MB/s + 1 unknown`
+ *   unknown                      `rate unknown`
+ *   stale                        `stale 34s`
+ *
+ * `derived` values carry no ≈: the number itself is a real measurement,
+ * only its attribution to this path is inferred — the detail surface and
+ * accessible text explain that attribution.
+ */
+export function visibleFlowValue(obs: FlowObservation, now: number): string {
+  if (obs.freshness === "stale") {
+    return obs.updatedAt === null ? "stale" : `stale ${shortAge(obs.updatedAt, now)}`;
+  }
+  if (obs.rate) {
+    if (obs.rate.knownBytesPerSecond === null) return "rate unknown";
+    const approx = obs.rate.evidence === "estimated" ? "≈ " : "";
+    const unknown = obs.rate.unknownContributors;
+    return `${approx}${formatRate(obs.rate.knownBytesPerSecond)}${
+      unknown > 0 ? ` + ${unknown} unknown` : ""
+    }`;
+  }
+  const rated = obs.channels.filter((channel) => channel.bytesPerSecond !== null);
+  if (rated.length === 1) return formatRate(rated[0]!.bytesPerSecond!);
+  if (rated.length > 1) {
+    return rated
+      .map((channel) => `${ROLE_WORD[channel.role] ?? channel.role} ${formatRate(channel.bytesPerSecond!)}`)
+      .join(" · ");
+  }
+  if (obs.plane === "data") return "rate unknown";
+  if (obs.kind === "control") return "orchestrating";
+  if (obs.kind === "organize") return "organizing";
+  return "active";
+}
+
+/**
+ * Flow copy has two layers: a terse two-line visible contract and a complete
+ * accessibility/provenance sentence. Technical evidence never leaks back into
+ * the primary hover card merely because it remains available to screen
+ * readers — sighted users reach the full technical detail by ACTIVATING the
+ * flow (click/Enter), which opens the shared flow-detail drawer rendered
+ * straight from the FlowObservation.
  */
 export function describeFlow(
   obs: FlowObservation,
   now: number,
-): { summary: string; detail: string } {
-  const parts: string[] = [obs.label];
-  parts.push(
-    obs.evidence === "measured"
-      ? "measured"
-      : obs.evidence === "derived"
-        ? "derived"
-        : "state confirmed",
-  );
-  const rated = obs.channels.filter((c) => c.bytesPerSecond !== null);
-  if (rated.length > 0) {
-    parts.push(
-      rated
-        .map((c) => `${ROLE_WORD[c.role] ?? c.role} ${formatRate(c.bytesPerSecond!)}`)
-        .join(" · "),
-    );
-  } else if (obs.plane === "data") {
-    parts.push("byte rate unavailable");
-  }
-  if (obs.freshness === "stale") {
-    parts.push(
-      obs.updatedAt !== null
-        ? `stale · last seen ${formatRelativeTime(obs.updatedAt, now)}`
-        : "stale",
-    );
-  } else if (obs.updatedAt !== null) {
-    parts.push(`updated ${formatRelativeTime(obs.updatedAt, now)}`);
-  }
-  return { summary: parts.join(" · "), detail: obs.provenance };
+): { title: string; value: string; accessible: string } {
+  const title = `${endpointLabel(obs.from)} → ${endpointLabel(obs.to)}`;
+  const value = visibleFlowValue(obs, now);
+  const evidence =
+    obs.rate?.evidence ??
+    (obs.evidence === "state-only" ? "state evidence only" : obs.evidence);
+  const basis = obs.rate?.basis ? `, basis ${obs.rate.basis}` : "";
+  const coverage = obs.rate
+    ? `, ${obs.rate.coverage} coverage${
+        obs.rate.unknownContributors > 0
+          ? ` with ${obs.rate.unknownContributors} unknown contributor${obs.rate.unknownContributors === 1 ? "" : "s"}`
+          : ""
+      }`
+    : "";
+  const freshness =
+    obs.updatedAt === null
+      ? `, ${obs.freshness}`
+      : `, ${obs.freshness}, source updated ${formatRelativeTime(obs.updatedAt, now)}`;
+  // Non-headline observations (e.g. a measured zero container window during
+  // buffered playback) stay visible in detail — retained, never erased.
+  const supporting = obs.supportingRates?.length
+    ? ` Also observed: ${obs.supportingRates
+        .map(
+          (rate) =>
+            `${rate.basis ?? "unknown basis"} ${
+              rate.knownBytesPerSecond === null
+                ? "rate unknown"
+                : formatRate(rate.knownBytesPerSecond)
+            } (${rate.evidence ?? "unknown"})`,
+        )
+        .join("; ")}.`
+    : "";
+  return {
+    title,
+    value,
+    accessible: `${title}. ${value}. ${evidence}${basis}${coverage}${freshness}. ${obs.provenance}${supporting}`,
+  };
 }
 
 /** Axis-aligned overlap test between two label boxes (for tests). */

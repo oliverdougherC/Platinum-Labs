@@ -1,10 +1,10 @@
 /**
- * Deterministic fake time-series generators for the chart gallery (PLA-176).
+ * Deterministic fake time-series generators for history-backed UI states.
  *
  * No randomness: a small hash-based wobble keeps the shapes organic while
- * remaining identical for a fixed `now`, so gallery screenshots and tests are
+ * remaining identical for a fixed `now`, so review screenshots and tests are
  * stable. Isomorphic and secret-free. Real history comes from SQLite in
- * Milestone 02/03 (PLA-179/188); these feed the primitives during UI work.
+ * SQLite; these feed deterministic fixtures during UI work.
  */
 
 import type { Severity } from "@/lib/types";
@@ -51,8 +51,8 @@ export type StorageTrendRow = { t: number } & Record<string, number>;
 
 /**
  * Multi-series storage trend: used bytes per pool over `days`, gently rising to
- * each pool's current value. Returns Recharts-friendly flat rows keyed by pool
- * name. `level: "empty"` yields no rows (missing-data state).
+ * each pool's current value. Returns flat rows keyed by pool name.
+ * `level: "empty"` yields no rows (missing-data state).
  */
 export function storageTrendSeries(opts: {
   now: number;

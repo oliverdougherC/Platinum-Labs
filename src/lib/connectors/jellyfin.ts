@@ -20,6 +20,7 @@ import type {
   JellyfinSession,
   JellyfinSnapshot,
   PlaybackMethod,
+  RateObservation,
 } from "@/lib/types";
 
 // --- upstream schemas (lenient: tolerate the many fields we don't use) ------
@@ -40,6 +41,7 @@ const sessionSchema = z
         ParentIndexNumber: z.number().optional(),
         RunTimeTicks: z.number().optional(),
         Height: z.number().optional(),
+        Bitrate: z.number().nullish(),
         Type: z.string().optional(),
       })
       .passthrough()
@@ -48,6 +50,7 @@ const sessionSchema = z
       .object({
         PositionTicks: z.number().optional(),
         PlayMethod: z.string().optional(),
+        IsPaused: z.boolean().optional(),
       })
       .passthrough()
       .optional(),
@@ -55,6 +58,10 @@ const sessionSchema = z
       .object({ Bitrate: z.number().optional() })
       .passthrough()
       .optional(),
+    MediaSource: z
+      .object({ Bitrate: z.number().nullish() })
+      .passthrough()
+      .nullish(),
   })
   .passthrough();
 
@@ -88,6 +95,38 @@ function pad2(n: number): string {
   return n < 10 ? `0${n}` : String(n);
 }
 
+function bytesPerSecond(bitsPerSecond: number | null | undefined): number | null {
+  return typeof bitsPerSecond === "number" && Number.isFinite(bitsPerSecond) && bitsPerSecond > 0
+    ? bitsPerSecond / 8
+    : null;
+}
+
+function sessionRate(raw: RawSession, method: PlaybackMethod): RateObservation | null {
+  const output = bytesPerSecond(raw.TranscodingInfo?.Bitrate);
+  if (output !== null) {
+    return {
+      bytesPerSecond: output,
+      basis: "jellyfin-session-output",
+      evidence: "reported",
+    };
+  }
+
+  // Jellyfin may omit output/target rate while still reporting source-media
+  // bitrate. It is useful evidence, but never measured egress. Only DIRECT
+  // PLAY sends the source bytes as-is (reported); a transcode obviously
+  // re-encodes, and a DIRECT STREAM remuxes into a different container, so
+  // for both the source-media bitrate is an ESTIMATE of the output rate.
+  const source = bytesPerSecond(
+    raw.MediaSource?.Bitrate ?? raw.NowPlayingItem?.Bitrate,
+  );
+  if (source === null) return null;
+  return {
+    bytesPerSecond: source,
+    basis: "source-media",
+    evidence: method === "direct-play" ? "reported" : "estimated",
+  };
+}
+
 function normalizeSession(raw: RawSession, index: number): JellyfinSession | null {
   const item = raw.NowPlayingItem;
   if (!item) return null; // session exists but nothing is playing
@@ -103,15 +142,19 @@ function normalizeSession(raw: RawSession, index: number): JellyfinSession | nul
   const position = raw.PlayState?.PositionTicks ?? 0;
   const progress = runtime > 0 ? clamp(position / runtime, 0, 1) : 0;
 
+  const method = mapPlayMethod(raw.PlayState?.PlayMethod);
   return {
     id: raw.Id ?? `session-${index}`,
     user: raw.UserName ?? "unknown",
     title,
     subtitle,
-    method: mapPlayMethod(raw.PlayState?.PlayMethod),
+    method,
+    // Reported player state only. An absent IsPaused means "not reported
+    // paused" → playing; pause is never inferred from a missing/zero rate.
+    paused: raw.PlayState?.IsPaused === true,
     progress,
     resolution: resolutionFromHeight(item.Height),
-    bitrateBps: raw.TranscodingInfo?.Bitrate ?? null,
+    rate: sessionRate(raw, method),
   };
 }
 

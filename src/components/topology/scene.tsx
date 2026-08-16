@@ -59,7 +59,10 @@ export type TopologySelection =
   | { kind: "host" }
   | { kind: "pool"; name: string }
   | { kind: "service"; id: ServiceId }
-  | { kind: "docker" };
+  | { kind: "container"; name: string }
+  | { kind: "docker" }
+  /** A live flow's technical detail (evidence, basis, coverage, provenance). */
+  | { kind: "flow"; id: string };
 
 export interface SceneProps {
   snapshot: DashboardSnapshot;
@@ -78,6 +81,33 @@ const IDLE_FRAME_MS = 1000 / 10;
 
 /** World-space distance within which a pointer "touches" a flow path. */
 const FLOW_HIT_DISTANCE = 14;
+const TOOLTIP_EDGE_PAD = 8;
+
+export function placeTooltip(
+  anchor: { x: number; y: number },
+  tooltip: { w: number; h: number },
+  viewport: { w: number; h: number },
+  offset = 14,
+): { left: number; top: number } {
+  let left = anchor.x + offset;
+  let top = anchor.y + offset;
+  if (left + tooltip.w > viewport.w - TOOLTIP_EDGE_PAD) {
+    left = anchor.x - tooltip.w - offset;
+  }
+  if (top + tooltip.h > viewport.h - TOOLTIP_EDGE_PAD) {
+    top = anchor.y - tooltip.h - offset;
+  }
+  return {
+    left: Math.min(
+      Math.max(TOOLTIP_EDGE_PAD, left),
+      Math.max(TOOLTIP_EDGE_PAD, viewport.w - tooltip.w - TOOLTIP_EDGE_PAD),
+    ),
+    top: Math.min(
+      Math.max(TOOLTIP_EDGE_PAD, top),
+      Math.max(TOOLTIP_EDGE_PAD, viewport.h - tooltip.h - TOOLTIP_EDGE_PAD),
+    ),
+  };
+}
 
 interface HitBody {
   id: string;
@@ -123,16 +153,42 @@ function hitBodies(model: SceneModel, layout: SceneLayout): HitBody[] {
     });
   }
   if (model.docker.status !== "not-configured") {
-    const belt = layout.dockerBelt;
-    const mid = (belt.a0 + belt.a1) / 2;
+    const anchor = layout.containerCaption;
     out.push({
       id: "docker",
       label: "Docker containers detail",
-      cx: belt.center.x + Math.cos(mid) * belt.r,
-      cy: belt.center.y + Math.sin(mid) * belt.r,
-      r: 54,
+      cx: anchor.x,
+      cy: anchor.y,
+      r: 24,
       selection: { kind: "docker" },
     });
+    for (const container of model.docker.containers) {
+      const geom = layout.containerField.get(container.name);
+      if (!geom) continue;
+      const metrics = [
+        container.cpuFraction === null ? "CPU unknown" : `${container.cpuFraction.toFixed(2)} cores`,
+        container.memoryBytes === null ? "memory unknown" : undefined,
+        container.freshness === "live" ? undefined : container.freshness,
+      ].filter(Boolean).join(", ");
+      out.push({
+        id: geom.id,
+        label: `${container.name} container detail. ${container.state}${metrics ? `. ${metrics}` : ""}`,
+        cx: geom.center.x,
+        cy: geom.center.y,
+        r: Math.max(geom.atmosphereR, 9),
+        selection: { kind: "container", name: container.name },
+      });
+    }
+    if (layout.containerOverflow) {
+      out.push({
+        id: layout.containerOverflow.id,
+        label: `${layout.containerOverflowCount} more containers. Open all container details`,
+        cx: layout.containerOverflow.center.x,
+        cy: layout.containerOverflow.center.y,
+        r: layout.containerOverflow.atmosphereR,
+        selection: { kind: "docker" },
+      });
+    }
   }
   return out;
 }
@@ -156,10 +212,12 @@ export function TopologyScene({
 }: SceneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [hovered, setHovered] = useState<string | null>(null);
   /** Hovered/focused flow tooltip: flow id + world anchor. */
   const [flowTip, setFlowTip] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [tooltipSize, setTooltipSize] = useState({ w: 280, h: 64 });
   // Overlays render only after mount: the server has no viewport, so SSR'ing
   // projected positions would paint garbage and mismatch on hydration.
   const [mounted, setMounted] = useState(false);
@@ -331,7 +389,9 @@ export function TopologyScene({
       if (document.hidden) stop();
       else start();
     };
-    start();
+    // A telemetry prop update re-runs this effect. Do not let that restart the
+    // loop after a visibilitychange already stopped a hidden tab.
+    if (!document.hidden) start();
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       stop();
@@ -408,6 +468,19 @@ export function TopologyScene({
     ? model.flows.find((f) => f.id === flowTip.id) ?? null
     : null;
   const tipText = tipFlow ? describeFlow(tipFlow, now) : null;
+  useEffect(() => {
+    if (!tipText || !tooltipRef.current) return;
+    const rect = tooltipRef.current.getBoundingClientRect();
+    setTooltipSize((previous) =>
+      Math.abs(previous.w - rect.width) < 0.5 && Math.abs(previous.h - rect.height) < 0.5
+        ? previous
+        : { w: rect.width, h: rect.height },
+    );
+  }, [tipText]);
+  const projectedTip = flowTip ? project(flowTip.x, flowTip.y) : null;
+  const tooltipPosition = projectedTip
+    ? placeTooltip(projectedTip, tooltipSize, size)
+    : null;
 
   return (
     <div
@@ -470,7 +543,9 @@ export function TopologyScene({
             />
           );
         })}
-        {/* Flow focus targets: keyboard access to each live flow's provenance. */}
+        {/* Flow focus targets: keyboard access to each live flow's provenance.
+            Activation (click/Enter) opens the shared flow-detail drawer with
+            the full technical evidence; the two-line tooltip stays terse. */}
         {mounted && flowGeoms.map((g) => {
           const mid = pointAtLength(g.path, g.path.totalLength / 2);
           const p = project(mid.x, mid.y);
@@ -479,8 +554,10 @@ export function TopologyScene({
             <button
               key={g.flow.id}
               type="button"
-              aria-label={`${d.summary}. ${d.detail}`}
+              aria-label={d.accessible}
+              aria-haspopup="dialog"
               data-flow-target
+              onClick={() => onSelect({ kind: "flow", id: g.flow.id })}
               onFocus={() => setFlowTip({ id: g.flow.id, x: mid.x, y: mid.y })}
               onBlur={() => setFlowTip((cur) => (cur?.id === g.flow.id ? null : cur))}
               onMouseEnter={() => setFlowTip({ id: g.flow.id, x: mid.x, y: mid.y })}
@@ -493,15 +570,13 @@ export function TopologyScene({
       {/* Flow provenance tooltip (hover/focus) — restrained, single instance. */}
       {mounted && flowTip && tipText && (
         <div
+          ref={tooltipRef}
           className="pointer-events-none absolute z-10 max-w-xs rounded-md border border-hairline bg-surface/95 px-3 py-2 shadow-lg"
-          style={{
-            left: Math.min(project(flowTip.x, flowTip.y).x + 14, size.w - 280),
-            top: project(flowTip.x, flowTip.y).y + 14,
-          }}
+          style={tooltipPosition ?? undefined}
           role="status"
         >
-          <div className="tnum text-[12px] leading-snug text-fg">{tipText.summary}</div>
-          <div className="mt-0.5 text-[11px] leading-snug text-faint">{tipText.detail}</div>
+          <div className="text-[11px] leading-snug text-faint">{tipText.title}</div>
+          <div className="tnum mt-0.5 text-[12px] leading-snug text-fg">{tipText.value}</div>
         </div>
       )}
     </div>

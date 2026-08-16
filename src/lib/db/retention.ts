@@ -92,7 +92,7 @@ export interface DownsampleOptions {
 /**
  * Collapse high-frequency throughput points older than `olderThanMs` into
  * bucket averages of width `bucketMs`, replacing the raw rows. Recent points
- * (within the window) are untouched so the live 45m chart keeps full detail.
+ * (within the window) are untouched so recent diagnostics keep full detail.
  *
  * Returns the net change in row count (negative = rows removed).
  */
@@ -211,8 +211,8 @@ export function runMaintenance(
   now: number,
   policy: RetentionPolicy = DEFAULT_RETENTION,
 ): MaintenanceResult {
-  // Downsample points older than 90 min into 5-min buckets — keeps the live
-  // ~45m chart at full resolution while collapsing the tail.
+  // Downsample points older than 90 min into 5-min buckets, preserving recent
+  // diagnostic detail while collapsing the tail.
   const throughputDelta = downsampleThroughput(db, now, {
     olderThanMs: 90 * 60_000,
     bucketMs: 5 * 60_000,

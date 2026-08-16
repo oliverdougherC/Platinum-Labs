@@ -3,8 +3,7 @@
  *
  * DB-agnostic: every function takes a `DB` handle, so the whole layer is unit-
  * tested against an in-memory database. Queries are indexed for the three hot
- * paths — the ~45m media throughput chart, the 30/90d storage trend, and the
- * recent-activity feed.
+ * paths — recent throughput, the 30/90d storage trend, and the activity feed.
  */
 
 import type { ActivityEvent, ConnectorId, Severity } from "@/lib/types";

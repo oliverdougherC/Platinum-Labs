@@ -1,9 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { buildSceneModel, capacityTone } from "@/lib/scene/model";
-import { computeLayout, WORLD_H, type SceneLayout } from "@/lib/scene/layout";
+import {
+  buildSceneModel,
+  capacityTone,
+  containerMetricCoverage,
+  containerRadius,
+  containerResourceScore,
+  containerWorkScore,
+} from "@/lib/scene/model";
+import {
+  computeLayout,
+  MAX_RENDERED_CONTAINERS,
+  WORLD_H,
+  type SceneLayout,
+} from "@/lib/scene/layout";
 import { buildLabels, describeFlow, labelsOverlap } from "@/lib/scene/labels";
 import {
   flowOverlayIsLive,
+  containerMotionOffset,
+  containerMotionPhase,
+  containerStrokeTreatment,
   tunnelBodyIsBidirectional,
   tunnelEndpointTokens,
 } from "@/lib/scene/render";
@@ -14,16 +29,21 @@ import {
   routeFlows,
   sweepThrough,
 } from "@/lib/scene/routing";
-import { SceneMotion } from "@/lib/scene/motion";
+import { networkIntensity, SceneMotion } from "@/lib/scene/motion";
 import { dist } from "@/lib/scene/geom";
 import { buildBackground } from "@/lib/scene/background";
 import { appConfig } from "@/lib/config";
 import { deriveFlows } from "@/lib/topology/activity";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
-import { FAKE_CORE_COUNT } from "@/lib/fake/telemetry";
+import {
+  FAKE_CORE_COUNT,
+  REAL_FIELD_CONTAINER_COUNT,
+  STRESS_FIELD_CONTAINER_COUNT,
+} from "@/lib/fake/telemetry";
 import { testPool } from "@/lib/test/factories";
 import type { BodyGeom } from "@/lib/scene/layout";
 import type { SceneModel } from "@/lib/scene/model";
+import { placeTooltip } from "@/components/topology/scene";
 
 const NOW = 1_754_000_000_000;
 
@@ -101,6 +121,43 @@ describe("scene model semantics", () => {
     expect(both.count).toBeNull();
   });
 
+  it("a paused session reads paused — never streaming/transcoding — and does not glow", () => {
+    const paused = model("paused").services.find((s) => s.id === "jellyfin")!;
+    expect(paused.detail).toBe("paused");
+    expect(paused.active).toBe(false);
+    expect(paused.count).toBe(1); // the session stays visible, it just is not work
+
+    // Mixed playing + paused: the playing sessions carry the detail word and
+    // the paused remainder is named, not silently absorbed.
+    const mixedSnapshot = makeFakeSnapshot("multi-session", NOW);
+    const mixed = buildSceneModel(
+      {
+        ...mixedSnapshot,
+        jellyfin: {
+          ...mixedSnapshot.jellyfin,
+          sessions: mixedSnapshot.jellyfin.sessions.map((s, i) =>
+            i === 0 ? { ...s, paused: true } : s,
+          ),
+        },
+      },
+      { seerrConfigured: true, now: NOW },
+    ).services.find((s) => s.id === "jellyfin")!;
+    expect(mixed.active).toBe(true);
+    expect(mixed.detail).toBe("transcoding · 1 paused");
+    expect(mixed.count).toBe(2);
+  });
+
+  it("paused sessions create no service glow, flow width, or breathing paths", () => {
+    const m = model("paused");
+    expect(m.flows).toEqual([]);
+    const motion = new SceneMotion();
+    motion.applyModel(m);
+    motion.advance(0);
+    motion.advance(10_000);
+    expect(motion.liveFlows()).toEqual([]);
+    expect(motion.serviceGlowOf("jellyfin")).toBe(0);
+  });
+
   it("labels retained network rates explicitly as stale", () => {
     const staleModel = {
       ...model("downloads"),
@@ -111,6 +168,229 @@ describe("scene model semantics", () => {
     expect(network.secondary).toContain("stale");
     expect(network.secondaryTone).toBe("warn");
   });
+
+  it("bounds nonlinear container resource size and keeps unknown metrics quiet", () => {
+    expect(containerResourceScore(null, null)).toBe(0);
+    expect(containerRadius(containerResourceScore(null, null))).toBe(3);
+    expect(containerRadius(-10)).toBe(3);
+    expect(containerRadius(10)).toBe(13);
+    expect(containerResourceScore(8, 64 * 1024 ** 3)).toBeLessThanOrEqual(1);
+  });
+
+  it("retains container metrics and gates motion for stale and reduced-motion state", () => {
+    const live = model("active").docker.containers.find((container) => container.name === "jellyfin")!;
+    expect(live.netTxBps).not.toBeNull();
+    expect(live.blockReadBps).not.toBeNull();
+    expect(live.serviceAssociation).toBe("jellyfin");
+    expect(containerMotionOffset(live, 0, true).x).not.toBe(0);
+    expect(containerMotionOffset(live, 0, false)).toEqual({ x: 0, y: 0 });
+
+    const snapshot = makeFakeSnapshot("active", NOW);
+    snapshot.telemetry.docker.status = "stale";
+    const stale = buildSceneModel(snapshot, { seerrConfigured: true, now: NOW })
+      .docker.containers.find((container) => container.name === "jellyfin")!;
+    expect(stale.freshness).toBe("stale");
+    expect(containerMotionOffset(stale, 0, true)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("uses an explicit safe host label and a generic fallback", () => {
+    const snapshot = makeFakeSnapshot("idle", NOW);
+    snapshot.hostLabel = "Lab compute";
+    expect(buildSceneModel(snapshot, { seerrConfigured: true, now: NOW }).core.hostname)
+      .toBe("Lab compute");
+    delete snapshot.hostLabel;
+    expect(buildSceneModel(snapshot, { seerrConfigured: true, now: NOW }).core.hostname)
+      .toBe("host");
+  });
+
+  it("scales network energy against 1 GbE, 10 GbE, and a conservative unknown link", () => {
+    const oneGbE = 125_000_000;
+    const tenGbE = 1_250_000_000;
+    expect(networkIntensity(oneGbE, oneGbE)).toBe(1);
+    expect(networkIntensity(oneGbE, tenGbE)).toBeCloseTo(Math.sqrt(0.1), 6);
+    expect(networkIntensity(oneGbE, null)).toBeCloseTo(Math.sqrt(0.1), 6);
+    expect(networkIntensity(40_000, tenGbE)).toBeLessThan(0.01);
+    expect(networkIntensity(tenGbE * 4, tenGbE)).toBe(1);
+    expect(networkIntensity(null, oneGbE)).toBe(0);
+  });
+});
+
+describe("container metric coverage — unknown is never confirmed idle (PLA-273)", () => {
+  const metrics = (
+    overrides: Partial<Parameters<typeof containerMetricCoverage>[0]>,
+  ): Parameters<typeof containerMetricCoverage>[0] => ({
+    cpuFraction: 0.2,
+    memoryBytes: 512 * 1024 ** 2,
+    netRxBps: 1_000,
+    netTxBps: 1_000,
+    blockReadBps: 500,
+    blockWriteBps: 500,
+    ...overrides,
+  });
+
+  /** A live container model built straight from the fake snapshot, mutated. */
+  function liveContainer(
+    mutate: (c: import("@/lib/types").DockerContainerTelemetry) => void,
+  ) {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const target = snapshot.telemetry.docker.value!.containers.find(
+      (c) => c.name === "sonarr",
+    )!;
+    mutate(target);
+    return buildSceneModel(snapshot, { seerrConfigured: true, now: NOW })
+      .docker.containers.find((c) => c.name === "sonarr")!;
+  }
+
+  it("a confirmed all-zero sample is complete coverage and a solid quiet body", () => {
+    const container = liveContainer((c) => {
+      c.cpuFraction = 0;
+      c.memoryBytes = 0;
+      c.netRxBps = 0;
+      c.netTxBps = 0;
+      c.blockReadBps = 0;
+      c.blockWriteBps = 0;
+    });
+    expect(container.metricCoverage).toBe("complete");
+    expect(containerStrokeTreatment(container)).toEqual({ token: "fg", dash: null });
+  });
+
+  it("all metrics null (collector refresh-budget skip) is unavailable — dashed, static", () => {
+    const container = liveContainer((c) => {
+      c.cpuFraction = null;
+      c.memoryBytes = null;
+      c.netRxBps = null;
+      c.netTxBps = null;
+      c.blockReadBps = null;
+      c.blockWriteBps = null;
+    });
+    expect(container.metricCoverage).toBe("unavailable");
+    expect(container.state).toBe("running"); // state known, metrics not
+    // Neutral dashed treatment, distinct from unknown-STATE (faint [2,2]).
+    expect(containerStrokeTreatment(container)).toEqual({ token: "muted", dash: [4, 3] });
+    // No metrics ⇒ no motion, even while the docker domain is live.
+    expect(containerMotionOffset(container, 3, true)).toEqual({ x: 0, y: 0 });
+    expect(container.ioIntensity).toBe(0);
+  });
+
+  it("CPU known / memory unknown is partial coverage", () => {
+    expect(containerMetricCoverage(metrics({ memoryBytes: null }))).toBe("partial");
+  });
+
+  it("I/O unknown with known cpu+memory is partial coverage (cgroup v2 blkio case)", () => {
+    expect(
+      containerMetricCoverage(
+        metrics({ netRxBps: null, netTxBps: null, blockReadBps: null, blockWriteBps: null }),
+      ),
+    ).toBe("partial");
+    expect(containerMetricCoverage(metrics({}))).toBe("complete");
+  });
+
+  it("stale last-known-good metrics keep their shape but never animate", () => {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    snapshot.telemetry.docker.status = "stale";
+    const container = buildSceneModel(snapshot, { seerrConfigured: true, now: NOW })
+      .docker.containers.find((c) => c.name === "jellyfin")!;
+    expect(container.freshness).toBe("stale");
+    expect(container.metricCoverage).toBe("complete"); // values retained…
+    expect(container.radius).toBeGreaterThan(3); // …so the body keeps its size
+    expect(containerMotionOffset(container, 3, true)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("unknown-state containers keep their distinct unverified treatment", () => {
+    const container = liveContainer((c) => {
+      c.state = "unknown";
+      c.cpuFraction = null;
+      c.memoryBytes = null;
+    });
+    expect(container.unverified).toBe(true);
+    expect(containerStrokeTreatment(container)).toEqual({ token: "faint", dash: [2, 2] });
+  });
+});
+
+describe("container motion is WORK, never residency (V2.1 motion truth)", () => {
+  /** A live container model built straight from the fake snapshot, mutated. */
+  function liveContainer(
+    mutate: (c: import("@/lib/types").DockerContainerTelemetry) => void,
+  ) {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const target = snapshot.telemetry.docker.value!.containers.find(
+      (c) => c.name === "sonarr",
+    )!;
+    mutate(target);
+    return buildSceneModel(snapshot, { seerrConfigured: true, now: NOW })
+      .docker.containers.find((c) => c.name === "sonarr")!;
+  }
+
+  it("a memory-only idle container (CPU 0, net 0, block 0, big RSS) sits still — but stays large", () => {
+    const container = liveContainer((c) => {
+      c.cpuFraction = 0;
+      c.memoryBytes = 6 * 1024 ** 3;
+      c.netRxBps = 0;
+      c.netTxBps = 0;
+      c.blockReadBps = 0;
+      c.blockWriteBps = 0;
+    });
+    expect(container.workScore).toBe(0);
+    expect(containerMotionOffset(container, 3, true)).toEqual({ x: 0, y: 0 });
+    // Size may still reflect residency; motion may not.
+    expect(container.radius).toBeGreaterThan(6);
+  });
+
+  it("CPU work moves; network I/O and block I/O each carry local energy", () => {
+    const cpuActive = liveContainer((c) => {
+      c.cpuFraction = 1.4;
+      c.netRxBps = 0;
+      c.netTxBps = 0;
+      c.blockReadBps = 0;
+      c.blockWriteBps = 0;
+    });
+    expect(cpuActive.workScore).toBeGreaterThan(0.5);
+    expect(containerMotionOffset(cpuActive, 3, true).x).not.toBe(0);
+
+    const netActive = liveContainer((c) => {
+      c.cpuFraction = 0;
+      c.netRxBps = 40_000_000;
+      c.netTxBps = 0;
+      c.blockReadBps = 0;
+      c.blockWriteBps = 0;
+    });
+    expect(netActive.workScore).toBeGreaterThan(0);
+    expect(containerMotionOffset(netActive, 3, true).x).not.toBe(0);
+
+    const blockActive = liveContainer((c) => {
+      c.cpuFraction = 0;
+      c.netRxBps = 0;
+      c.netTxBps = 0;
+      c.blockReadBps = 0;
+      c.blockWriteBps = 40_000_000;
+    });
+    expect(blockActive.workScore).toBeGreaterThan(0);
+    expect(containerMotionOffset(blockActive, 3, true).y).not.toBe(0);
+  });
+
+  it("unknown metrics contribute no motion energy — quiet, never fabricated", () => {
+    expect(containerWorkScore(null, 0)).toBe(0);
+    const partialUnknown = liveContainer((c) => {
+      c.cpuFraction = null;
+      c.memoryBytes = 2 * 1024 ** 3;
+      c.netRxBps = null;
+      c.netTxBps = null;
+      c.blockReadBps = null;
+      c.blockWriteBps = null;
+    });
+    // Partial coverage (memory known) with every WORK metric unknown: still.
+    expect(partialUnknown.metricCoverage).toBe("partial");
+    expect(partialUnknown.workScore).toBe(0);
+    expect(containerMotionOffset(partialUnknown, 3, true)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("phase derives from the FULL name: equal length + first letter must not synchronize", () => {
+    const a = containerMotionPhase("sonarr");
+    const b = containerMotionPhase("seerrr");
+    expect(a).not.toBe(b);
+    // Deterministic per name across calls.
+    expect(containerMotionPhase("sonarr")).toBe(a);
+  });
 });
 
 describe("layout determinism and bounds", () => {
@@ -119,6 +399,257 @@ describe("layout determinism and bounds", () => {
     const a = computeLayout(m, 1920 / 992);
     const b = computeLayout(m, 1920 / 992);
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it("keeps container positions stable across telemetry ordering changes", () => {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const forward = buildSceneModel(snapshot, { seerrConfigured: true, now: NOW });
+    const reversed = buildSceneModel({
+      ...snapshot,
+      telemetry: {
+        ...snapshot.telemetry,
+        docker: {
+          ...snapshot.telemetry.docker,
+          value: snapshot.telemetry.docker.value
+            ? {
+                ...snapshot.telemetry.docker.value,
+                containers: [...snapshot.telemetry.docker.value.containers].reverse(),
+              }
+            : null,
+        },
+      },
+    }, { seerrConfigured: true, now: NOW });
+    const a = computeLayout(forward, 16 / 9);
+    const b = computeLayout(reversed, 16 / 9);
+    expect([...a.containerField.entries()]).toEqual([...b.containerField.entries()]);
+  });
+
+  it("container centers depend on identity, not telemetry (PLA-272 stability)", () => {
+    const baseline = makeFakeSnapshot("active", NOW);
+    const centersOf = (snapshot: typeof baseline) => {
+      const layout = computeLayout(
+        buildSceneModel(snapshot, { seerrConfigured: true, now: NOW }),
+        16 / 9,
+      );
+      return new Map(
+        [...layout.containerField.entries()].map(([name, geom]) => [
+          name,
+          `${geom.center.x.toFixed(6)},${geom.center.y.toFixed(6)}`,
+        ]),
+      );
+    };
+    const baselineCenters = centersOf(baseline);
+
+    const mutate = (
+      change: (c: import("@/lib/types").DockerContainerTelemetry) => void,
+      name = "sonarr",
+    ) => {
+      const snapshot = makeFakeSnapshot("active", NOW);
+      change(snapshot.telemetry.docker.value!.containers.find((c) => c.name === name)!);
+      return centersOf(snapshot);
+    };
+
+    // CPU null → confirmed idle → hot: every center identical.
+    expect(mutate((c) => (c.cpuFraction = null))).toEqual(baselineCenters);
+    expect(mutate((c) => (c.cpuFraction = 0))).toEqual(baselineCenters);
+    expect(mutate((c) => (c.cpuFraction = 1.8))).toEqual(baselineCenters);
+    // Memory changing by two orders of magnitude.
+    expect(mutate((c) => (c.memoryBytes = 12 * 1024 ** 3))).toEqual(baselineCenters);
+    // I/O null → very active (halos are not layout obstacles).
+    expect(
+      mutate((c) => {
+        c.netRxBps = 90_000_000;
+        c.netTxBps = 90_000_000;
+        c.blockReadBps = 120_000_000;
+        c.blockWriteBps = 120_000_000;
+      }),
+    ).toEqual(baselineCenters);
+    // Health / state changes.
+    expect(
+      mutate((c) => {
+        c.health = "unhealthy";
+        c.state = "exited";
+      }),
+    ).toEqual(baselineCenters);
+  });
+
+  it("prioritizes unhealthy, unknown, and hot containers over alphabetical order at the budget", () => {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const docker = snapshot.telemetry.docker.value!;
+    const base = docker.containers[0]!;
+    const idle = (index: number): typeof base => ({
+      ...base,
+      name: `container-${String(index).padStart(3, "0")}`,
+      state: "running",
+      health: null,
+      cpuFraction: 0.01,
+      memoryBytes: 128 * 1024 ** 2,
+      netRxBps: 1_000,
+      netTxBps: 1_000,
+      blockReadBps: 0,
+      blockWriteBps: 0,
+    });
+    // 113 idle containers, then three attention-worthy ones whose names sort
+    // LAST — a first-96-alphabetical rule would hide exactly these.
+    docker.containers = [
+      ...Array.from({ length: 113 }, (_, i) => idle(i)),
+      { ...idle(113), name: "zz-exited", state: "exited" as const, health: "unhealthy" as const },
+      { ...idle(114), name: "zz-unknown", state: "unknown" as const },
+      { ...idle(115), name: "zz-hot", cpuFraction: 3.2, memoryBytes: 9 * 1024 ** 3 },
+    ];
+    docker.total = docker.containers.length;
+    docker.running = docker.containers.length - 1;
+
+    const layout = computeLayout(
+      buildSceneModel(snapshot, { seerrConfigured: true, now: NOW }),
+      16 / 9,
+    );
+    expect(layout.containerField.size).toBe(MAX_RENDERED_CONTAINERS);
+    expect(layout.containerOverflowCount).toBe(116 - MAX_RENDERED_CONTAINERS);
+    expect(layout.containerOverflow).not.toBeNull();
+    // The attention-worthy bodies are all rendered despite sorting last.
+    expect(layout.containerField.has("zz-exited")).toBe(true);
+    expect(layout.containerField.has("zz-unknown")).toBe(true);
+    expect(layout.containerField.has("zz-hot")).toBe(true);
+    // …which means some alphabetically-earlier idle container yielded.
+    expect(layout.containerField.has("container-112")).toBe(false);
+  });
+
+  it("an alphabetically-last RUNNING container with all-null metrics stays rendered at the budget", () => {
+    // A stats-collection skip means the runtime work is UNKNOWN — it could be
+    // hiding real load. A known-idle container must never displace it.
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const docker = snapshot.telemetry.docker.value!;
+    const base = docker.containers[0]!;
+    const idle = (index: number): typeof base => ({
+      ...base,
+      name: `container-${String(index).padStart(3, "0")}`,
+      state: "running",
+      health: null,
+      cpuFraction: 0.01,
+      memoryBytes: 128 * 1024 ** 2,
+      netRxBps: 1_000,
+      netTxBps: 1_000,
+      blockReadBps: 0,
+      blockWriteBps: 0,
+    });
+    docker.containers = [
+      ...Array.from({ length: 140 }, (_, i) => idle(i)),
+      {
+        ...idle(140),
+        name: "zzz-stats-skipped",
+        state: "running" as const,
+        cpuFraction: null,
+        memoryBytes: null,
+        netRxBps: null,
+        netTxBps: null,
+        blockReadBps: null,
+        blockWriteBps: null,
+      },
+    ];
+    docker.total = docker.containers.length;
+    docker.running = docker.containers.length;
+
+    const m = buildSceneModel(snapshot, { seerrConfigured: true, now: NOW });
+    const skipped = m.docker.containers.find((c) => c.name === "zzz-stats-skipped")!;
+    expect(skipped.metricCoverage).toBe("unavailable");
+    const layout = computeLayout(m, 16 / 9);
+    expect(layout.containerField.size).toBe(MAX_RENDERED_CONTAINERS);
+    expect(layout.containerField.has("zzz-stats-skipped")).toBe(true);
+    // A known-idle container yielded instead.
+    expect(layout.containerField.has("container-139")).toBe(false);
+  });
+
+  it("uses a truthful overflow body instead of silently truncating large populations", () => {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    const docker = snapshot.telemetry.docker.value!;
+    const base = docker.containers[0]!;
+    docker.containers = Array.from({ length: MAX_RENDERED_CONTAINERS + 9 }, (_, index) => ({
+      ...base,
+      name: `container-${String(index).padStart(3, "0")}`,
+    }));
+    docker.total = docker.containers.length;
+    docker.running = docker.containers.length;
+    const large = buildSceneModel(snapshot, { seerrConfigured: true, now: NOW });
+    const layout = computeLayout(large, 16 / 9);
+    expect(large.docker.containers).toHaveLength(MAX_RENDERED_CONTAINERS + 9);
+    expect(layout.containerField.size).toBe(MAX_RENDERED_CONTAINERS);
+    expect(layout.containerOverflowCount).toBe(9);
+    expect(layout.containerOverflow).not.toBeNull();
+  });
+
+  it("the real-scale fixture is a representative 44-container population, fully rendered", () => {
+    expect(REAL_FIELD_CONTAINER_COUNT).toBe(44);
+    const m = model("container-field-real");
+    expect(m.docker.containers).toHaveLength(44);
+
+    // Representative distribution, not 44 clones:
+    const hot = m.docker.containers.filter((c) => (c.cpuFraction ?? 0) >= 0.5);
+    const idle = m.docker.containers.filter(
+      (c) => c.cpuFraction !== null && c.cpuFraction < 0.05,
+    );
+    const noStats = m.docker.containers.filter((c) => c.metricCoverage === "unavailable");
+    const partial = m.docker.containers.filter((c) => c.metricCoverage === "partial");
+    expect(hot.length).toBeGreaterThanOrEqual(3);
+    expect(idle.length).toBeGreaterThanOrEqual(12);
+    expect(noStats.length).toBeGreaterThanOrEqual(3);
+    expect(partial.length).toBeGreaterThanOrEqual(2);
+    expect(m.docker.containers.some((c) => c.bad)).toBe(true);
+    expect(m.docker.containers.some((c) => c.unverified)).toBe(true);
+    expect(m.docker.containers.some((c) => (c.netRxBps ?? 0) > 1_000_000)).toBe(true);
+    expect(m.docker.containers.some((c) => (c.blockWriteBps ?? 0) > 1_000_000)).toBe(true);
+
+    // Under the 96-body budget the entire population renders — no overflow.
+    const layout = computeLayout(m, 16 / 9);
+    expect(layout.containerField.size).toBe(44);
+    expect(layout.containerOverflowCount).toBe(0);
+    expect(layout.containerOverflow).toBeNull();
+    for (const geom of layout.containerField.values()) {
+      expect(geom.center.x).toBeGreaterThan(0);
+      expect(geom.center.x).toBeLessThan(layout.world.w);
+      expect(geom.center.y).toBeGreaterThan(0);
+      expect(geom.center.y).toBeLessThan(layout.world.h);
+    }
+  });
+
+  it("the stress fixture exceeds the budget with a truthful overflow and no hidden attention", () => {
+    expect(STRESS_FIELD_CONTAINER_COUNT).toBeGreaterThan(MAX_RENDERED_CONTAINERS);
+    const m = model("container-field-stress");
+    expect(m.docker.containers).toHaveLength(STRESS_FIELD_CONTAINER_COUNT);
+    const layout = computeLayout(m, 16 / 9);
+    expect(layout.containerField.size).toBe(MAX_RENDERED_CONTAINERS);
+    expect(layout.containerOverflowCount).toBe(
+      STRESS_FIELD_CONTAINER_COUNT - MAX_RENDERED_CONTAINERS,
+    );
+    // The alphabetically-last unhealthy/unknown workers must still render.
+    expect(layout.containerField.has("zz-batch-failed")).toBe(true);
+    expect(layout.containerField.has("zz-batch-unknown")).toBe(true);
+    expect(layout.containerField.has("flaresolverr")).toBe(true);
+    expect(layout.containerField.has("unpackerr")).toBe(true);
+    // The hottest live workloads survive selection too.
+    expect(layout.containerField.has("jellyfin")).toBe(true);
+    for (const geom of layout.containerField.values()) {
+      expect(geom.center.x).toBeGreaterThan(0);
+      expect(geom.center.x).toBeLessThan(layout.world.w);
+      expect(geom.center.y).toBeGreaterThan(0);
+      expect(geom.center.y).toBeLessThan(layout.world.h);
+    }
+  });
+
+  it("keeps the representative container field clear of primary bodies", () => {
+    const layout = computeLayout(model("active"), 16 / 9);
+    const primary = [
+      ...layout.services.values(),
+      ...layout.storage.values(),
+      ...(layout.genericStorage ? [layout.genericStorage] : []),
+    ];
+    for (const container of layout.containerField.values()) {
+      for (const body of primary) {
+        expect(dist(container.center, body.center)).toBeGreaterThanOrEqual(
+          body.atmosphereR + container.r + 12,
+        );
+      }
+    }
   });
 
   it.each(VIEWPORTS)("keeps every body + label inside safe bounds at %ox", (vp) => {
@@ -300,30 +831,116 @@ describe("gateway + dormant topology", () => {
 });
 
 describe("flow inspection text", () => {
-  it("describes a measured flow with evidence, rates, and freshness", () => {
+  it("keeps measured flow copy concise while accessibility retains evidence", () => {
     const flows = deriveFlows(makeFakeSnapshot("seeding", NOW), NOW);
     const wan = flows.find((f) => f.kind === "wan-transfer")!;
     const d = describeFlow(wan, NOW);
-    expect(d.summary).toContain("measured");
-    expect(d.summary).toMatch(/in \d/);
-    expect(d.summary).toMatch(/out \d/);
-    expect(d.summary).toContain("updated");
-    expect(d.detail).toContain("qBittorrent");
+    expect(d.title).toBe("network → qBittorrent");
+    expect(d.value).toMatch(/in \d/);
+    expect(d.value).toMatch(/out \d/);
+    expect(`${d.title}\n${d.value}`).not.toMatch(/measured|updated|derived/);
+    expect(d.accessible).toContain("measured");
+    expect(d.accessible).toContain("source updated");
+    expect(d.accessible).toContain("qBittorrent");
+  });
+
+  it("estimated rates carry the visible ≈ prefix; measured/reported values stay plain", () => {
+    const snap = makeFakeSnapshot("transcode", NOW);
+    const estimated = {
+      ...snap,
+      jellyfinContainer: null,
+      jellyfin: {
+        ...snap.jellyfin,
+        sessions: snap.jellyfin.sessions.map((s) => ({
+          ...s,
+          rate: {
+            bytesPerSecond: 3_000_000,
+            basis: "source-media" as const,
+            evidence: "estimated" as const,
+          },
+        })),
+      },
+    };
+    const egress = deriveFlows(estimated, NOW).find((f) => f.kind === "egress")!;
+    expect(describeFlow(egress, NOW).value).toBe("≈ 3.0 MB/s");
+
+    // A reported complete rate keeps the plain form.
+    const reported = deriveFlows(
+      { ...snap, jellyfinContainer: null },
+      NOW,
+    ).find((f) => f.kind === "egress")!;
+    expect(describeFlow(reported, NOW).value).toBe("1.5 MB/s");
+  });
+
+  it("estimated partial coverage combines ≈ with the unknown-contributor count", () => {
+    const snap = makeFakeSnapshot("multi-session", NOW);
+    const estimatedPartial = {
+      ...snap,
+      jellyfinContainer: null,
+      jellyfin: {
+        ...snap.jellyfin,
+        sessions: snap.jellyfin.sessions.map((s, index) =>
+          index === 0
+            ? { ...s, rate: null }
+            : {
+                ...s,
+                rate: {
+                  bytesPerSecond: 1_187_500,
+                  basis: "source-media" as const,
+                  evidence: "estimated" as const,
+                },
+              },
+        ),
+      },
+    };
+    const egress = deriveFlows(estimatedPartial, NOW).find((f) => f.kind === "egress")!;
+    expect(describeFlow(egress, NOW).value).toBe("≈ 1.2 MB/s + 1 unknown");
   });
 
   it("a state-only data flow admits its byte rate is unavailable", () => {
     const snap = makeFakeSnapshot("direct-play", NOW);
     const noBitrate = {
       ...snap,
+      jellyfinContainer: null,
       jellyfin: {
         ...snap.jellyfin,
-        sessions: snap.jellyfin.sessions.map((s) => ({ ...s, bitrateBps: null })),
+        sessions: snap.jellyfin.sessions.map((s) => ({ ...s, rate: null })),
       },
     };
     const playback = deriveFlows(noBitrate, NOW).find((f) => f.kind === "playback")!;
     const d = describeFlow(playback, NOW);
-    expect(d.summary).toContain("state confirmed");
-    expect(d.summary).toContain("byte rate unavailable");
+    expect(d.title).toBe("DataStore → Jellyfin");
+    expect(d.value).toBe("rate unknown");
+    expect(d.accessible).toContain("state evidence only");
+  });
+
+  it("shows a concise lower bound for partial session coverage", () => {
+    const snap = makeFakeSnapshot("multi-session", NOW);
+    const partial = {
+      ...snap,
+      jellyfinContainer: null,
+      jellyfin: {
+        ...snap.jellyfin,
+        sessions: snap.jellyfin.sessions.map((session, index) =>
+          index === 0 ? { ...session, rate: null } : session,
+        ),
+      },
+    };
+    const egress = deriveFlows(partial, NOW).find((flow) => flow.kind === "egress")!;
+    const description = describeFlow(egress, NOW);
+    expect(description.title).toBe("Jellyfin → network");
+    expect(description.value).toBe("1.2 MB/s + 1 unknown");
+    expect(description.accessible).toContain("partial coverage");
+  });
+
+  it("uses endpoint copy for control signals", () => {
+    const control = deriveFlows(makeFakeSnapshot("downloads", NOW), NOW).find(
+      (flow) => flow.kind === "control" && flow.from.kind === "service" && flow.from.id === "radarr",
+    )!;
+    expect(describeFlow(control, NOW)).toMatchObject({
+      title: "Radarr → qBittorrent",
+      value: "orchestrating",
+    });
   });
 
   it("a stale flow says so", () => {
@@ -335,7 +952,19 @@ describe("flow inspection text", () => {
       ),
     };
     const wan = deriveFlows(stale, NOW).find((f) => f.kind === "wan-transfer")!;
-    expect(describeFlow(wan, NOW).summary).toContain("stale");
+    expect(describeFlow(wan, NOW).value).toMatch(/^stale /);
+  });
+});
+
+describe("viewport-aware flow tooltip placement", () => {
+  const viewport = { w: 320, h: 180 };
+  const tooltip = { w: 120, h: 54 };
+
+  it("flips and clamps on every viewport edge", () => {
+    expect(placeTooltip({ x: 2, y: 2 }, tooltip, viewport)).toEqual({ left: 16, top: 16 });
+    expect(placeTooltip({ x: 318, y: 2 }, tooltip, viewport)).toEqual({ left: 184, top: 16 });
+    expect(placeTooltip({ x: 2, y: 178 }, tooltip, viewport)).toEqual({ left: 16, top: 110 });
+    expect(placeTooltip({ x: 318, y: 178 }, tooltip, viewport)).toEqual({ left: 184, top: 110 });
   });
 });
 

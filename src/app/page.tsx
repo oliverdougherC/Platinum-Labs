@@ -23,6 +23,7 @@ export const dynamic = "force-dynamic";
  *   ?freeze=<epoch-ms>     render one deterministic frame, no transport/motion
  *   ?panel=notifications   open the notification drawer
  *   ?drawer=host|docker|pool:<name>|service:<id>   open a detail drawer
+ *   ?transport=fallback|delayed|offline   deterministic shell state (dev only)
  */
 export default async function HomePage({
   searchParams,
@@ -48,6 +49,15 @@ export default async function HomePage({
   const scenarioParam = one(params.scenario);
   const panel = devControls && one(params.panel) === "notifications" ? "notifications" : null;
   const drawer = devControls ? one(params.drawer) ?? null : null;
+  const transportParam = devControls ? one(params.transport) : undefined;
+  const transportOverride =
+    transportParam === "fallback"
+      ? "reconnecting-with-fallback"
+      : transportParam === "delayed"
+        ? "data-delayed"
+        : transportParam === "offline"
+          ? "offline"
+          : undefined;
 
   return (
     <>
@@ -58,6 +68,7 @@ export default async function HomePage({
         scenario={fake && devControls ? scenarioParam : undefined}
         frozen={frozenAt !== null}
         initialPanels={{ panel, drawer }}
+        transportOverride={transportOverride}
         devControls={fake && devControls}
       />
       {/* `switcher=off` keeps the dev control out of motion recordings. */}

@@ -391,6 +391,7 @@ const CONTAINER_STATES: ContainerState[] = [
   "exited",
   "dead",
   "created",
+  "unknown",
 ];
 
 function normalizeDocker(
@@ -425,7 +426,7 @@ function normalizeDocker(
   const containers = raw.containers.map((c) => {
     const state = (CONTAINER_STATES as string[]).includes(c.state)
       ? (c.state as ContainerState)
-      : "exited";
+      : "unknown";
     let cpuFraction: number | null = null;
     const before = prevContainers.get(c.name);
     if (
