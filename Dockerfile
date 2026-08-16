@@ -30,6 +30,10 @@ RUN npm run build
 # ---- runner: minimal image with only what the server needs ----
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
+# Deployment provenance: the deploy tooling passes the exact deployed git SHA
+# so /api/health can report it as `revision`.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \

@@ -6,8 +6,14 @@ describe("/api/health", () => {
     const res = GET();
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
-    const body = (await res.json()) as { status: string; uptimeSeconds: number };
+    const body = (await res.json()) as {
+      status: string;
+      uptimeSeconds: number;
+      revision: string;
+    };
     expect(body.status).toBe("ok");
     expect(typeof body.uptimeSeconds).toBe("number");
+    expect(typeof body.revision).toBe("string");
+    expect(body.revision.length).toBeGreaterThan(0);
   });
 });
