@@ -82,6 +82,14 @@ const SHOTS = [
   // of a real server population, and a stress field above the render budget.
   { name: "33-real-scale-container-field", scenario: "container-field-real", w: 1920, h: 1080 },
   { name: "34-container-field-stress", scenario: "container-field-stress", w: 1920, h: 1080 },
+  // V2.1 pause + rate-evidence corrections: a paused session reads paused
+  // (no glow, no flows); a genuinely playing missing-output-rate transcode
+  // reads "rate unknown"; estimated rates carry ≈; and the flow detail
+  // drawer exposes the full evidence chain to sighted users.
+  { name: "35-paused-session", scenario: "paused", w: 1920, h: 1080 },
+  { name: "36-playing-rate-unknown-tooltip", scenario: "transcode-unknown-rate", w: 1920, h: 1080, action: "playback-flow" },
+  { name: "37-estimated-rate-tooltip", scenario: "direct-stream", w: 1920, h: 1080, action: "playback-flow" },
+  { name: "38-flow-detail-open", scenario: "transcode", w: 1920, h: 1080, action: "flow-detail" },
 ];
 
 /**
@@ -189,6 +197,13 @@ async function performShotAction(page, action) {
       return;
     case "control-flow":
       await focusFlow(page, ["Sonarr → qBittorrent"]);
+      return;
+    case "playback-flow":
+      await focusFlow(page, ["Jellyfin → network"]);
+      return;
+    case "flow-detail":
+      await focusFlow(page, ["Jellyfin → network"]);
+      await page.keyboard.press("Enter");
       return;
     case "request-hover":
       await page.getByRole("button", { name: "Request media" }).hover();
@@ -355,11 +370,16 @@ async function main() {
   }
   await waitForServer(`${baseUrl}/api/health`);
 
-  // Performance sampling runs headful: headless Chromium lacks the real GPU
-  // raster/compositor path and reports misleading main-thread numbers.
-  const browser = await chromium.launch(
-    PERFORMANCE ? { headless: HEADLESS_PERF } : undefined,
-  );
+  // Browser mode, stated explicitly so the evidence description can be
+  // truthful: stills / motion / determinism captures run HEADLESS (the goal
+  // is deterministic pixel output, and headless is what the committed
+  // evidence describes). Performance sampling alone runs HEADFUL by default,
+  // because headless Chromium lacks the real GPU raster/compositor path and
+  // reports misleading main-thread numbers (--headless downgrades it for
+  // rough iteration only, and the JSON records which mode ran).
+  const browser = await chromium.launch({
+    headless: PERFORMANCE ? HEADLESS_PERF : true,
+  });
   try {
     if (MOTION) {
       await captureMotion(browser, baseUrl);

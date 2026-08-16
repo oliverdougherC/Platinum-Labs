@@ -36,6 +36,7 @@ export type TelemetryProfileName =
   | "idle"
   | "playback"
   | "transcode"
+  | "transcode-unknown"
   | "downloads"
   | "seeding"
   | "importing"
@@ -58,8 +59,13 @@ interface Profile {
   netTxBps: number;
   /** Per-pool read/write rates in bytes/sec. */
   poolIo: Record<string, { read: number; write: number }>;
-  jellyfinNetTxBps?: number;
-  jellyfinBlockReadBps?: number;
+  /**
+   * Mapped Jellyfin-container rate overrides. `null` is meaningful: the
+   * container's counters were NOT sampled (unknown, never zero) — the
+   * missing-output-rate evidence scenarios depend on it.
+   */
+  jellyfinNetTxBps?: number | null;
+  jellyfinBlockReadBps?: number | null;
   unhealthyContainers?: string[];
   unknownContainers?: string[];
   /** Explicit population override (real-scale / stress fixtures). */
@@ -234,6 +240,24 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
     },
     jellyfinNetTxBps: 12_000_000,
     jellyfinBlockReadBps: 55_000_000,
+  },
+  // Mirrors the real captured missing-rate case while PLAYING: the transcode
+  // is genuinely working (CPU/GPU hot, pool reads high) but neither the
+  // session nor the mapped container yields a byte rate — the flow must read
+  // "rate unknown", never a fabricated number or a confirmed zero.
+  "transcode-unknown": {
+    cpu: 0.34,
+    hotCores: 10,
+    memFraction: 0.45,
+    gpuUtil: 0.62,
+    netRxBps: 120_000,
+    netTxBps: 12_000_000,
+    poolIo: {
+      DataStore: { read: 55_000_000, write: 0 },
+      NVME: { read: 800_000, write: 6_000_000 },
+    },
+    jellyfinNetTxBps: null,
+    jellyfinBlockReadBps: null,
   },
   // The fake universe stages downloads on NVME (HOMELAB_DOWNLOAD_POOL) and
   // keeps the library on DataStore (HOMELAB_MEDIA_POOL): downloads write the

@@ -434,6 +434,8 @@ export const SCENARIOS = [
   "direct-play",
   "transcode",
   "transcode-fallback",
+  "transcode-unknown-rate",
+  "direct-stream",
   "paused",
   "multi-session",
   "mixed-session",
@@ -473,6 +475,8 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "direct-play": "Jellyfin — direct play",
   transcode: "Jellyfin — transcode",
   "transcode-fallback": "Jellyfin — measured fallback",
+  "transcode-unknown-rate": "Jellyfin — playing, rate unknown",
+  "direct-stream": "Jellyfin — direct stream (estimated)",
   paused: "Jellyfin — paused session",
   "multi-session": "Multiple sessions",
   "mixed-session": "Mixed known / unknown sessions",
@@ -670,6 +674,59 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       acquisition: acquisitionEmpty(),
       zfs: zfsHealthy(now),
       telemetryProfile: "transcode",
+    }),
+
+  // A GENUINELY PLAYING transcode where neither the session nor the mapped
+  // container yields any byte rate: the honest display is "rate unknown"
+  // with a state-only breathing path — never a fabricated number, never a
+  // confirmed zero, and never silently hidden work.
+  "transcode-unknown-rate": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({
+            id: "s1",
+            title: "The Bear — S03E01",
+            subtitle: "S03E01 — Tomorrow",
+            method: "transcode",
+            resolution: "1080p",
+            rate: null,
+            progress: 0.27,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "transcode-unknown",
+    }),
+
+  // A remux (direct stream): the only rate evidence is the SOURCE-media
+  // bitrate, which is an ESTIMATE of the output — the visible convention
+  // must carry the ≈ prefix (V2.1 evidence-display).
+  "direct-stream": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({
+            id: "s1",
+            method: "direct-stream",
+            rate: {
+              bytesPerSecond: 4_750_000,
+              basis: "source-media",
+              evidence: "estimated",
+            },
+          }),
+        ],
+        lastPlaybackAt: now - 2 * MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "transcode-unknown",
     }),
 
   // Mirrors the committed sanitized real /Sessions case: a PAUSED transcode

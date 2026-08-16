@@ -41,6 +41,8 @@ jobs:
         run: python3 -m unittest scripts/test_zfs_collector.py
       - name: Production build
         run: npm run build
+      - name: Example-env startup smoke (built app boots with .env.example)
+        run: npm run smoke:example-env -- --skip-build
 
   security:
     name: secret scan · dependency audit
