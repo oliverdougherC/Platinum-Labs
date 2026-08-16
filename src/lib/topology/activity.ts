@@ -235,12 +235,21 @@ function weakestEvidence(values: RateEvidence[]): RateEvidence {
   return "measured";
 }
 
+/**
+ * Aggregate the ACTIVELY PLAYING sessions only. Paused sessions are excluded
+ * from both the known-rate sum and the unknown-contributor count: a paused
+ * player is moving no bytes, so counting it either way would overstate demand
+ * (as a rate) or fabricate uncertainty (as an unknown). Callers pass playing
+ * sessions; this function additionally guards so a paused session can never
+ * leak into an aggregate.
+ */
 function sessionRateAggregate(
   sessions: JellyfinSession[],
   freshness: FlowFreshness,
 ): AggregateRateObservation {
-  const known = sessions.flatMap((session) => (session.rate ? [session.rate] : []));
-  const unknownContributors = sessions.length - known.length;
+  const playing = sessions.filter((session) => !session.paused);
+  const known = playing.flatMap((session) => (session.rate ? [session.rate] : []));
+  const unknownContributors = playing.length - known.length;
   const knownBytesPerSecond =
     known.length > 0
       ? known.reduce((sum, observation) => sum + observation.bytesPerSecond, 0)
@@ -514,9 +523,17 @@ export function deriveFlows(
   }
 
   // --- playback: media storage → Jellyfin → network --------------------------
+  // Only ACTIVELY PLAYING sessions justify playback/egress flows. A paused
+  // session is preserved in detail surfaces but draws nothing: no data
+  // tunnel, no state-only breathing path, no service glow. When every session
+  // is paused, no session-derived storage or egress rate is emitted at all —
+  // positive mapped-container egress in that state remains visible as
+  // measured container activity on the container body, but it is not
+  // attributed to playback without corroborating playing sessions.
   const sessions = snapshot.jellyfin.sessions;
-  if (jellyfin.usable && sessions.length > 0) {
-    const sessionAggregate = sessionRateAggregate(sessions, jellyfin.freshness);
+  const playingSessions = sessions.filter((s) => !s.paused);
+  if (jellyfin.usable && playingSessions.length > 0) {
+    const sessionAggregate = sessionRateAggregate(playingSessions, jellyfin.freshness);
     const containerEgress = containerRate(snapshot, "netTxBps");
     const containerReads = containerRate(snapshot, "blockReadBps");
     const egress = pickHeadlineRate(containerEgress, sessionAggregate);
@@ -534,10 +551,10 @@ export function deriveFlows(
       jellyfin.freshness === "stale" || playbackRate.freshness === "stale"
         ? "stale"
         : "live";
-    const transcoding = sessions.some((s) => s.method === "transcode");
+    const transcoding = playingSessions.some((s) => s.method === "transcode");
     const label =
-      sessions.length > 1
-        ? `Jellyfin playback · ${sessions.length} sessions`
+      playingSessions.length > 1
+        ? `Jellyfin playback · ${playingSessions.length} sessions`
         : transcoding
           ? "Jellyfin transcode"
           : "Jellyfin direct play";

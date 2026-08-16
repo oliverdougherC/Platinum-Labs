@@ -50,6 +50,7 @@ const sessionSchema = z
       .object({
         PositionTicks: z.number().optional(),
         PlayMethod: z.string().optional(),
+        IsPaused: z.boolean().optional(),
       })
       .passthrough()
       .optional(),
@@ -148,6 +149,9 @@ function normalizeSession(raw: RawSession, index: number): JellyfinSession | nul
     title,
     subtitle,
     method,
+    // Reported player state only. An absent IsPaused means "not reported
+    // paused" → playing; pause is never inferred from a missing/zero rate.
+    paused: raw.PlayState?.IsPaused === true,
     progress,
     resolution: resolutionFromHeight(item.Height),
     rate: sessionRate(raw, method),

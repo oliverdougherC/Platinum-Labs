@@ -6,7 +6,7 @@ import {
   type HttpGet,
 } from "@/lib/connectors/jellyfin";
 import { ConnectorValidationError } from "@/lib/connectors/connector";
-import missingRateFixture from "@/lib/connectors/__fixtures__/jellyfin-transcode-missing-rate.json";
+import pausedMissingRateFixture from "@/lib/connectors/__fixtures__/jellyfin-transcode-paused-missing-rate.json";
 
 const NOW = 1_754_000_000_000;
 
@@ -73,13 +73,53 @@ describe("normalizeJellyfin", () => {
     expect(s.resolution).toBe("1080p");
   });
 
-  it("keeps the sanitized real missing-rate transcode unknown", () => {
+  it("keeps the sanitized real missing-rate transcode unknown AND paused", () => {
+    // The real captured case is a PAUSED transcode (PlayState.IsPaused: true).
+    // It must normalize as paused — not as an active playback session.
     const snap = normalizeJellyfin(
-      { system: SYSTEM, sessions: missingRateFixture },
+      { system: SYSTEM, sessions: pausedMissingRateFixture },
       NOW,
     );
     expect(snap.sessions).toHaveLength(1);
-    expect(snap.sessions[0]).toMatchObject({ method: "transcode", rate: null });
+    expect(snap.sessions[0]).toMatchObject({
+      method: "transcode",
+      rate: null,
+      paused: true,
+    });
+  });
+
+  it("normalizes pause state from PlayState.IsPaused only", () => {
+    const playingTranscode = {
+      ...EPISODE_TRANSCODE,
+      PlayState: { ...EPISODE_TRANSCODE.PlayState, IsPaused: false },
+    };
+    const pausedDirectPlay = {
+      ...MOVIE_SESSION,
+      Id: "paused-dp",
+      PlayState: { ...MOVIE_SESSION.PlayState, IsPaused: true },
+    };
+    const snap = normalizeJellyfin(
+      { system: SYSTEM, sessions: [playingTranscode, pausedDirectPlay, MOVIE_SESSION] },
+      NOW,
+    );
+    // Explicit IsPaused: false and an absent IsPaused both mean playing.
+    expect(snap.sessions[0]).toMatchObject({ method: "transcode", paused: false });
+    // A paused direct play keeps method and pause state separate.
+    expect(snap.sessions[1]).toMatchObject({ method: "direct-play", paused: true });
+    expect(snap.sessions[2]).toMatchObject({ paused: false });
+  });
+
+  it("never infers pause from a missing or zero rate", () => {
+    const missingRatePlaying = {
+      ...EPISODE_TRANSCODE,
+      Id: "no-rate",
+      TranscodingInfo: undefined,
+    };
+    const snap = normalizeJellyfin(
+      { system: SYSTEM, sessions: [missingRatePlaying] },
+      NOW,
+    );
+    expect(snap.sessions[0]!.paused).toBe(false);
   });
 
   it("classifies source-media bitrate as an estimate for a transcode", () => {

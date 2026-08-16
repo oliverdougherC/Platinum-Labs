@@ -103,6 +103,7 @@ function session(overrides: Partial<JellyfinSession> & { id: string }): Jellyfin
     title: "Dune: Part Two",
     subtitle: null,
     method: "direct-play",
+    paused: false,
     progress: 0.42,
     resolution: "4K",
     rate: {
@@ -433,6 +434,7 @@ export const SCENARIOS = [
   "direct-play",
   "transcode",
   "transcode-fallback",
+  "paused",
   "multi-session",
   "mixed-session",
   "downloads",
@@ -471,6 +473,7 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "direct-play": "Jellyfin — direct play",
   transcode: "Jellyfin — transcode",
   "transcode-fallback": "Jellyfin — measured fallback",
+  paused: "Jellyfin — paused session",
   "multi-session": "Multiple sessions",
   "mixed-session": "Mixed known / unknown sessions",
   downloads: "Active downloads / imports",
@@ -667,6 +670,34 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       acquisition: acquisitionEmpty(),
       zfs: zfsHealthy(now),
       telemetryProfile: "transcode",
+    }),
+
+  // Mirrors the committed sanitized real /Sessions case: a PAUSED transcode
+  // with no output rate. The session stays listed (drawer reads "paused"),
+  // but there is no playback/egress flow, no service glow, and no
+  // session-derived rate — pause is reported state, not a zero-rate guess.
+  paused: (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({
+            id: "s1",
+            title: "The Bear — S03E01",
+            subtitle: "S03E01 — Tomorrow",
+            method: "transcode",
+            paused: true,
+            resolution: "1080p",
+            rate: null,
+            progress: 0.27,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "idle",
     }),
 
   "multi-session": (now) =>

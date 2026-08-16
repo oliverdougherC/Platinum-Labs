@@ -119,6 +119,43 @@ describe("scene model semantics", () => {
     expect(both.count).toBeNull();
   });
 
+  it("a paused session reads paused — never streaming/transcoding — and does not glow", () => {
+    const paused = model("paused").services.find((s) => s.id === "jellyfin")!;
+    expect(paused.detail).toBe("paused");
+    expect(paused.active).toBe(false);
+    expect(paused.count).toBe(1); // the session stays visible, it just is not work
+
+    // Mixed playing + paused: the playing sessions carry the detail word and
+    // the paused remainder is named, not silently absorbed.
+    const mixedSnapshot = makeFakeSnapshot("multi-session", NOW);
+    const mixed = buildSceneModel(
+      {
+        ...mixedSnapshot,
+        jellyfin: {
+          ...mixedSnapshot.jellyfin,
+          sessions: mixedSnapshot.jellyfin.sessions.map((s, i) =>
+            i === 0 ? { ...s, paused: true } : s,
+          ),
+        },
+      },
+      { seerrConfigured: true, now: NOW },
+    ).services.find((s) => s.id === "jellyfin")!;
+    expect(mixed.active).toBe(true);
+    expect(mixed.detail).toBe("transcoding · 1 paused");
+    expect(mixed.count).toBe(2);
+  });
+
+  it("paused sessions create no service glow, flow width, or breathing paths", () => {
+    const m = model("paused");
+    expect(m.flows).toEqual([]);
+    const motion = new SceneMotion();
+    motion.applyModel(m);
+    motion.advance(0);
+    motion.advance(10_000);
+    expect(motion.liveFlows()).toEqual([]);
+    expect(motion.serviceGlowOf("jellyfin")).toBe(0);
+  });
+
   it("labels retained network rates explicitly as stale", () => {
     const staleModel = {
       ...model("downloads"),

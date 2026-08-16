@@ -271,15 +271,27 @@ function serviceModel(
   const status = serviceStatus(snapshot, id, opts.now);
   if (id === "jellyfin") {
     const sessions = snapshot.jellyfin.sessions;
-    const transcoding = sessions.some((s) => s.method === "transcode");
+    // Paused sessions are real sessions (kept in the count and drawer) but
+    // they are not live work: they must not glow, and they must read
+    // "paused", never "streaming"/"transcoding" (V2.1 pause-truth blocker).
+    const playing = sessions.filter((s) => !s.paused);
+    const pausedCount = sessions.length - playing.length;
+    const transcoding = playing.some((s) => s.method === "transcode");
+    const playingWord = transcoding ? "transcoding" : "streaming";
     return {
       id,
       label,
       status,
-      active: sessions.length > 0 && status === "ok",
+      active: playing.length > 0 && status === "ok",
       count: sessions.length > 0 ? sessions.length : null,
       detail:
-        sessions.length > 0 ? (transcoding ? "transcoding" : "streaming") : null,
+        sessions.length === 0
+          ? null
+          : playing.length === 0
+            ? "paused"
+            : pausedCount > 0
+              ? `${playingWord} · ${pausedCount} paused`
+              : playingWord,
     };
   }
   if (id === "qbittorrent") {

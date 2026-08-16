@@ -109,6 +109,14 @@ export interface JellyfinSession {
   /** Set for episodic content, e.g. "S02E05 — Title". */
   subtitle: string | null;
   method: PlaybackMethod;
+  /**
+   * Upstream-reported pause state (`PlayState.IsPaused`). Orthogonal to
+   * `method`: a paused transcode is still a transcode. Never inferred from a
+   * zero/missing rate — pause is a reported player state, not a rate guess.
+   * Paused sessions stay visible in detail surfaces but contribute no live
+   * activity: no rate aggregation, no service glow, no flow.
+   */
+  paused: boolean;
   /** 0..1 fraction of the item watched. */
   progress: number;
   /** e.g. "1080p", "4K". */

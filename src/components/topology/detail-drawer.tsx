@@ -483,8 +483,19 @@ function ServiceDetail({
                   </div>
                   <p className="tnum mt-0.5 text-[10.5px] text-faint">
                     {formatPercent(s.progress)} · {s.method}
+                    {s.paused ? " · paused" : ""}
                     {s.resolution ? ` · ${s.resolution}` : ""}
-                    {s.rate ? ` · ${formatRate(s.rate.bytesPerSecond)}` : ""}
+                  </p>
+                  {/* Rate evidence stays visible per session: estimated values
+                      carry the ≈ prefix (shared V2.1 convention) and every
+                      value names its basis/evidence — a source-media estimate
+                      must never read like measured output. */}
+                  <p className="tnum text-[10.5px] text-faint">
+                    {s.rate
+                      ? `${s.rate.evidence === "estimated" ? "≈ " : ""}${formatRate(
+                          s.rate.bytesPerSecond,
+                        )} · ${s.rate.basis} (${s.rate.evidence})`
+                      : "rate unknown"}
                   </p>
                 </li>
               ))}
