@@ -7,6 +7,7 @@ import {
 } from "@/lib/connectors/jellyfin";
 import { ConnectorValidationError } from "@/lib/connectors/connector";
 import pausedMissingRateFixture from "@/lib/connectors/__fixtures__/jellyfin-transcode-paused-missing-rate.json";
+import playingTranscodeFixture from "@/lib/connectors/__fixtures__/jellyfin-transcode-playing.json";
 
 const NOW = 1_754_000_000_000;
 
@@ -85,6 +86,29 @@ describe("normalizeJellyfin", () => {
       method: "transcode",
       rate: null,
       paused: true,
+    });
+  });
+
+  it("normalizes the sanitized real GENUINELY PLAYING transcode (IsPaused: false)", () => {
+    // Captured 2026-08-16 from the production Jellyfin during a real, active
+    // HLS transcode (h264/aac, ContainerBitrateExceedsLimit). Note what this
+    // capture shows: a PLAYING transcode with a REPORTED output rate
+    // (TranscodingInfo.Bitrate). The original missing-output-rate case has
+    // only ever been captured PAUSED — the playing+missing-rate combination
+    // remains covered by unit fixtures, not by a production capture.
+    const snap = normalizeJellyfin(
+      { system: SYSTEM, sessions: playingTranscodeFixture },
+      NOW,
+    );
+    expect(snap.sessions).toHaveLength(1);
+    expect(snap.sessions[0]).toMatchObject({
+      method: "transcode",
+      paused: false,
+      rate: {
+        bytesPerSecond: 1_564_000 / 8,
+        basis: "jellyfin-session-output",
+        evidence: "reported",
+      },
     });
   });
 
