@@ -7,22 +7,38 @@
  * single transform.
  *
  * Layer order (spec §29 — composition first, polish last):
- *   1 background field        4 flows           7 compute star
+ *   1 background field        4 flows (dormant, then live)   7 compute star
  *   2 orbit guides            5 docker belt
  *   3 network boundary        6 bodies (storage, services)
  *
+ * FLOW LANGUAGE (PLA-266 v2). Three relationship classes render differently:
+ *   data-plane   luminous tunnels — width/glow/particle density from the
+ *                log-scaled measured/derived rate; cyan = inward (downloads,
+ *                writes), violet = outward (uploads, playback egress);
+ *   control      thin silver signal paths with discrete traveling pulses —
+ *                never throughput-sized;
+ *   state-only   a breathing thin path: work exists, rate unknown — width
+ *                must never imply throughput.
+ * Evidence quality softens the treatment (derived < measured), stale freezes
+ * it (dim ghost, zero motion), unavailable draws nothing beyond the dormant
+ * structural route.
+ *
  * Ambient motion uses long incommensurate periods (41 s, 73 s, 127 s) so idle
- * never reads as a loop; everything is a pure function of `t`.
+ * never reads as a loop; everything is a pure function of `t` — particles have
+ * no mutable state, so the global particle budget is a hard cap by
+ * construction, not a hope.
  */
 
 import { colorTokens, type ColorTokenName } from "@/lib/design/tokens";
 import { pointAtLength, pointOnCircle, tangentAtLength, TAU } from "@/lib/scene/geom";
 import { makeRng } from "@/lib/scene/rng";
+import { intensityFromRate, particlePeriodSeconds } from "@/lib/topology/smoothing";
 import type { BackgroundField } from "@/lib/scene/background";
 import type { BodyGeom, SceneLayout } from "@/lib/scene/layout";
 import type { SceneModel, ServiceBodyModel, StorageBodyModel } from "@/lib/scene/model";
-import type { SceneMotion } from "@/lib/scene/motion";
+import type { SceneMotion, LiveFlow } from "@/lib/scene/motion";
 import type { FlowGeom } from "@/lib/scene/routing";
+import type { ChannelRole } from "@/lib/topology/activity";
 
 export interface Camera {
   /** Canvas size in CSS pixels. */
@@ -36,15 +52,18 @@ export interface Camera {
 
 export interface LiveFlowGeom {
   geom: FlowGeom;
-  intensity: number;
+  live: LiveFlow;
 }
 
 export interface RenderState {
   model: SceneModel;
   layout: SceneLayout;
   flows: LiveFlowGeom[];
+  /** Faint structural routes drawn under everything (also when idle). */
+  dormant: FlowGeom[];
   motion: SceneMotion;
   background: BackgroundField;
+  /** Hovered body or flow id (flows use their observation id). */
   hovered: string | null;
   /** Seconds since mount (frozen renders pass a fixed value). */
   t: number;
@@ -102,6 +121,68 @@ function drift(t: number, periodS: number, phase = 0): number {
 
 function breathe(t: number, periodS: number, phase = 0): number {
   return 0.5 + 0.5 * Math.sin(TAU * drift(t, periodS, phase));
+}
+
+// --- flow style ---------------------------------------------------------------
+
+/**
+ * The tunable tunnel treatment. The flow laboratory (dev-only) renders the
+ * same drawing code under alternative styles; production ships exactly ONE —
+ * `PRODUCTION_FLOW_STYLE`, chosen in the PLA-266 v2 design study for the best
+ * balance of readability, restraint, and idle elegance.
+ */
+export interface FlowStyle {
+  /** Outer atmospheric glow width, as a multiple of core width. */
+  glowScale: number;
+  /** Peak glow alpha at full intensity. */
+  glowAlpha: number;
+  /** Translucent tunnel body alpha at full intensity. */
+  bodyAlpha: number;
+  /** Inner highlight: a bright centerline, twin edge rails, or both. */
+  highlight: "center" | "rails" | "both";
+  /** Particle rendering: tapered streaks or plain points. */
+  particle: "streak" | "point";
+  /** Hard global particle cap across every flow and channel. */
+  particleBudget: number;
+}
+
+export const PRODUCTION_FLOW_STYLE: FlowStyle = {
+  glowScale: 3.4,
+  glowAlpha: 0.1,
+  bodyAlpha: 0.15,
+  highlight: "center",
+  particle: "streak",
+  particleBudget: 72,
+};
+
+const roleToken = (role: ChannelRole): ColorTokenName =>
+  role === "ingress" || role === "write" ? "flow-in" : "flow-out";
+
+function strokeSampled(ctx: CanvasRenderingContext2D, geom: FlowGeom): void {
+  const pts = geom.path.points;
+  ctx.beginPath();
+  ctx.moveTo(pts[0]!.x, pts[0]!.y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]!.x, pts[i]!.y);
+  ctx.stroke();
+}
+
+/** Stroke the path offset sideways by `off` world units (screen-left of travel). */
+function strokeOffset(ctx: CanvasRenderingContext2D, geom: FlowGeom, off: number): void {
+  const { points } = geom.path;
+  ctx.beginPath();
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i]!;
+    const q = points[Math.min(i + 1, points.length - 1)]!;
+    const o = points[Math.max(i - 1, 0)]!;
+    const tx = q.x - o.x;
+    const ty = q.y - o.y;
+    const len = Math.hypot(tx, ty) || 1;
+    const x = p.x + (-ty / len) * off;
+    const y = p.y + (tx / len) * off;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
 }
 
 // --- background ---------------------------------------------------------------
@@ -172,39 +253,81 @@ function drawBackground(ctx: CanvasRenderingContext2D, cam: Camera, s: RenderSta
 
 function drawGuides(ctx: CanvasRenderingContext2D, s: RenderState): void {
   const { core, serviceOrbitR } = s.layout;
-  // Service orbit: a faint guide arc spanning just beyond the service group.
+  // Service orbit: a faint guide arc spanning just beyond the service crescent.
   ctx.strokeStyle = rgba("hairline", 0.34);
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.arc(core.center.x, core.center.y, serviceOrbitR, (86 * Math.PI) / 180, (280 * Math.PI) / 180);
+  ctx.arc(core.center.x, core.center.y, serviceOrbitR, (72 * Math.PI) / 180, (280 * Math.PI) / 180);
   ctx.stroke();
 }
 
+// --- network boundary + gateway -----------------------------------------------
+
 function drawNetworkArc(ctx: CanvasRenderingContext2D, s: RenderState): void {
   const arc = s.layout.networkArc;
-  const activity = Math.max(s.motion.rxNorm, s.motion.txNorm);
+  const gw = s.layout.gateway;
+  const known = s.model.network.rxBps !== null || s.model.network.txBps !== null;
+  const rx = s.motion.rxNorm;
+  const tx = s.motion.txNorm;
+
+  // The boundary, drawn as two arcs leaving an aperture gap at the gateway —
+  // the one place traffic crosses the edge of the system.
+  const gap = 26 / arc.r; // ~26 world units of opening
   ctx.lineWidth = 1.2;
   ctx.strokeStyle = rgba("border", 0.8);
   ctx.beginPath();
-  ctx.arc(arc.center.x, arc.center.y, arc.r, arc.a0, arc.a1);
+  ctx.arc(arc.center.x, arc.center.y, arc.r, arc.a0, gw.angle - gap);
   ctx.stroke();
-  // Activity: a soft luminous stretch breathing along the rim; unknown network
-  // (null rates) never lights up.
-  if (s.model.network.rxBps !== null && activity > 0.004) {
-    const mid = Math.PI + (s.motionEnabled ? (breathe(s.t, 73) - 0.5) * 0.35 : 0);
-    const halfSpan = 0.28 + activity * 0.5;
-    const glow = 0.1 + activity * 0.5;
-    ctx.lineWidth = 1.6;
-    ctx.strokeStyle = rgba("accent", glow);
+  ctx.beginPath();
+  ctx.arc(arc.center.x, arc.center.y, arc.r, gw.angle + gap, arc.a1);
+  ctx.stroke();
+
+  // Aperture structure: two portal ticks bracketing the opening, plus a quiet
+  // outer marker — the gateway reads as an instrument, not a broken line.
+  ctx.strokeStyle = rgba("border", 0.95);
+  ctx.lineWidth = 1.4;
+  for (const edge of [gw.angle - gap, gw.angle + gap]) {
+    const p0 = pointOnCircle(arc.center, arc.r - 9, edge);
+    const p1 = pointOnCircle(arc.center, arc.r + 9, edge);
     ctx.beginPath();
-    ctx.arc(arc.center.x, arc.center.y, arc.r, mid - halfSpan, mid + halfSpan);
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
     ctx.stroke();
   }
+  const marker = pointOnCircle(arc.center, arc.r + 16, gw.angle);
+  ctx.strokeStyle = rgba("hairline", 0.9);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(marker.x, marker.y, 3.2, 0, TAU);
+  ctx.stroke();
+
+  // Live aperture energy: rx lights the inner lip (traffic entering), tx the
+  // outer lip — directional color, only when the counters are actually known.
+  if (known && (rx > 0.004 || tx > 0.004)) {
+    const pulse = s.motionEnabled ? 0.85 + 0.15 * breathe(s.t, 9) : 1;
+    if (rx > 0.004) {
+      const g = ctx.createRadialGradient(gw.point.x, gw.point.y, 0, gw.point.x, gw.point.y, 30);
+      g.addColorStop(0, rgba("flow-in", (0.1 + 0.4 * Math.min(1, rx * 3)) * pulse));
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(gw.point.x - 30, gw.point.y - 30, 60, 60);
+    }
+    if (tx > 0.004) {
+      const out = pointOnCircle(arc.center, arc.r + 10, gw.angle);
+      const g = ctx.createRadialGradient(out.x, out.y, 0, out.x, out.y, 24);
+      g.addColorStop(0, rgba("flow-out", (0.08 + 0.36 * Math.min(1, tx * 3)) * pulse));
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(out.x - 24, out.y - 24, 48, 48);
+    }
+  }
+
   // Boundary ticks: quiet punctuation marking the rim as an instrument.
   ctx.strokeStyle = rgba("hairline", 0.6);
   ctx.lineWidth = 1;
   for (let i = 0; i <= 8; i++) {
     const a = arc.a0 + ((arc.a1 - arc.a0) * i) / 8;
+    if (Math.abs(a - gw.angle) < gap * 1.6) continue; // keep the aperture clean
     const p0 = pointOnCircle(arc.center, arc.r - 4, a);
     const p1 = pointOnCircle(arc.center, arc.r + (i % 4 === 0 ? 9 : 5), a);
     ctx.beginPath();
@@ -216,63 +339,316 @@ function drawNetworkArc(ctx: CanvasRenderingContext2D, s: RenderState): void {
 
 // --- flows --------------------------------------------------------------------
 
-function strokePath(ctx: CanvasRenderingContext2D, geom: FlowGeom): void {
-  const pts = geom.path.points;
-  ctx.beginPath();
-  ctx.moveTo(pts[0]!.x, pts[0]!.y);
-  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]!.x, pts[i]!.y);
-  ctx.stroke();
+/** Faint structural routes: the topology exists even when nothing moves. */
+function drawDormantRoutes(ctx: CanvasRenderingContext2D, s: RenderState): void {
+  ctx.lineWidth = 1;
+  for (const geom of s.dormant) {
+    // Routes with a live counterpart are skipped — the tunnel replaces them.
+    if (s.flows.some((f) => samePath(f.geom, geom))) continue;
+    ctx.strokeStyle = rgba("hairline", 0.22);
+    strokeSampled(ctx, geom);
+  }
 }
 
-function drawFlows(ctx: CanvasRenderingContext2D, s: RenderState): void {
-  for (const { geom, intensity } of s.flows) {
-    if (intensity <= 0.008) continue;
-    // The static line must be beautiful on its own (spec §9): a quiet base
-    // stroke plus a slightly brighter inner pass, alpha driven by intensity.
-    ctx.lineWidth = 1.9;
-    ctx.strokeStyle = rgba("accent", 0.05 + 0.1 * intensity);
-    strokePath(ctx, geom);
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = rgba("accent", 0.13 + 0.3 * intensity);
-    strokePath(ctx, geom);
+function samePath(a: FlowGeom, b: FlowGeom): boolean {
+  // Same route class if both endpoints coincide (dormant ids differ from live).
+  const pa = a.ports;
+  const pb = b.ports;
+  const near = (u: { x: number; y: number }, v: { x: number; y: number }) =>
+    Math.abs(u.x - v.x) < 2 && Math.abs(u.y - v.y) < 2;
+  return (near(pa.from, pb.from) && near(pa.to, pb.to)) || (near(pa.from, pb.to) && near(pa.to, pb.from));
+}
 
-    // Terminal glints: the ports softly mark where energy enters/leaves.
-    for (const port of [geom.ports.from, geom.ports.to]) {
-      const g = ctx.createRadialGradient(port.x, port.y, 0, port.x, port.y, 6);
-      g.addColorStop(0, rgba("accent", 0.24 * intensity + 0.06));
-      g.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = g;
-      ctx.fillRect(port.x - 6, port.y - 6, 12, 12);
-    }
+interface ChannelDraw {
+  role: ChannelRole;
+  direction: "forward" | "reverse";
+  bps: number | null;
+  width: number;
+}
 
-    if (!s.motionEnabled) continue;
-    // Moving packets: a few short luminous streaks; count/speed from
-    // intensity, positions a pure function of time (no per-frame state).
-    const L = geom.path.totalLength;
-    const count = 1 + Math.round(intensity * 3);
-    const speed = 24 + 62 * intensity; // world units / s — deliberately calm
-    const spacing = L / count;
-    const streak = Math.min(30, 12 + 20 * intensity);
-    for (let i = 0; i < count; i++) {
-      const head = ((s.t * speed + i * spacing) % L + L) % L;
-      const p = pointAtLength(geom.path, head);
-      const tail = pointAtLength(geom.path, Math.max(0, head - streak));
-      const tan = tangentAtLength(geom.path, head);
-      const grad = ctx.createLinearGradient(tail.x, tail.y, p.x, p.y);
+function liveChannels(f: LiveFlowGeom): ChannelDraw[] {
+  const { obs } = f.live;
+  const out: ChannelDraw[] = [];
+  for (const ch of obs.channels) {
+    const width = ch.direction === "forward" ? f.live.forwardWidth : f.live.reverseWidth;
+    out.push({ role: ch.role, direction: ch.direction, bps: ch.bytesPerSecond, width });
+  }
+  return out;
+}
+
+/**
+ * Deterministic particle pass for one channel. Positions are pure functions
+ * of `t`; `budget` is decremented and enforced globally.
+ */
+function drawChannelParticles(
+  ctx: CanvasRenderingContext2D,
+  geom: FlowGeom,
+  ch: ChannelDraw,
+  opts: {
+    t: number;
+    style: FlowStyle;
+    alphaScale: number;
+    densityScale: number;
+    bidirectional: boolean;
+    bodyWidth: number;
+    budget: { left: number };
+  },
+): void {
+  if (ch.bps === null) return;
+  const { t, style, alphaScale, densityScale, bidirectional, bodyWidth } = opts;
+  const L = geom.path.totalLength;
+  const intensity = intensityFromRate(ch.bps);
+  if (intensity <= 0) return;
+  const period = particlePeriodSeconds(ch.bps);
+  const speed = 30 + 95 * intensity; // world units / s — deliberately calm
+  const spacing = Math.max(26, speed * period);
+  let count = Math.max(1, Math.min(14, Math.round((L / spacing) * densityScale)));
+  count = Math.min(count, opts.budget.left);
+  if (count <= 0) return;
+  opts.budget.left -= count;
+
+  const token = roleToken(ch.role);
+  // Opposite-direction populations sit slightly off the centerline so both
+  // stay readable on one shared conduit.
+  const offset = bidirectional
+    ? (ch.direction === "forward" ? -1 : 1) * (bodyWidth * 0.3 + 0.9)
+    : 0;
+  const streak = Math.min(30, 10 + 20 * intensity);
+  const rng = makeRng(hashId(geom.flow.id) ^ (ch.direction === "forward" ? 0x51 : 0xa3));
+  for (let i = 0; i < count; i++) {
+    const jitter = rng() * spacing;
+    const raw = (t * speed + i * spacing + jitter) % L;
+    const head = ch.direction === "forward" ? raw : L - raw;
+    const tail = ch.direction === "forward" ? Math.max(0, head - streak) : Math.min(L, head + streak);
+    const p = offsetPoint(geom, head, offset);
+    const brightness = 0.75 + 0.25 * rng();
+    if (opts.style.particle === "streak") {
+      const q = offsetPoint(geom, tail, offset);
+      const grad = ctx.createLinearGradient(q.x, q.y, p.x, p.y);
       grad.addColorStop(0, "rgba(0,0,0,0)");
-      grad.addColorStop(1, rgba("accent", 0.34 + 0.42 * intensity));
+      grad.addColorStop(1, rgba(token, (0.3 + 0.45 * intensity) * alphaScale * brightness));
       ctx.strokeStyle = grad;
-      ctx.lineWidth = 1.7;
+      ctx.lineWidth = 1.6;
       ctx.beginPath();
-      ctx.moveTo(tail.x, tail.y);
+      ctx.moveTo(q.x, q.y);
       ctx.lineTo(p.x, p.y);
       ctx.stroke();
-      // A tiny bright head, slightly ahead along the tangent.
-      ctx.fillStyle = rgba("fg", 0.3 + 0.34 * intensity);
-      ctx.beginPath();
-      ctx.arc(p.x + tan.x * 0.5, p.y + tan.y * 0.5, 1.15, 0, TAU);
-      ctx.fill();
     }
+    // A tiny bright head — a bit of matter, not confetti.
+    ctx.fillStyle = rgba(token, (0.4 + 0.4 * intensity) * alphaScale * brightness);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, style.particle === "point" ? 1.5 : 1.15, 0, TAU);
+    ctx.fill();
+  }
+  void style;
+}
+
+function hashId(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return h >>> 0;
+}
+
+function offsetPoint(geom: FlowGeom, d: number, off: number): { x: number; y: number } {
+  const p = pointAtLength(geom.path, d);
+  if (off === 0) return p;
+  const tan = tangentAtLength(geom.path, d);
+  return { x: p.x - tan.y * off, y: p.y + tan.x * off };
+}
+
+/** Static direction chevrons for reduced-motion rendering. */
+function drawStaticDirection(
+  ctx: CanvasRenderingContext2D,
+  geom: FlowGeom,
+  ch: ChannelDraw,
+  alphaScale: number,
+  bidirectional: boolean,
+  bodyWidth: number,
+): void {
+  const L = geom.path.totalLength;
+  const n = Math.max(2, Math.min(6, Math.floor(L / 130)));
+  const token = roleToken(ch.role);
+  const offset = bidirectional ? (ch.direction === "forward" ? -1 : 1) * (bodyWidth * 0.3 + 0.9) : 0;
+  ctx.strokeStyle = rgba(token, 0.55 * alphaScale);
+  ctx.lineWidth = 1.3;
+  for (let i = 1; i <= n; i++) {
+    const d = (L * i) / (n + 1);
+    const p = offsetPoint(geom, d, offset);
+    let tan = tangentAtLength(geom.path, d);
+    if (ch.direction === "reverse") tan = { x: -tan.x, y: -tan.y };
+    const back = 4.4;
+    const side = 2.8;
+    ctx.beginPath();
+    ctx.moveTo(p.x - tan.x * back - tan.y * side, p.y - tan.y * back + tan.x * side);
+    ctx.lineTo(p.x, p.y);
+    ctx.lineTo(p.x - tan.x * back + tan.y * side, p.y - tan.y * back - tan.x * side);
+    ctx.stroke();
+  }
+}
+
+/**
+ * One data-plane tunnel: structural path → atmospheric glow → translucent
+ * body → inner highlight → directional particles → endpoint port glows.
+ * The static composition (everything but particles) must be beautiful with
+ * animation paused — reduced-motion swaps particles for direction chevrons.
+ */
+function drawTunnel(
+  ctx: CanvasRenderingContext2D,
+  s: RenderState,
+  f: LiveFlowGeom,
+  style: FlowStyle,
+  budget: { left: number },
+): void {
+  const { geom, live } = f;
+  const { obs } = live;
+  const stale = obs.freshness === "stale";
+  const hovered = s.hovered === obs.id;
+  const width = live.width;
+  const channels = liveChannels(f);
+  const bidirectional =
+    channels.filter((c) => c.width > 0.05 || (c.bps ?? 0) > 0).length > 1;
+
+  // Evidence encoding: derived flows are softer; stale flows are dim ghosts.
+  const evidenceScale = obs.evidence === "measured" ? 1 : 0.78;
+  const alphaScale = (stale ? 0.42 : 1) * evidenceScale * (hovered ? 1.25 : 1);
+  const densityScale = obs.evidence === "measured" ? 1 : 0.6;
+
+  // Dominant direction decides the body tint; a genuinely bidirectional
+  // conduit blends toward neutral so neither direction lies.
+  const fw = live.forwardWidth;
+  const rv = live.reverseWidth;
+  const fToken = roleToken(channels.find((c) => c.direction === "forward")?.role ?? "ingress");
+  const rToken = roleToken(channels.find((c) => c.direction === "reverse")?.role ?? "egress");
+  const bodyToken: ColorTokenName = fw >= rv ? fToken : rToken;
+
+  if (width > 0.05) {
+    const intensity = Math.min(1, width / 10);
+    // 1. Outer atmospheric glow.
+    ctx.strokeStyle = rgba(bodyToken, style.glowAlpha * (0.35 + 0.65 * intensity) * alphaScale);
+    ctx.lineWidth = Math.max(width * style.glowScale, width + 6);
+    strokeSampled(ctx, geom);
+    // 2. Translucent tunnel body.
+    ctx.strokeStyle = rgba(bodyToken, style.bodyAlpha * (0.5 + 0.5 * intensity) * alphaScale);
+    ctx.lineWidth = width;
+    strokeSampled(ctx, geom);
+    // 3. Inner highlight(s).
+    if (style.highlight !== "rails") {
+      ctx.strokeStyle = rgba(bodyToken, (0.3 + 0.28 * intensity) * alphaScale);
+      ctx.lineWidth = 1;
+      strokeSampled(ctx, geom);
+    }
+    if (style.highlight !== "center") {
+      ctx.strokeStyle = rgba(bodyToken, (0.16 + 0.2 * intensity) * alphaScale);
+      ctx.lineWidth = 0.8;
+      strokeOffset(ctx, geom, width * 0.5);
+      strokeOffset(ctx, geom, -width * 0.5);
+    }
+
+    // 4. Directional matter.
+    if (!stale) {
+      if (s.motionEnabled) {
+        for (const ch of channels) {
+          drawChannelParticles(ctx, geom, ch, {
+            t: s.t,
+            style,
+            alphaScale,
+            densityScale,
+            bidirectional,
+            bodyWidth: width,
+            budget,
+          });
+        }
+      } else {
+        for (const ch of channels) {
+          if ((ch.bps ?? 0) > 0 || ch.width > 0.05) {
+            drawStaticDirection(ctx, geom, ch, alphaScale, bidirectional, width);
+          }
+        }
+      }
+    }
+
+    // 5. Endpoint port glows — energy entering/leaving a body. Frozen for
+    // stale ghosts: last-known data must not keep exciting endpoints.
+    if (!stale) {
+      const portR = 5 + Math.min(6, width * 0.7);
+      const pulse = s.motionEnabled ? 0.82 + 0.18 * breathe(s.t, 7, hashId(obs.id) % 5) : 1;
+      for (const [port, token] of [
+        [geom.ports.to, fToken],
+        [geom.ports.from, bidirectional ? rToken : fToken],
+      ] as const) {
+        const g = ctx.createRadialGradient(port.x, port.y, 0, port.x, port.y, portR);
+        g.addColorStop(0, rgba(token, (0.1 + 0.32 * Math.min(1, width / 8)) * alphaScale * pulse));
+        g.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = g;
+        ctx.fillRect(port.x - portR, port.y - portR, portR * 2, portR * 2);
+      }
+    }
+    return;
+  }
+
+  // State-only data-plane activity (rate unknown): a thin breathing path —
+  // present, honest, and deliberately NOT sized like throughput.
+  if (live.activity > 0.02) {
+    const breatheA = stale || !s.motionEnabled ? 0.6 : 0.45 + 0.55 * breathe(s.t, 5.5, hashId(obs.id) % 7);
+    ctx.strokeStyle = rgba(bodyToken, 0.24 * live.activity * breatheA * alphaScale);
+    ctx.lineWidth = 1.2;
+    strokeSampled(ctx, geom);
+  }
+}
+
+/**
+ * Control-plane signal: a quiet silver filament with a discrete traveling
+ * pulse — deliberately incapable of reading as a data tunnel.
+ */
+function drawControlSignal(
+  ctx: CanvasRenderingContext2D,
+  s: RenderState,
+  f: LiveFlowGeom,
+): void {
+  const { geom, live } = f;
+  const stale = live.obs.freshness === "stale";
+  const hovered = s.hovered === live.obs.id;
+  const a = live.activity * (stale ? 0.4 : 1) * (hovered ? 1.5 : 1);
+  if (a <= 0.02) return;
+  ctx.strokeStyle = rgba("flow-ctl", 0.16 * a);
+  ctx.lineWidth = 1;
+  strokeSampled(ctx, geom);
+
+  // One discrete pulse every few seconds (deterministic phase per flow) —
+  // an instruction traveling, not a byte stream. Stale/reduced-motion holds
+  // a static midpoint bead instead.
+  const L = geom.path.totalLength;
+  if (s.motionEnabled && !stale) {
+    const periodS = 4.2;
+    const phase = drift(s.t, periodS, (hashId(live.obs.id) % 100) / 100);
+    const visible = phase < 0.34; // pulse travels, then the lane rests
+    if (visible) {
+      const d = (phase / 0.34) * L;
+      const p = pointAtLength(geom.path, d);
+      const fade = Math.sin(Math.PI * (phase / 0.34));
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 5);
+      g.addColorStop(0, rgba("flow-ctl", 0.55 * a * fade));
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(p.x - 5, p.y - 5, 10, 10);
+    }
+  } else {
+    const p = pointAtLength(geom.path, L * 0.5);
+    ctx.fillStyle = rgba("flow-ctl", 0.35 * a);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 1.4, 0, TAU);
+    ctx.fill();
+  }
+}
+
+function drawFlows(ctx: CanvasRenderingContext2D, s: RenderState, style: FlowStyle): void {
+  const budget = { left: style.particleBudget };
+  // Data-plane first (tunnels under signals reads better at crossings).
+  for (const f of s.flows) {
+    if (f.live.obs.plane === "data") drawTunnel(ctx, s, f, style, budget);
+  }
+  for (const f of s.flows) {
+    if (f.live.obs.plane === "control") drawControlSignal(ctx, s, f);
   }
 }
 
@@ -300,7 +676,7 @@ function drawDockerBelt(ctx: CanvasRenderingContext2D, s: RenderState): void {
     const dot = docker.dots[i]!;
     const fi = docker.dots.length === 1 ? 0.5 : i / (docker.dots.length - 1);
     const a = belt.a0 + span * fi + (rng() - 0.5) * (span / docker.dots.length) * 0.5;
-    const rr = belt.r + (rng() - 0.5) * 18;
+    const rr = belt.r + (rng() - 0.5) * 12;
     const size = 1.1 + rng() * 1.1;
     const p = pointOnCircle(belt.center, rr, a);
     if (dot.bad) {
@@ -333,19 +709,21 @@ function drawStorageBody(
   const toneToken: ColorTokenName =
     pool.capacityTone === "critical" ? "danger" : pool.capacityTone === "warn" ? "warn" : "fg";
 
-  // Atmosphere: a soft halo giving the body mass. Live I/O breathes THROUGH
-  // the atmosphere (blue-lit while serving reads, green-lit while absorbing
-  // writes) instead of adding another UI ring; unhealthy pools carry a local
-  // red cast — the warning lives on the object (spec §16).
-  const writeDominant = pool.writeBps > pool.readBps;
+  // Atmosphere: a soft halo giving the body mass. LIVE I/O breathes through
+  // the atmosphere in the directional palette — cyan while absorbing writes,
+  // violet while serving reads (never the capacity amber/red); unhealthy
+  // pools carry a local red cast — the warning lives on the object (spec §16).
+  // `io` is already gated to live telemetry by the motion system: stale or
+  // unknown I/O has released to zero here.
+  const writeDominant = (pool.writeBps ?? 0) > (pool.readBps ?? 0);
   const haloToken: ColorTokenName = !pool.healthy
     ? "danger"
     : io > 0.02
       ? writeDominant
-        ? "ok"
-        : "accent"
+        ? "flow-in"
+        : "flow-out"
       : "accent";
-  const haloPeak = !pool.healthy ? 0.11 : 0.04 + 0.07 * io;
+  const haloPeak = !pool.healthy ? 0.11 : 0.04 + 0.08 * io;
   const halo = ctx.createRadialGradient(center.x, center.y, r * 0.6, center.x, center.y, g.atmosphereR + 10);
   const limbT = (r - r * 0.6) / (g.atmosphereR + 10 - r * 0.6);
   halo.addColorStop(0, rgba(haloToken, haloPeak * 0.22)); // faint interior cast
@@ -369,8 +747,8 @@ function drawStorageBody(
     `${fillQ}:${r}:${hovered ? 1 : 0}:${ps.toFixed(2)}`,
     side * ps,
     side * ps,
-    (g) => {
-      g.setTransform(ps, 0, 0, ps, r * ps, r * ps);
+    (g2) => {
+      g2.setTransform(ps, 0, 0, ps, r * ps, r * ps);
       const rng = makeRng(seed ^ 0x5a17);
       const speckles = Math.round((r * r) / 40);
       for (let i = 0; i < speckles; i++) {
@@ -379,10 +757,10 @@ function drawStorageBody(
         const within = rng() < 0.18 + (fillQ / 50) * 0.6; // density ∝ occupancy
         if (!within) continue;
         const limbFade = 1 - Math.pow(rad / r, 3); // fade near the edge
-        g.fillStyle = rgba("fg", (0.022 + rng() * 0.042 + (hovered ? 0.014 : 0)) * (0.35 + 0.65 * limbFade));
-        g.beginPath();
-        g.arc(Math.cos(ang) * rad, Math.sin(ang) * rad, 0.6 + rng() * 0.8, 0, TAU);
-        g.fill();
+        g2.fillStyle = rgba("fg", (0.022 + rng() * 0.042 + (hovered ? 0.014 : 0)) * (0.35 + 0.65 * limbFade));
+        g2.beginPath();
+        g2.arc(Math.cos(ang) * rad, Math.sin(ang) * rad, 0.6 + rng() * 0.8, 0, TAU);
+        g2.fill();
       }
     },
   );
@@ -437,9 +815,10 @@ function drawStorageBody(
 
   // Live I/O, second channel: a sparse drift of luminous surface motes —
   // matter stirring on the body while it works. Deterministic positions,
-  // phase-driven by time; still (but present) in reduced-motion.
+  // phase-driven by time; still (but present) in reduced-motion. `io` is
+  // live-gated upstream; unknown or stale I/O never stirs the surface.
   if (io > 0.02) {
-    const ioToken: ColorTokenName = writeDominant ? "ok" : "accent";
+    const ioToken: ColorTokenName = writeDominant ? "flow-in" : "flow-out";
     const moteRng = makeRng(seed ^ 0x10a7);
     const motes = Math.max(3, Math.round((r / 22) * (1 + 3 * io)));
     const phase = s.motionEnabled ? drift(s.t, 26 - 14 * io) : 0.35;
@@ -457,6 +836,30 @@ function drawStorageBody(
     }
   }
 
+  // Organizing sweep: while an Arr reports an import into this pool, a
+  // patient arc sweeps the atmosphere — local filesystem work being done ON
+  // the body (a hardlink/rename is not a transfer, spec: local activity).
+  const organizing = s.flows.some(
+    (f) =>
+      f.live.obs.kind === "organize" &&
+      f.live.obs.freshness === "live" &&
+      endpointIsPool(f, pool.name),
+  );
+  if (organizing) {
+    const sweepPhase = s.motionEnabled ? drift(s.t, 11) : 0.3;
+    const a0 = sweepPhase * TAU;
+    ctx.strokeStyle = rgba("flow-ctl", 0.5);
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, g.atmosphereR - 2, a0, a0 + TAU * 0.16);
+    ctx.stroke();
+    ctx.strokeStyle = rgba("flow-ctl", 0.18);
+    ctx.lineWidth = 3.4;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, g.atmosphereR - 2, a0, a0 + TAU * 0.16);
+    ctx.stroke();
+  }
+
   // Scrub/resilver: a patient outer marching ring, local to this body.
   if (pool.scrubbing) {
     const spin = s.motionEnabled ? TAU * drift(s.t, 41) : 0;
@@ -470,6 +873,11 @@ function drawStorageBody(
       ctx.stroke();
     }
   }
+}
+
+function endpointIsPool(f: LiveFlowGeom, name: string): boolean {
+  const to = f.live.obs.to;
+  return to.kind === "pool" && to.name === name;
 }
 
 function drawGenericStorage(ctx: CanvasRenderingContext2D, s: RenderState): void {
@@ -487,14 +895,14 @@ function drawGenericStorage(ctx: CanvasRenderingContext2D, s: RenderState): void
 // --- service bodies -----------------------------------------------------------
 
 function serviceStroke(s: ServiceBodyModel, glow: number, hovered: boolean): { token: ColorTokenName; alpha: number; width: number } {
-  if (s.status === "down") return { token: "danger", alpha: 0.95, width: 1.5 };
-  if (s.status === "degraded") return { token: "warn", alpha: 0.9, width: 1.3 };
+  if (s.status === "down") return { token: "danger", alpha: 0.95, width: 1.6 };
+  if (s.status === "degraded") return { token: "warn", alpha: 0.9, width: 1.4 };
   if (s.status === "not-configured") return { token: "hairline", alpha: 0.9, width: 1 };
   if (s.status === "neutral") return { token: "border", alpha: 0.75, width: 1 };
   return {
     token: glow > 0.04 ? "accent" : "border",
-    alpha: 0.74 + glow * 0.24 + (hovered ? 0.12 : 0),
-    width: 1.1 + glow * 0.5,
+    alpha: 0.78 + glow * 0.22 + (hovered ? 0.12 : 0),
+    width: 1.2 + glow * 0.6,
   };
 }
 
@@ -508,23 +916,27 @@ function drawServiceBody(
   const glow = s.motion.serviceGlowOf(svc.id);
   const hovered = s.hovered === g.id;
   const stroke = serviceStroke(svc, glow, hovered);
+  const transcoding = svc.detail === "transcoding";
 
   // A whisper of interior so every body has mass, not just an outline.
   const body = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, r);
-  body.addColorStop(0, rgba("fg", svc.status === "not-configured" ? 0.015 : 0.045));
-  body.addColorStop(0.75, rgba("fg", 0.012));
+  body.addColorStop(0, rgba("fg", svc.status === "not-configured" ? 0.015 : 0.05));
+  body.addColorStop(0.75, rgba("fg", 0.014));
   body.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = body;
   ctx.fillRect(center.x - r, center.y - r, r * 2, r * 2);
 
-  // Active service: a soft interior light rises with real work.
+  // Active service: a soft interior light rises with real work. A transcode
+  // burns hotter (more excitation, same palette — no new colors).
   if (glow > 0.02 && svc.status === "ok") {
-    const gl = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, r + 10);
-    gl.addColorStop(0, rgba("accent", 0.1 * glow));
-    gl.addColorStop(0.7, rgba("accent", 0.05 * glow));
+    const boost = transcoding ? 1.5 : 1;
+    const pulse = transcoding && s.motionEnabled ? 0.85 + 0.15 * breathe(s.t, 6) : 1;
+    const gl = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, r + 12);
+    gl.addColorStop(0, rgba("accent", 0.12 * glow * boost * pulse));
+    gl.addColorStop(0.7, rgba("accent", 0.06 * glow * boost * pulse));
     gl.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = gl;
-    ctx.fillRect(center.x - r - 10, center.y - r - 10, (r + 10) * 2, (r + 10) * 2);
+    ctx.fillRect(center.x - r - 12, center.y - r - 12, (r + 12) * 2, (r + 12) * 2);
   }
 
   ctx.strokeStyle = rgba(stroke.token, stroke.alpha);
@@ -538,42 +950,60 @@ function drawServiceBody(
   // Identity, in one restrained grammar (spec §5):
   const rot = s.motionEnabled ? TAU * drift(s.t, 240, r) : 0;
   if (svc.id === "jellyfin") {
-    // Playback: a lens — one inner ring plus a focal point.
+    // Playback: a lens — inner rings plus a focal point. When streaming, the
+    // lens visibly concentrates light along the playback path.
     ctx.strokeStyle = rgba(stroke.token, stroke.alpha * 0.4);
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(center.x, center.y, r * 0.62, 0, TAU);
     ctx.stroke();
-    ctx.fillStyle = rgba(svc.active ? "accent" : "fg", svc.active ? 0.8 : 0.32);
+    ctx.strokeStyle = rgba(stroke.token, stroke.alpha * 0.2);
     ctx.beginPath();
-    ctx.arc(center.x, center.y, 2.1, 0, TAU);
+    ctx.arc(center.x, center.y, r * 0.36, 0, TAU);
+    ctx.stroke();
+    ctx.fillStyle = rgba(svc.active ? "flow-out" : "fg", svc.active ? 0.85 : 0.32);
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, svc.active ? 2.6 : 2.1, 0, TAU);
     ctx.fill();
   } else if (svc.id === "sonarr" || svc.id === "radarr") {
     // Siblings: three tiny satellites, phase-shifted so they are not twins.
+    // While importing/organizing they tighten and brighten — controllers at
+    // work, not data carriers.
+    const organizing = svc.detail === "importing";
     ctx.strokeStyle = rgba(stroke.token, stroke.alpha * 0.22);
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(center.x, center.y, r * 0.58, 0, TAU);
     ctx.stroke();
     const phase = svc.id === "sonarr" ? 0 : Math.PI / 3;
+    const orbitR = r * (organizing ? 0.44 : 0.58);
+    const speed = organizing ? 1.6 : 0.5;
     for (let i = 0; i < 3; i++) {
-      const a = rot * 0.5 + phase + (i / 3) * TAU;
-      const p = pointOnCircle(center, r * 0.58, a);
-      ctx.fillStyle = rgba("fg", 0.46 + glow * 0.3);
+      const a = rot * speed + phase + (i / 3) * TAU;
+      const p = pointOnCircle(center, orbitR, a);
+      ctx.fillStyle = rgba(organizing ? "flow-ctl" : "fg", 0.46 + glow * 0.34);
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 1.7, 0, TAU);
+      ctx.arc(p.x, p.y, organizing ? 2 : 1.7, 0, TAU);
       ctx.fill();
     }
   } else if (svc.id === "qbittorrent") {
-    // Downloader: denser, utilitarian — a fine inner segment ring.
+    // Downloader: denser, utilitarian — a fine inner segment ring that
+    // spins with real transfer work.
     ctx.strokeStyle = rgba(stroke.token, stroke.alpha * 0.5);
     ctx.lineWidth = 1;
     const segs = 8;
+    const spin = rot * (0.35 + glow * 0.5);
     for (let i = 0; i < segs; i++) {
-      const a = rot * 0.35 + (i / segs) * TAU;
+      const a = spin + (i / segs) * TAU;
       ctx.beginPath();
       ctx.arc(center.x, center.y, r * 0.6, a, a + (TAU / segs) * 0.55);
       ctx.stroke();
+    }
+    if (glow > 0.04) {
+      ctx.fillStyle = rgba("flow-in", 0.5 * glow);
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, 2, 0, TAU);
+      ctx.fill();
     }
   } else {
     // Requests: the quietest — a single dim mote.
@@ -601,8 +1031,8 @@ function drawCore(ctx: CanvasRenderingContext2D, s: RenderState, pixelScale: num
   if (cpuKnown) {
     const fieldR = core.atmosphereR * (0.86 + 0.2 * load);
     const field = ctx.createRadialGradient(center.x, center.y, core.spokeBaseR, center.x, center.y, fieldR);
-    field.addColorStop(0, rgba("accent", (0.05 + 0.16 * load) * alphaScale));
-    field.addColorStop(0.6, rgba("accent", (0.02 + 0.08 * load) * alphaScale));
+    field.addColorStop(0, rgba("accent", (0.05 + 0.17 * load) * alphaScale));
+    field.addColorStop(0.6, rgba("accent", (0.02 + 0.09 * load) * alphaScale));
     field.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = field;
     ctx.fillRect(center.x - fieldR, center.y - fieldR, fieldR * 2, fieldR * 2);
@@ -625,7 +1055,7 @@ function drawCore(ctx: CanvasRenderingContext2D, s: RenderState, pixelScale: num
     (g) => {
       g.setTransform(pixelScale, 0, 0, pixelScale, haloHalf * pixelScale, haloHalf * pixelScale);
       const rng = makeRng(0x3e30a11);
-      const grains = 420;
+      const grains = 480;
       for (let i = 0; i < grains; i++) {
         const baseA = (i / grains) * TAU + rng() * 0.02;
         const a = baseA - Math.PI / 2;
@@ -688,7 +1118,7 @@ function drawCore(ctx: CanvasRenderingContext2D, s: RenderState, pixelScale: num
       grad.addColorStop(1, "rgba(0,0,0,0)");
       // Soft under-stroke gives the filament body; bright core gives it edge.
       ctx.strokeStyle = grad;
-      ctx.lineWidth = 2.6;
+      ctx.lineWidth = 2.8;
       ctx.globalAlpha = 0.45;
       ctx.beginPath();
       ctx.moveTo(inner.x, inner.y);
@@ -709,6 +1139,23 @@ function drawCore(ctx: CanvasRenderingContext2D, s: RenderState, pixelScale: num
     ctx.arc(center.x, center.y, core.spokeBaseR, 0, TAU);
     ctx.stroke();
     ctx.setLineDash([]);
+  }
+
+  // 3b. GPU work: a warm-white inner measurement arc, present only when GPU
+  // utilization is actually measured (hardware transcode, compute) — local
+  // reaction, no invented RAM/GPU flow paths.
+  if (s.model.core.gpuFraction !== null && m.gpuLoad > 0.02) {
+    const gpuR = core.spokeBaseR - 14;
+    ctx.strokeStyle = rgba("fg", 0.3 * alphaScale);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, gpuR, -Math.PI / 2, -Math.PI / 2 + m.gpuLoad * TAU);
+    ctx.stroke();
+    ctx.strokeStyle = rgba("hairline", 0.5);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, gpuR, 0, TAU);
+    ctx.stroke();
   }
 
   // 4. Inner core: a compact luminous disc, breathing very slowly with load.
@@ -739,10 +1186,11 @@ export function drawDebug(ctx: CanvasRenderingContext2D, s: RenderState, labelsB
   // Safe area.
   ctx.strokeStyle = "rgba(255,0,255,0.5)";
   ctx.strokeRect(L.safe.left, L.safe.top, L.world.w - L.safe.left - L.safe.right, L.world.h - L.safe.top - L.safe.bottom);
-  // Lane + orbit + belt.
+  // Lane + orbit + belt + gateway.
   circle(L.core.center.x, L.core.center.y, L.laneR, "rgba(0,255,255,0.35)");
   circle(L.core.center.x, L.core.center.y, L.serviceOrbitR, "rgba(0,255,128,0.35)");
   circle(L.core.center.x, L.core.center.y, L.core.boundaryR, "rgba(255,64,64,0.5)");
+  circle(L.gateway.point.x, L.gateway.point.y, 8, "rgba(0,255,255,0.8)");
   // Bodies: hard radius + atmosphere + center.
   const bodies: BodyGeom[] = [...L.services.values(), ...L.storage.values()];
   if (L.genericStorage) bodies.push(L.genericStorage);
@@ -752,7 +1200,11 @@ export function drawDebug(ctx: CanvasRenderingContext2D, s: RenderState, labelsB
     ctx.fillStyle = "rgba(255,255,0,0.8)";
     ctx.fillRect(b.center.x - 1.5, b.center.y - 1.5, 3, 3);
   }
-  // Flow ports + samples.
+  // Flow ports + samples (live solid, dormant dashed).
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = "rgba(128,128,128,0.6)";
+  for (const geom of s.dormant) strokeSampled(ctx, geom);
+  ctx.setLineDash([]);
   for (const { geom } of s.flows) {
     ctx.fillStyle = "rgba(255,0,0,0.9)";
     for (const port of [geom.ports.from, geom.ports.to]) {
@@ -761,7 +1213,7 @@ export function drawDebug(ctx: CanvasRenderingContext2D, s: RenderState, labelsB
       ctx.fill();
     }
     ctx.strokeStyle = "rgba(255,128,0,0.5)";
-    strokePath(ctx, geom);
+    strokeSampled(ctx, geom);
   }
   // Label boxes.
   ctx.strokeStyle = "rgba(128,128,255,0.6)";
@@ -770,7 +1222,12 @@ export function drawDebug(ctx: CanvasRenderingContext2D, s: RenderState, labelsB
 
 // --- top-level ----------------------------------------------------------------
 
-export function renderScene(ctx: CanvasRenderingContext2D, cam: Camera, s: RenderState): void {
+export function renderScene(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  s: RenderState,
+  style: FlowStyle = PRODUCTION_FLOW_STYLE,
+): void {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, cam.w, cam.h);
   ctx.lineCap = "round";
@@ -779,7 +1236,8 @@ export function renderScene(ctx: CanvasRenderingContext2D, cam: Camera, s: Rende
   ctx.setTransform(cam.scale, 0, 0, cam.scale, cam.ox, cam.oy);
   drawGuides(ctx, s);
   drawNetworkArc(ctx, s);
-  drawFlows(ctx, s);
+  drawDormantRoutes(ctx, s);
+  drawFlows(ctx, s, style);
   drawDockerBelt(ctx, s);
   for (const pool of s.model.storage) {
     const g = s.layout.storage.get(pool.name);

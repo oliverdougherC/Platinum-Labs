@@ -5,13 +5,18 @@
  *  - a path begins and ends ON a body boundary circle (+PAD), entering and
  *    leaving along the local radial direction — never at a body center, never
  *    at an arbitrary offset;
- *  - short flows (network↔service) are single radial blends between the
- *    concentric network arc and the service body;
- *  - downloader→arr handoffs travel along the SERVICE ORBIT circle itself;
- *  - long flows (import, playback) blend onto the one routing LANE circle
- *    around the core and arc along it — playback through the TOP hemisphere,
- *    import through the BOTTOM — so long paths are recognizably siblings and
- *    never cross the compute star;
+ *  - every WAN conduit passes through the ONE gateway aperture on the network
+ *    boundary arc: services radially near the gateway (qBittorrent) connect
+ *    with a single blend, distant services (Jellyfin egress) ride the routing
+ *    lane the short way around and exit radially at the gateway;
+ *  - Arr→downloader control signals travel along the SERVICE ORBIT circle
+ *    itself (inset), so the path can never clip a third service body;
+ *  - long flows (organize, storage-transfer, playback) blend onto the one
+ *    routing LANE circle around the core and arc along it — playback through
+ *    the TOP hemisphere, acquisition/import through the BOTTOM — so long
+ *    paths are recognizably siblings and never cross the compute star;
+ *  - storage→storage copies (cross-pool import) blend directly between the
+ *    two bodies — they never wrap the core;
  *  - every joint uses the same cubic blend primitive (geom.sampleBlend), so
  *    all transitions share one curvature character.
  *
@@ -26,21 +31,26 @@ import {
   sampleArc,
   sampleBlend,
   samplePath,
-  scale,
   sub,
   joinRuns,
   wrapAngle,
   type SampledPath,
   type Vec,
 } from "@/lib/scene/geom";
-import { bodyForEndpoint, type ArcGeom, type BodyGeom, type SceneLayout } from "@/lib/scene/layout";
-import type { FlowState } from "@/lib/topology/activity";
+import {
+  bodyForEndpoint,
+  type ArcGeom,
+  type BodyGeom,
+  type SceneLayout,
+} from "@/lib/scene/layout";
+import type { FlowObservation } from "@/lib/topology/activity";
+import type { SceneModel } from "@/lib/scene/model";
 
 /** Gap between a body's hard radius and where a flow visually terminates. */
 export const PORT_PAD = 3;
 
 export interface FlowGeom {
-  flow: FlowState;
+  flow: FlowObservation;
   path: SampledPath;
   /** Exact termination points, exposed for the debug overlay and tests. */
   ports: { from: Vec; to: Vec };
@@ -78,49 +88,67 @@ function laneTangent(a: number, sweepSign: number): Vec {
   return { x: -Math.sin(a) * sweepSign, y: Math.cos(a) * sweepSign };
 }
 
+interface Run {
+  points: Vec[];
+  from: Vec;
+  to: Vec;
+}
+
+function reverseRun(run: Run): Run {
+  return { points: [...run.points].reverse(), from: run.to, to: run.from };
+}
+
+/** Services within this angular distance of the gateway connect directly. */
+const GATEWAY_DIRECT_SPAN = (45 * Math.PI) / 180;
+
 /**
- * Radial flow between the network boundary arc and an orbital body.
- * `inward` = network → body; otherwise body → network.
+ * WAN conduit: gateway aperture → service body. Direct radial blend when the
+ * service sits near the gateway; otherwise ride the lane the SHORT way around
+ * (never through the far hemisphere) and exit radially at the gateway.
+ * Always built gateway→service; callers reverse for outbound orientation.
  */
-function radialFlow(
-  layout: SceneLayout,
-  arc: ArcGeom,
-  body: BodyGeom,
-  inward: boolean,
-): { points: Vec[]; from: Vec; to: Vec } {
-  // The network endpoint must sit ON the drawn boundary arc — clamp the
-  // body's angle into the arc's angular range (with a margin) so no path
-  // ever runs to an invisible point off the rim.
-  const margin = 0.14;
+function gatewayFlow(layout: SceneLayout, body: BodyGeom): Run {
+  const { gateway } = layout;
+  const core = layout.core.center;
   const bodyAngle = coreAngleOf(layout, body);
-  const canonical = bodyAngle < 0 ? bodyAngle + Math.PI * 2 : bodyAngle;
-  const a = Math.min(Math.max(canonical, arc.a0 + margin), arc.a1 - margin);
-  const arcPoint = pointOnCircle(arc.center, arc.r, a);
-  const radialIn = norm(sub(layout.core.center, arcPoint));
-  // The body port faces the network (its outer side).
-  const port = pointOnCircle(body.center, body.r + PORT_PAD, a);
-  if (inward) {
-    const points = sampleBlend(arcPoint, radialIn, port, radialIn, BLEND_SAMPLES);
-    return { points, from: arcPoint, to: port };
+  const offset = wrapAngle(bodyAngle - gateway.angle);
+  const inward = norm(sub(core, gateway.point));
+
+  if (Math.abs(offset) <= GATEWAY_DIRECT_SPAN) {
+    const port = pointOnCircle(body.center, body.r + PORT_PAD, angleOf(body.center, gateway.point));
+    const points = sampleBlend(gateway.point, inward, port, norm(sub(port, gateway.point)), BLEND_SAMPLES);
+    return { points, from: gateway.point, to: port };
   }
-  const radialOut = scale(radialIn, -1);
-  const points = sampleBlend(port, radialOut, arcPoint, radialOut, BLEND_SAMPLES);
-  return { points, from: port, to: arcPoint };
+
+  // Lane route: gateway → (radial in to lane at gateway angle) → short sweep
+  // to the body's angle → radial blend to the body port.
+  const L = layout.laneR;
+  const laneEntry = pointOnCircle(core, L, gateway.angle);
+  const sweep = wrapAngle(bodyAngle - gateway.angle);
+  const sgn = Math.sign(sweep || 1);
+  const exitOff = ((40 + body.r * 0.5) / L) * sgn;
+  const e2a = bodyAngle - exitOff;
+  const freeSweep = sweep - exitOff;
+  const e2 = pointOnCircle(core, L, e2a);
+  const port = pointOnCircle(body.center, body.r + PORT_PAD, angleOf(body.center, e2));
+  const arcSamples = Math.max(10, Math.ceil((Math.abs(freeSweep) * L) / 12));
+  const points = joinRuns(
+    sampleBlend(gateway.point, inward, laneEntry, laneTangent(gateway.angle, sgn), BLEND_SAMPLES),
+    sampleArc(core, L, gateway.angle, freeSweep, arcSamples),
+    sampleBlend(e2, laneTangent(e2a, sgn), port, norm(sub(port, e2)), BLEND_SAMPLES),
+  );
+  return { points, from: gateway.point, to: port };
 }
 
 /**
- * Handoff between two orbital bodies: an arc on the HANDOFF LANE, a circle
- * just inside the service orbit, so the path can never clip a third service
- * body sitting between them on the orbit itself.
+ * Control signal between two orbital bodies: an arc on the CONTROL LANE, a
+ * circle just inside the service orbit, so the path can never clip a third
+ * service body sitting between them on the orbit itself.
  */
-const HANDOFF_LANE_INSET = 42;
+const CONTROL_LANE_INSET = 48;
 
-function orbitFlow(
-  layout: SceneLayout,
-  from: BodyGeom,
-  to: BodyGeom,
-): { points: Vec[]; from: Vec; to: Vec } {
-  const R = layout.serviceOrbitR - HANDOFF_LANE_INSET;
+function orbitFlow(layout: SceneLayout, from: BodyGeom, to: BodyGeom): Run {
+  const R = layout.serviceOrbitR - CONTROL_LANE_INSET;
   const core = layout.core.center;
   const aFrom = from.orbitAngle ?? coreAngleOf(layout, from);
   const aTo = to.orbitAngle ?? coreAngleOf(layout, to);
@@ -147,14 +175,14 @@ function orbitFlow(
 
 /**
  * Long flow: body → lane → body, arcing around the core through the given
- * hemisphere ("top" = playback, "bottom" = import).
+ * hemisphere ("top" = playback, "bottom" = acquisition/import).
  */
 function laneFlow(
   layout: SceneLayout,
   from: BodyGeom,
   to: BodyGeom,
   via: "top" | "bottom",
-): { points: Vec[]; from: Vec; to: Vec } {
+): Run {
   const core = layout.core.center;
   const L = layout.laneR;
   const aFrom = coreAngleOf(layout, from);
@@ -182,24 +210,40 @@ function laneFlow(
   return { points, from: fromPort, to: toPort };
 }
 
+/**
+ * Direct body → body flow (cross-pool copy): one blend between facing ports,
+ * tangents along the chord so the curve stays gentle and readable.
+ */
+function directFlow(from: BodyGeom, to: BodyGeom): Run {
+  const dir = norm(sub(to.center, from.center));
+  const fromPort = pointOnCircle(from.center, from.r + PORT_PAD, angleOf(from.center, to.center));
+  const toPort = pointOnCircle(to.center, to.r + PORT_PAD, angleOf(to.center, from.center));
+  const points = sampleBlend(fromPort, dir, toPort, dir, BLEND_SAMPLES);
+  return { points, from: fromPort, to: toPort };
+}
+
 /** Resolve one flow to geometry. Returns null when an endpoint has no body. */
-export function routeFlow(layout: SceneLayout, flow: FlowState): FlowGeom | null {
+export function routeFlow(layout: SceneLayout, flow: FlowObservation): FlowGeom | null {
   const fromG = bodyForEndpoint(layout, flow.from);
   const toG = bodyForEndpoint(layout, flow.to);
   if (!fromG || !toG) return null;
 
-  let run: { points: Vec[]; from: Vec; to: Vec };
+  let run: Run;
   if (isArc(fromG) && !isArc(toG)) {
-    run = radialFlow(layout, fromG, toG, true);
+    run = gatewayFlow(layout, toG); // gateway → service, matching from/to
   } else if (!isArc(fromG) && isArc(toG)) {
-    run = radialFlow(layout, toG, fromG, false);
+    run = reverseRun(gatewayFlow(layout, fromG)); // service → gateway
   } else if (isArc(fromG) || isArc(toG)) {
     return null; // arc→arc is not a meaningful flow
-  } else if (flow.kind === "handoff") {
+  } else if (flow.kind === "control") {
     run = orbitFlow(layout, fromG, toG);
+  } else if (flow.kind === "import-copy") {
+    run = directFlow(fromG, toG);
   } else if (flow.kind === "playback") {
     run = laneFlow(layout, fromG, toG, "top");
   } else {
+    // storage-transfer, organize, and any future long acquisition flow ride
+    // the bottom hemisphere.
     run = laneFlow(layout, fromG, toG, "bottom");
   }
 
@@ -207,13 +251,74 @@ export function routeFlow(layout: SceneLayout, flow: FlowState): FlowGeom | null
 }
 
 /** Route every flow in the model. Order is stable (model order). */
-export function routeFlows(layout: SceneLayout, flows: FlowState[]): FlowGeom[] {
+export function routeFlows(layout: SceneLayout, flows: FlowObservation[]): FlowGeom[] {
   const out: FlowGeom[] = [];
   for (const f of flows) {
     const g = routeFlow(layout, f);
     if (g && g.path.totalLength > 1 && g.path.points.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))) {
       out.push(g);
     }
+  }
+  return out;
+}
+
+/**
+ * The dormant structural topology: the canonical routes work WOULD travel,
+ * drawn as faint constellation lines even when nothing is flowing (spec: an
+ * unavailable/quiet system shows honest dormant paths, never fake activity).
+ * Only routes whose endpoints are actually configured/present are included.
+ */
+export function dormantRoutes(layout: SceneLayout, model: SceneModel): FlowGeom[] {
+  const has = (id: string): boolean =>
+    model.services.some((s) => s.id === id && s.status !== "not-configured");
+  const downloadStore: FlowObservation["to"] | null = model.downloadPoolName
+    ? { kind: "pool", name: model.downloadPoolName }
+    : layout.genericStorage
+      ? { kind: "storage" }
+      : null;
+  const mediaStore: FlowObservation["from"] | null = model.mediaPoolName
+    ? { kind: "pool", name: model.mediaPoolName }
+    : layout.genericStorage
+      ? { kind: "storage" }
+      : null;
+
+  const stubs: Array<Pick<FlowObservation, "kind" | "from" | "to"> | null> = [
+    has("qbittorrent")
+      ? { kind: "wan-transfer", from: { kind: "network" }, to: { kind: "service", id: "qbittorrent" } }
+      : null,
+    has("qbittorrent") && downloadStore
+      ? { kind: "storage-transfer", from: { kind: "service", id: "qbittorrent" }, to: downloadStore }
+      : null,
+    has("sonarr") && has("qbittorrent")
+      ? { kind: "control", from: { kind: "service", id: "sonarr" }, to: { kind: "service", id: "qbittorrent" } }
+      : null,
+    has("radarr") && has("qbittorrent")
+      ? { kind: "control", from: { kind: "service", id: "radarr" }, to: { kind: "service", id: "qbittorrent" } }
+      : null,
+    has("jellyfin") && mediaStore
+      ? { kind: "playback", from: mediaStore, to: { kind: "service", id: "jellyfin" } }
+      : null,
+    has("jellyfin")
+      ? { kind: "egress", from: { kind: "service", id: "jellyfin" }, to: { kind: "network" } }
+      : null,
+  ];
+
+  const out: FlowGeom[] = [];
+  for (const stub of stubs) {
+    if (!stub) continue;
+    const flow: FlowObservation = {
+      id: `dormant:${stub.kind}`,
+      plane: "data",
+      evidence: "state-only",
+      freshness: "live",
+      channels: [],
+      provenance: "dormant topology route",
+      label: "",
+      updatedAt: null,
+      ...stub,
+    };
+    const g = routeFlow(layout, flow);
+    if (g) out.push(g);
   }
   return out;
 }

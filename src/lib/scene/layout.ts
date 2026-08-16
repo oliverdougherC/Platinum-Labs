@@ -8,8 +8,17 @@
  *   routing lane  (radius LANE_R)            … invisible circle all long
  *                                              flows travel along
  *   docker belt   (radius BELT_R)            … asteroid field, lower left
- *   network arc   (radius NETWORK_R)         … system boundary, left rim
+ *   network arc   (radius NETWORK_R)         … system boundary, left rim,
+ *                                              with ONE gateway aperture all
+ *                                              WAN traffic passes through
  *   storage bodies                           … outer massive bodies, right
+ *
+ * The service crescent is placed to tell the semantic story (PLA-266 v2):
+ * qBittorrent sits nearest the network gateway on the inbound lane;
+ * Sonarr/Radarr sit low, as controllers between acquisition and the
+ * bottom-hemisphere import lane toward storage; Jellyfin sits high on the
+ * top-hemisphere playback path between storage and the network; Requests
+ * stays small and out of the data lanes.
  *
  * World units: height is fixed at 1000; width = 1000 × aspect. Every position
  * derives from the world size and the model — same model + same aspect ⇒
@@ -61,6 +70,14 @@ export interface ArcGeom {
   a1: number;
 }
 
+/** The single aperture where WAN traffic enters/leaves the system boundary. */
+export interface GatewayGeom {
+  /** Angle on the network arc. */
+  angle: number;
+  /** Point on the arc — every network flow terminates here. */
+  point: Vec;
+}
+
 export interface SceneLayout {
   world: { w: number; h: number };
   core: CoreGeom;
@@ -69,6 +86,7 @@ export interface SceneLayout {
   /** Present when flows target generic storage (no declared media pool). */
   genericStorage: BodyGeom | null;
   networkArc: ArcGeom;
+  gateway: GatewayGeom;
   dockerBelt: ArcGeom;
   /** The one routing-lane radius all core-passing flows arc along. */
   laneR: number;
@@ -77,29 +95,38 @@ export interface SceneLayout {
   safe: { top: number; right: number; bottom: number; left: number };
 }
 
-export const SERVICE_ORBIT_R = 296;
-export const LANE_R = 372;
-export const BELT_R = 452;
+/**
+ * Concentric radii (PLA-266 v2 rebalance): the compute star grew ~28% so it
+ * reads as the hero from across the room, and every ring stepped outward with
+ * it. The service crescent grew more than the star (small bodies were the
+ * bigger legibility problem at 1080p).
+ */
+export const SERVICE_ORBIT_R = 344;
+export const LANE_R = 424;
+export const BELT_R = 456;
 
 /** Orbital positions (canvas angles: 0 = east, positive = down/clockwise). */
 const SERVICE_ANGLES: Record<ServiceId, number> = {
-  jellyfin: deg(-108),
-  seerr: deg(-149),
-  sonarr: deg(172),
-  radarr: deg(136),
-  qbittorrent: deg(102),
+  jellyfin: deg(-96), // top: on the playback path storage → jellyfin → WAN
+  seerr: deg(-138), // upper-left: quiet, out of the data lanes
+  sonarr: deg(118), // low: controllers between acquisition and import lane
+  radarr: deg(87),
+  qbittorrent: deg(154), // nearest the gateway: first hop of inbound data
 };
 
 const SERVICE_RADII: Record<ServiceId, number> = {
-  jellyfin: 32, // playback is high-value — slightly more prominent
-  seerr: 16, // quiet
-  sonarr: 23,
-  radarr: 23, // sibling of sonarr
-  qbittorrent: 27, // denser, utilitarian
+  jellyfin: 46, // playback is the most user-facing service — most prominent
+  seerr: 18, // deliberately small and quiet
+  sonarr: 31,
+  radarr: 31, // sibling of sonarr
+  qbittorrent: 38, // second most prominent: the acquisition workhorse
 };
 
 /** Storage body sizes by semantic rank (largest first). Not literal capacity. */
-const STORAGE_RADII = [112, 66, 44];
+const STORAGE_RADII = [118, 70, 50];
+
+/** Where the WAN aperture sits on the boundary arc. */
+const GATEWAY_ANGLE = deg(178);
 
 export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
   const h = WORLD_H;
@@ -109,13 +136,13 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
   // The star sits left of frame center so storage mass balances the right.
   const core: CoreGeom = {
     center: vec(w * 0.408, h * 0.52),
-    discR: 30,
-    spokeBaseR: 62,
-    spokeMaxLen: 44,
-    memR: 138,
-    memBandW: 18,
-    boundaryR: 176,
-    atmosphereR: 216,
+    discR: 38,
+    spokeBaseR: 78,
+    spokeMaxLen: 56,
+    memR: 172,
+    memBandW: 22,
+    boundaryR: 218,
+    atmosphereR: 268,
   };
 
   const services = new Map<ServiceId, BodyGeom>();
@@ -127,11 +154,11 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
       id: `service:${s.id}`,
       center,
       r,
-      atmosphereR: r + 8,
+      atmosphereR: r + 9,
       orbitAngle: angle,
       // Labels sit outside the orbit, along the radial direction, so they
       // never collide with the orbit guide or the lane.
-      labelAnchor: pointOnCircle(core.center, SERVICE_ORBIT_R + r + 34, angle),
+      labelAnchor: pointOnCircle(core.center, SERVICE_ORBIT_R + r + 36, angle),
     });
   }
 
@@ -166,26 +193,31 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
     });
   });
 
-  // Generic storage endpoint (no declared media pool): a deliberately
+  // Generic storage endpoint (no declared media/download pool): a deliberately
   // understated marker between the core and the storage group.
   const genericStorage: BodyGeom | null = model.genericStorageTarget
     ? {
         id: "storage:generic",
-        center: vec(w * 0.66, h * 0.66),
+        center: vec(w * 0.68, h * 0.68),
         r: 26,
         atmosphereR: 34,
         orbitAngle: null,
-        labelAnchor: vec(w * 0.66, h * 0.66 + 52),
+        labelAnchor: vec(w * 0.68, h * 0.68 + 52),
       }
     : null;
 
-  // Network boundary: a large arc concentric with the core, left rim.
-  // Swept from a0 to a1 through the left (angle 180°) — the heliopause.
+  // Network boundary: a large arc concentric with the core, left rim — the
+  // heliopause. Trimmed sweep (dead weight was a review finding), with one
+  // gateway aperture that every WAN conduit passes through.
   const networkArc: ArcGeom = {
     center: core.center,
     r: Math.min(core.center.x - safe.left - 18, 560),
-    a0: deg(118),
-    a1: deg(242),
+    a0: deg(124),
+    a1: deg(236),
+  };
+  const gateway: GatewayGeom = {
+    angle: GATEWAY_ANGLE,
+    point: pointOnCircle(networkArc.center, networkArc.r, GATEWAY_ANGLE),
   };
 
   const dockerBelt: ArcGeom = {
@@ -202,6 +234,7 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
     storage,
     genericStorage,
     networkArc,
+    gateway,
     dockerBelt,
     laneR: LANE_R,
     serviceOrbitR: SERVICE_ORBIT_R,

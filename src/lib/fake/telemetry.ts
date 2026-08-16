@@ -37,6 +37,8 @@ export type TelemetryProfileName =
   | "playback"
   | "transcode"
   | "downloads"
+  | "seeding"
+  | "importing"
   | "active"
   | "busy"
   | "unavailable"
@@ -90,6 +92,9 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
       NVME: { read: 800_000, write: 6_000_000 },
     },
   },
+  // The fake universe stages downloads on NVME (HOMELAB_DOWNLOAD_POOL) and
+  // keeps the library on DataStore (HOMELAB_MEDIA_POOL): downloads write the
+  // staging pool, imports copy staging → library (a real cross-pool copy).
   downloads: {
     cpu: 0.17,
     hotCores: 6,
@@ -98,8 +103,31 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
     netRxBps: 34_000_000,
     netTxBps: 2_500_000,
     poolIo: {
-      DataStore: { read: 1_000_000, write: 48_000_000 },
-      NVME: { read: 2_000_000, write: 14_000_000 },
+      NVME: { read: 3_000_000, write: 46_000_000 },
+      DataStore: { read: 1_000_000, write: 24_000_000 },
+    },
+  },
+  seeding: {
+    cpu: 0.14,
+    hotCores: 5,
+    memFraction: 0.43,
+    gpuUtil: 0,
+    netRxBps: 30_000_000,
+    netTxBps: 12_000_000,
+    poolIo: {
+      NVME: { read: 7_000_000, write: 40_000_000 },
+    },
+  },
+  importing: {
+    cpu: 0.12,
+    hotCores: 4,
+    memFraction: 0.42,
+    gpuUtil: 0,
+    netRxBps: 300_000,
+    netTxBps: 180_000,
+    poolIo: {
+      NVME: { read: 32_000_000, write: 500_000 },
+      DataStore: { read: 800_000, write: 30_000_000 },
     },
   },
   active: {
@@ -110,8 +138,8 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
     netRxBps: 34_000_000,
     netTxBps: 39_000_000,
     poolIo: {
-      DataStore: { read: 42_000_000, write: 48_000_000 },
-      NVME: { read: 2_500_000, write: 14_000_000 },
+      DataStore: { read: 42_000_000, write: 24_000_000 },
+      NVME: { read: 3_000_000, write: 46_000_000 },
     },
   },
   busy: {

@@ -36,6 +36,11 @@
   --color-warn: 242 197 112;
   --color-danger: 244 132 132;
 
+  /* Directional flow palette (canvas scene): inward / outward / control. */
+  --color-flow-in: 96 211 255;
+  --color-flow-out: 189 154 255;
+  --color-flow-ctl: 176 186 206;
+
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     Helvetica, Arial, sans-serif;
 

@@ -40,6 +40,15 @@ export const colorTokens = {
   ok: [116, 214, 152],
   warn: [242, 197, 112],
   danger: [244, 132, 132],
+
+  // Directional flow palette (PLA-266 v2). Traffic direction is a separate
+  // channel from health: cyan = inward/deeper into the system (downloads,
+  // writes), violet = outward toward a client or the internet (playback
+  // egress, uploads), silver = control-plane signals and organizing actions.
+  // Capacity/health warnings keep the amber/red language above.
+  "flow-in": [96, 211, 255],
+  "flow-out": [189, 154, 255],
+  "flow-ctl": [176, 186, 206],
 } as const satisfies Record<string, Rgb>;
 
 export type ColorTokenName = keyof typeof colorTokens;

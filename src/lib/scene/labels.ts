@@ -20,6 +20,7 @@ import { formatPercent, formatRelativeTime } from "@/lib/utils";
 import { pointOnCircle, type Vec } from "@/lib/scene/geom";
 import type { SceneLayout } from "@/lib/scene/layout";
 import type { SceneModel } from "@/lib/scene/model";
+import type { FlowObservation } from "@/lib/topology/activity";
 
 export type LabelTone = "fg" | "muted" | "faint" | "warn" | "danger";
 
@@ -35,9 +36,13 @@ export interface LabelSpec {
   box: { w: number; h: number };
 }
 
-/** Primary/secondary font sizes in world units (scaled with the camera). */
-export const LABEL_PRIMARY_PX = 14.5;
-export const LABEL_SECONDARY_PX = 11.5;
+/**
+ * Primary/secondary font sizes in world units (scaled with the camera).
+ * At 1920×1080 world units ≈ CSS px; primary object labels must never feel
+ * smaller than ~13 CSS px at that size (PLA-266 v2 legibility floor).
+ */
+export const LABEL_PRIMARY_PX = 15.5;
+export const LABEL_SECONDARY_PX = 12;
 
 const CHAR_W = 0.58; // average glyph width as a fraction of font size
 
@@ -112,7 +117,18 @@ export function buildLabels(model: SceneModel, layout: SceneLayout, now: number)
     const count = s.count !== null ? ` · ${s.count}` : "";
     labels.push(
       label(`service:${s.id}`, g.labelAnchor, s.label, {
-        primaryTone: s.status === "down" ? "danger" : s.status === "degraded" ? "warn" : "muted",
+        // Healthy services read at full weight; only Requests (neutral) and
+        // unconfigured bodies stay quiet — distance legibility (PLA-266 v2).
+        primaryTone:
+          s.status === "down"
+            ? "danger"
+            : s.status === "degraded"
+              ? "warn"
+              : s.status === "ok"
+                ? s.active
+                  ? "fg"
+                  : "muted"
+                : "faint",
         secondary: statusLine ? `${statusLine}${count}` : count ? count.slice(3) : null,
         secondaryTone:
           s.status === "down" ? "danger" : s.status === "degraded" ? "warn" : "faint",
@@ -154,15 +170,17 @@ export function buildLabels(model: SceneModel, layout: SceneLayout, now: number)
   }
 
   // --- network ----------------------------------------------------------------
+  // The label belongs to the gateway aperture — the place traffic actually
+  // crosses the boundary — not to an arbitrary point of the arc.
   const netAnchor = pointOnCircle(
     layout.networkArc.center,
-    layout.networkArc.r + 34,
-    Math.PI,
+    layout.networkArc.r + 40,
+    layout.gateway.angle,
   );
   const net = model.network;
   labels.push(
     label("network", netAnchor, "network", {
-      primaryTone: "faint",
+      primaryTone: "muted",
       secondary:
         net.rxBps !== null && net.txBps !== null
           ? `↓ ${formatRate(net.rxBps)} · ↑ ${formatRate(net.txBps)}`
@@ -191,6 +209,55 @@ export function buildLabels(model: SceneModel, layout: SceneLayout, now: number)
   }
 
   return labels;
+}
+
+// --- flow inspection ----------------------------------------------------------
+
+const ROLE_WORD: Record<string, string> = {
+  ingress: "in",
+  egress: "out",
+  read: "read",
+  write: "write",
+};
+
+/**
+ * The hover/focus description of a flow (PLA-266 v2 inspectability): semantic
+ * label, evidence class, exact directional rates where known, and freshness —
+ * e.g. "qBittorrent download · measured · in 6.1 MB/s · updated 1s ago".
+ * `detail` carries the provenance sentence for the second line.
+ */
+export function describeFlow(
+  obs: FlowObservation,
+  now: number,
+): { summary: string; detail: string } {
+  const parts: string[] = [obs.label];
+  parts.push(
+    obs.evidence === "measured"
+      ? "measured"
+      : obs.evidence === "derived"
+        ? "derived"
+        : "state confirmed",
+  );
+  const rated = obs.channels.filter((c) => c.bytesPerSecond !== null);
+  if (rated.length > 0) {
+    parts.push(
+      rated
+        .map((c) => `${ROLE_WORD[c.role] ?? c.role} ${formatRate(c.bytesPerSecond!)}`)
+        .join(" · "),
+    );
+  } else if (obs.plane === "data") {
+    parts.push("byte rate unavailable");
+  }
+  if (obs.freshness === "stale") {
+    parts.push(
+      obs.updatedAt !== null
+        ? `stale · last seen ${formatRelativeTime(obs.updatedAt, now)}`
+        : "stale",
+    );
+  } else if (obs.updatedAt !== null) {
+    parts.push(`updated ${formatRelativeTime(obs.updatedAt, now)}`);
+  }
+  return { summary: parts.join(" · "), detail: obs.provenance };
 }
 
 /** Axis-aligned overlap test between two label boxes (for tests). */

@@ -11,8 +11,12 @@
 
 import { appConfig } from "@/lib/config";
 import { isConnectorStale } from "@/lib/types";
-import { deriveFlows, mediaStorageEndpoint } from "@/lib/topology/activity";
-import type { FlowState } from "@/lib/topology/activity";
+import {
+  deriveFlows,
+  downloadStorageEndpoint,
+  mediaStorageEndpoint,
+} from "@/lib/topology/activity";
+import type { FlowObservation } from "@/lib/topology/activity";
 import type { DashboardSnapshot, ZfsPool } from "@/lib/types";
 
 export type ServiceId = "jellyfin" | "sonarr" | "radarr" | "qbittorrent" | "seerr";
@@ -43,6 +47,13 @@ export interface ServiceBodyModel {
 
 export type CapacityTone = "ok" | "warn" | "critical";
 
+/**
+ * Freshness of a pool's I/O observation. `live` values may animate; `stale`
+ * values may only render frozen state; `unavailable` means UNKNOWN — the body
+ * must stay quiet, and unknown must never be drawn as a confirmed zero.
+ */
+export type IoFreshness = "live" | "stale" | "unavailable";
+
 export interface StorageBodyModel {
   name: string;
   /** 0..1 headline (logical) occupancy. */
@@ -55,8 +66,10 @@ export interface StorageBodyModel {
   scrubbing: boolean;
   lastScrubAt: number | null;
   scrubErrors: number;
-  readBps: number;
-  writeBps: number;
+  /** Per-pool I/O rates; null when telemetry does not cover this pool. */
+  readBps: number | null;
+  writeBps: number | null;
+  ioFreshness: IoFreshness;
   capacityLabelBytes: { used: number; total: number };
   capacityBasis: ZfsPool["capacityBasis"];
 }
@@ -74,6 +87,8 @@ export interface CoreModel {
   memTotalBytes: number | null;
   /** 0..1 swap occupancy when meaningful, else null. */
   swapFraction: number | null;
+  /** 0..1 GPU utilization when measured, else null (never fabricated). */
+  gpuFraction: number | null;
 }
 
 export interface NetworkModel {
@@ -102,9 +117,13 @@ export interface SceneModel {
   storage: StorageBodyModel[];
   /** True when media flows end at a generic storage endpoint (no declared pool). */
   genericStorageTarget: boolean;
+  /** Declared media pool name when it names a real pool, else null. */
+  mediaPoolName: string | null;
+  /** Declared download/staging pool name when it names a real pool, else null. */
+  downloadPoolName: string | null;
   network: NetworkModel;
   docker: DockerModel;
-  flows: FlowState[];
+  flows: FlowObservation[];
   /** Highest active severity, for the tiny critical edge affordance. */
   critical: boolean;
 }
@@ -234,17 +253,26 @@ export function buildSceneModel(
     memUsedBytes: mem?.usedBytes ?? null,
     memTotalBytes: mem?.totalBytes ?? null,
     swapFraction: swapFraction !== null && swapFraction > 0.05 ? swapFraction : null,
+    gpuFraction:
+      t.gpu.status === "available" ? t.gpu.value?.utilizationFraction ?? null : null,
   };
 
   const ranks = rankPools(snapshot.zfs.pools);
+  // Per-pool I/O with explicit freshness (PLA-273 hard rule): `stale` disk
+  // telemetry keeps its last values but must never animate; `unavailable` /
+  // `not-configured` yields null rates — unknown, NOT zero. A pool missing
+  // from an otherwise-fresh sample is likewise unknown, not idle.
+  const diskUsable = t.disk.status === "available" || t.disk.status === "stale";
   const ioByPool = new Map(
-    (t.disk.status === "available" || t.disk.status === "stale"
-      ? t.disk.value?.pools ?? []
-      : []
-    ).map((p) => [p.pool, p]),
+    (diskUsable ? t.disk.value?.pools ?? [] : []).map((p) => [p.pool, p]),
   );
   const storage: StorageBodyModel[] = snapshot.zfs.pools.map((pool) => {
     const io = ioByPool.get(pool.name);
+    const ioFreshness: StorageBodyModel["ioFreshness"] = !diskUsable || !io
+      ? "unavailable"
+      : t.disk.status === "stale"
+        ? "stale"
+        : "live";
     return {
       name: pool.name,
       capacityFraction: pool.capacityFraction,
@@ -255,8 +283,9 @@ export function buildSceneModel(
       scrubbing: pool.scan === "scrubbing" || pool.scan === "resilvering",
       lastScrubAt: pool.lastScrubAt,
       scrubErrors: pool.scrubErrors,
-      readBps: io?.readBps ?? 0,
-      writeBps: io?.writeBps ?? 0,
+      readBps: io?.readBps ?? null,
+      writeBps: io?.writeBps ?? null,
+      ioFreshness,
       capacityLabelBytes: { used: pool.usedBytes, total: pool.totalBytes },
       capacityBasis: pool.capacityBasis,
     };
@@ -281,7 +310,17 @@ export function buildSceneModel(
     core,
     services,
     storage,
-    genericStorageTarget: mediaStorageEndpoint(snapshot).kind === "storage",
+    genericStorageTarget:
+      mediaStorageEndpoint(snapshot).kind === "storage" ||
+      downloadStorageEndpoint(snapshot).kind === "storage",
+    mediaPoolName: (() => {
+      const e = mediaStorageEndpoint(snapshot);
+      return e.kind === "pool" ? e.name : null;
+    })(),
+    downloadPoolName: (() => {
+      const e = downloadStorageEndpoint(snapshot);
+      return e.kind === "pool" ? e.name : null;
+    })(),
     network: {
       status: t.network.status,
       rxBps: t.network.value?.rxBps ?? null,

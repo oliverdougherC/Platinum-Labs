@@ -10,15 +10,20 @@
  *   memory halo     very slow                    τ ≈ 9 s
  *   storage fill    extremely slow               τ ≈ 30 s
  *   network         relatively responsive        τ ≈ 1.6 s
- *   flow intensity  quick attack / slow release  τ ≈ 0.9 s / 5 s
+ *   flow channels   quick attack / slow release  τ ≈ 0.4 s / 2.2 s
  *   service active  subtle fade                  τ ≈ 2.2 s
+ *
+ * Flow channels smooth the WIDTH (log-domain of the rate), so a 5.1 → 5.3 MB/s
+ * polling wiggle is invisible while a real ramp reads within half a second.
+ * Honesty gates live here too: a stale observation keeps its last geometry but
+ * its excitation target drops to zero; unknown rates never produce width.
  *
  * Pure TS; the React host owns the clock.
  */
 
-import { Ema } from "@/lib/topology/smoothing";
+import { Ema, POOL_IO_DEADBAND_BPS, widthFromRate } from "@/lib/topology/smoothing";
 import type { SceneModel } from "@/lib/scene/model";
-import type { FlowState } from "@/lib/topology/activity";
+import type { FlowObservation } from "@/lib/topology/activity";
 
 /** An EMA with separate attack (rising) and release (falling) time constants. */
 export class Envelope {
@@ -55,16 +60,44 @@ const TAU = {
   storage: 30_000,
   network: 1_600,
   service: 2_200,
-  flowAttack: 900,
-  flowRelease: 5_000,
+  flowAttack: 400,
+  flowRelease: 2_200,
+  presenceAttack: 700,
+  presenceRelease: 2_600,
 } as const;
 
 export interface LiveFlow {
-  flow: FlowState;
-  /** Smoothed 0..1 intensity; flows ease out instead of vanishing. */
-  intensity: number;
+  obs: FlowObservation;
   /** False once the model stopped reporting this flow (easing out). */
   present: boolean;
+  /** Smoothed tunnel core width for the forward channel, world units. */
+  forwardWidth: number;
+  /** Smoothed tunnel core width for the reverse channel, world units. */
+  reverseWidth: number;
+  /** max(forward, reverse) — the conduit body width. */
+  width: number;
+  /** 0..1 presence envelope: state-only signals + glow scaling use this. */
+  activity: number;
+}
+
+interface FlowEntry {
+  obs: FlowObservation;
+  present: boolean;
+  forward: Envelope;
+  reverse: Envelope;
+  presence: Envelope;
+}
+
+function channelRate(
+  obs: FlowObservation,
+  direction: "forward" | "reverse",
+): number | null {
+  let sum: number | null = null;
+  for (const ch of obs.channels) {
+    if (ch.direction !== direction || ch.bytesPerSecond === null) continue;
+    sum = (sum ?? 0) + ch.bytesPerSecond;
+  }
+  return sum;
 }
 
 /**
@@ -82,6 +115,9 @@ export class SceneMotion {
   memFraction: number | null = null;
   private memEma = new Ema(TAU.memory);
 
+  gpuLoad = 0;
+  private gpuEma = new Ema(TAU.core);
+
   rxNorm = 0;
   txNorm = 0;
   private rxEma = new Ema(TAU.network);
@@ -90,7 +126,7 @@ export class SceneMotion {
   private storageFill = new Map<string, Ema>();
   private storageIo = new Map<string, Envelope>();
   private serviceGlow = new Map<string, Ema>();
-  private flows = new Map<string, { env: Envelope; flow: FlowState; present: boolean }>();
+  private flows = new Map<string, FlowEntry>();
 
   private model: SceneModel | null = null;
 
@@ -101,13 +137,15 @@ export class SceneMotion {
     for (const f of model.flows) {
       const entry = this.flows.get(f.id);
       if (entry) {
-        entry.flow = f;
+        entry.obs = f;
         entry.present = true;
       } else {
         this.flows.set(f.id, {
-          env: new Envelope(TAU.flowAttack, TAU.flowRelease),
-          flow: f,
+          obs: f,
           present: true,
+          forward: new Envelope(TAU.flowAttack, TAU.flowRelease),
+          reverse: new Envelope(TAU.flowAttack, TAU.flowRelease),
+          presence: new Envelope(TAU.presenceAttack, TAU.presenceRelease),
         });
       }
     }
@@ -132,6 +170,7 @@ export class SceneMotion {
     this.totalLoad = this.totalLoadEma.update(m.core.totalFraction ?? 0, nowMs);
     this.memFraction =
       m.core.memFraction === null ? null : this.memEma.update(m.core.memFraction, nowMs);
+    this.gpuLoad = this.gpuEma.update(m.core.gpuFraction ?? 0, nowMs);
 
     // Network normalized against a gigabit-ish full scale, log-free (the rim
     // treatment is subtle; flows carry the log scale).
@@ -151,7 +190,14 @@ export class SceneMotion {
         io = new Envelope(TAU.flowAttack, TAU.flowRelease);
         this.storageIo.set(pool.name, io);
       }
-      io.update(ioIntensity(pool.readBps + pool.writeBps), nowMs);
+      // Surface I/O shimmer may only follow LIVE telemetry. Stale or
+      // unavailable I/O releases to darkness — last-known values must not
+      // keep the body glittering as though current (PLA-273).
+      const ioTarget =
+        pool.ioFreshness === "live"
+          ? ioIntensity((pool.readBps ?? 0) + (pool.writeBps ?? 0))
+          : 0;
+      io.update(ioTarget, nowMs);
     }
 
     for (const s of m.services) {
@@ -164,8 +210,33 @@ export class SceneMotion {
     }
 
     for (const [id, entry] of this.flows) {
-      const v = entry.env.update(entry.present ? entry.flow.intensity : 0, nowMs);
-      if (!entry.present && v < 0.012) this.flows.delete(id);
+      const { obs, present } = entry;
+      const live = present && obs.freshness === "live";
+      // Width targets: data-plane channels with known rates only. A stale
+      // flow HOLDS its last width (frozen ghost) rather than easing to zero,
+      // but a removed flow always releases.
+      const fTarget = !present
+        ? 0
+        : obs.plane !== "data"
+          ? 0
+          : widthFromRate(channelRate(obs, "forward"));
+      const rTarget = !present
+        ? 0
+        : obs.plane !== "data"
+          ? 0
+          : widthFromRate(channelRate(obs, "reverse"));
+      if (present && obs.freshness === "stale") {
+        // Hold: re-target current values so the ghost neither grows nor drains.
+        entry.forward.update(entry.forward.current() ?? fTarget, nowMs);
+        entry.reverse.update(entry.reverse.current() ?? rTarget, nowMs);
+      } else {
+        entry.forward.update(fTarget, nowMs);
+        entry.reverse.update(rTarget, nowMs);
+      }
+      const presence = entry.presence.update(live ? 1 : present ? 0.4 : 0, nowMs);
+      if (!present && presence < 0.01 && (entry.forward.current() ?? 0) < 0.05) {
+        this.flows.delete(id);
+      }
     }
   }
 
@@ -184,9 +255,18 @@ export class SceneMotion {
   liveFlows(): LiveFlow[] {
     const out: LiveFlow[] = [];
     for (const entry of this.flows.values()) {
-      const intensity = entry.env.current() ?? 0;
-      if (intensity > 0.008) {
-        out.push({ flow: entry.flow, intensity, present: entry.present });
+      const forwardWidth = entry.forward.current() ?? 0;
+      const reverseWidth = entry.reverse.current() ?? 0;
+      const activity = entry.presence.current() ?? 0;
+      if (forwardWidth > 0.05 || reverseWidth > 0.05 || activity > 0.02) {
+        out.push({
+          obs: entry.obs,
+          present: entry.present,
+          forwardWidth,
+          reverseWidth,
+          width: Math.max(forwardWidth, reverseWidth),
+          activity,
+        });
       }
     }
     return out;
@@ -204,7 +284,9 @@ export class SceneMotion {
 
 /** Log-scaled 0..1 for pool I/O shimmer (250 kB/s deadband → ~200 MB/s full). */
 export function ioIntensity(bps: number): number {
-  if (!Number.isFinite(bps) || bps < 250_000) return 0;
-  const t = (Math.log10(bps) - Math.log10(250_000)) / (Math.log10(200_000_000) - Math.log10(250_000));
+  if (!Number.isFinite(bps) || bps < POOL_IO_DEADBAND_BPS) return 0;
+  const t =
+    (Math.log10(bps) - Math.log10(POOL_IO_DEADBAND_BPS)) /
+    (Math.log10(200_000_000) - Math.log10(POOL_IO_DEADBAND_BPS));
   return Math.max(0.06, Math.min(1, t));
 }

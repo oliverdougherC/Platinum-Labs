@@ -117,17 +117,34 @@ function jellyfinUnavailable(): JellyfinSnapshot {
 function acquisitionEmpty(): AcquisitionSnapshot {
   return {
     items: [],
-    rollup: { downloading: 0, importing: 0, failedOrStalled: 0, aggregateRateBps: 0 },
+    rollup: {
+      downloading: 0,
+      importing: 0,
+      failedOrStalled: 0,
+      aggregateRateBps: 0,
+      // The fake connector "measures" transfer counters, so idle upload is a
+      // true zero here — unknown-upload cases are built explicitly in tests.
+      uploadRateBps: 0,
+      seeding: 0,
+    },
   };
 }
 
-function rollup(items: AcquisitionItem[]): AcquisitionSnapshot["rollup"] {
+function rollup(
+  items: AcquisitionItem[],
+  upload: { uploadRateBps: number | null; seeding: number } = {
+    uploadRateBps: 0,
+    seeding: 0,
+  },
+): AcquisitionSnapshot["rollup"] {
   return {
     downloading: items.filter((i) => i.state === "downloading").length,
     importing: items.filter((i) => i.state === "importing").length,
     failedOrStalled: items.filter((i) => i.state === "stalled" || i.state === "failed")
       .length,
     aggregateRateBps: items.reduce((sum, i) => sum + (i.rateBps ?? 0), 0),
+    uploadRateBps: upload.uploadRateBps,
+    seeding: upload.seeding,
   };
 }
 
@@ -153,6 +170,40 @@ function acquisitionActive(): AcquisitionSnapshot {
       rateBps: 4_200_000,
       etaSeconds: 1_450,
     },
+    {
+      id: "q-3",
+      source: "sonarr",
+      title: "Shrinking — S02E10",
+      quality: "WEB-DL 1080p",
+      state: "importing",
+      progress: 1,
+      rateBps: null,
+      etaSeconds: null,
+    },
+  ];
+  return { items, rollup: rollup(items) };
+}
+
+/** Simultaneous download + seed-upload (the bidirectional WAN conduit demo). */
+function acquisitionSeeding(): AcquisitionSnapshot {
+  const items: AcquisitionItem[] = [
+    {
+      id: "q-1",
+      source: "sonarr",
+      title: "Severance — S02E07",
+      quality: "WEB-DL 1080p",
+      state: "downloading",
+      progress: 0.63,
+      rateBps: 7_500_000,
+      etaSeconds: 320,
+    },
+  ];
+  return { items, rollup: rollup(items, { uploadRateBps: 5_800_000, seeding: 4 }) };
+}
+
+/** Import-only queue: Sonarr organizing a finished download, nothing moving on the WAN. */
+function acquisitionImporting(): AcquisitionSnapshot {
+  const items: AcquisitionItem[] = [
     {
       id: "q-3",
       source: "sonarr",
@@ -371,6 +422,8 @@ export const SCENARIOS = [
   "transcode",
   "multi-session",
   "downloads",
+  "seeding",
+  "importing",
   "stalled",
   "connector-unavailable",
   "stale",
@@ -398,6 +451,8 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   transcode: "Jellyfin — transcode",
   "multi-session": "Multiple sessions",
   downloads: "Active downloads / imports",
+  seeding: "Download + seed upload",
+  importing: "Sonarr import (organizing)",
   stalled: "Stalled / failed transfer",
   "connector-unavailable": "Connector unavailable",
   stale: "Stale (last-known-good)",
@@ -463,9 +518,12 @@ function compose(
     attention: parts.attention ?? [],
     activity: parts.activity ?? baseActivity(now),
     history: fakeHistory(now, parts.acquisition, parts.zfs),
-    // The fake universe declares its media pool explicitly, mirroring the
-    // HOMELAB_MEDIA_POOL contract (PLA-275) so demo flows attach to a pool.
+    // The fake universe declares its pools explicitly, mirroring the
+    // HOMELAB_MEDIA_POOL / HOMELAB_DOWNLOAD_POOL contracts (PLA-275): media
+    // lives on DataStore, downloads stage on NVME — so demo imports are real
+    // cross-pool copies with an honest source and destination.
     mediaPool: "DataStore",
+    downloadPool: "NVME",
   };
 }
 
@@ -573,6 +631,22 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       acquisition: acquisitionActive(),
       zfs: zfsHealthy(now),
       telemetryProfile: "downloads",
+    }),
+
+  seeding: (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionSeeding(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "seeding",
+    }),
+
+  importing: (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionImporting(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "importing",
     }),
 
   stalled: (now) =>

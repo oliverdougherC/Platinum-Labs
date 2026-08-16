@@ -1,10 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { deriveFlows, mediaStorageEndpoint } from "@/lib/topology/activity";
+import {
+  deriveFlows,
+  downloadStorageEndpoint,
+  mediaStorageEndpoint,
+  primaryRate,
+  type FlowObservation,
+} from "@/lib/topology/activity";
 import {
   deadband,
   Ema,
-  flowDurationSeconds,
+  FLOW_DEADBAND_BPS,
+  FLOW_WIDTH_MAX,
   intensityFromRate,
+  particlePeriodSeconds,
+  widthFromRate,
 } from "@/lib/topology/smoothing";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
 import type { DashboardSnapshot, PoolIoTelemetry } from "@/lib/types";
@@ -35,27 +44,65 @@ describe("Ema smoothing", () => {
   });
 });
 
-describe("intensity mapping", () => {
-  it("background noise is exactly zero (deadband)", () => {
-    expect(intensityFromRate(0)).toBe(0);
-    expect(intensityFromRate(1_024)).toBe(0); // 1 KB/s packet noise
-    expect(intensityFromRate(200_000)).toBe(0); // just under the floor
+describe("throughput → width mapping", () => {
+  it("below the deadband there is NO tunnel (exactly zero)", () => {
+    expect(widthFromRate(null)).toBe(0);
+    expect(widthFromRate(0)).toBe(0);
+    expect(widthFromRate(1_024)).toBe(0);
+    expect(widthFromRate(FLOW_DEADBAND_BPS - 1)).toBe(0);
   });
 
-  it("scales logarithmically and caps at 1", () => {
-    const low = intensityFromRate(500_000);
+  it("is monotonic across the full homelab range", () => {
+    const samples = [
+      FLOW_DEADBAND_BPS,
+      32_000,
+      100_000,
+      500_000,
+      1_000_000,
+      5_000_000,
+      10_000_000,
+      50_000_000,
+      100_000_000,
+      600_000_000,
+      1_250_000_000, // ~10GbE
+    ];
+    let prev = 0;
+    for (const bps of samples) {
+      const w = widthFromRate(bps);
+      expect(w).toBeGreaterThanOrEqual(prev);
+      prev = w;
+    }
+  });
+
+  it("hits the perceptual anchors: low ≈1.5–2.5, moderate ≈4–7, high ≈9–13", () => {
+    expect(widthFromRate(32_000)).toBeGreaterThanOrEqual(1.5);
+    expect(widthFromRate(32_000)).toBeLessThanOrEqual(2.5);
+    expect(widthFromRate(5_000_000)).toBeGreaterThanOrEqual(4);
+    expect(widthFromRate(5_000_000)).toBeLessThanOrEqual(7);
+    expect(widthFromRate(100_000_000)).toBeGreaterThanOrEqual(9);
+    expect(widthFromRate(100_000_000)).toBeLessThanOrEqual(13);
+  });
+
+  it("clamps: a saturated 10GbE link cannot consume the composition", () => {
+    expect(widthFromRate(1_250_000_000)).toBeLessThanOrEqual(FLOW_WIDTH_MAX);
+    expect(widthFromRate(100_000_000_000)).toBe(FLOW_WIDTH_MAX);
+    expect(FLOW_WIDTH_MAX).toBeLessThanOrEqual(13);
+  });
+
+  it("intensity scales logarithmically with its own deadband", () => {
+    expect(intensityFromRate(0)).toBe(0);
+    expect(intensityFromRate(FLOW_DEADBAND_BPS - 1)).toBe(0);
+    const low = intensityFromRate(100_000);
     const mid = intensityFromRate(8_000_000);
-    const high = intensityFromRate(80_000_000);
     expect(low).toBeGreaterThan(0);
     expect(mid).toBeGreaterThan(low);
-    expect(high).toBe(1);
     expect(intensityFromRate(10_000_000_000)).toBe(1);
   });
 
-  it("flow duration stays calm: never faster than 3.5s per cycle", () => {
-    expect(flowDurationSeconds(1)).toBeGreaterThanOrEqual(3.5);
-    expect(flowDurationSeconds(0.01)).toBeLessThanOrEqual(14);
-    expect(flowDurationSeconds(0)).toBe(Number.POSITIVE_INFINITY);
+  it("particle cadence: one patient packet at low rates, never frantic", () => {
+    expect(particlePeriodSeconds(1_000)).toBe(Number.POSITIVE_INFINITY);
+    expect(particlePeriodSeconds(20_000)).toBeGreaterThan(4);
+    expect(particlePeriodSeconds(500_000_000)).toBeGreaterThanOrEqual(0.5);
   });
 
   it("deadband zeroes small values", () => {
@@ -75,11 +122,19 @@ function withStale(snap: DashboardSnapshot, id: string): DashboardSnapshot {
   };
 }
 
+function withUnavailable(snap: DashboardSnapshot, id: string): DashboardSnapshot {
+  return {
+    ...snap,
+    health: snap.health.map((h) =>
+      h.id === id ? { ...h, status: "unavailable" as const } : h,
+    ),
+  };
+}
+
 function withPoolIo(
   snap: DashboardSnapshot,
   pools: PoolIoTelemetry[],
 ): DashboardSnapshot {
-  const disk = snap.telemetry.disk;
   return {
     ...snap,
     telemetry: {
@@ -95,39 +150,54 @@ function withPoolIo(
       },
     },
   };
-  void disk;
 }
 
-const ids = (snap: DashboardSnapshot) => deriveFlows(snap, NOW).map((f) => f.id);
+const flowsOf = (snap: DashboardSnapshot) => deriveFlows(snap, NOW);
+const ids = (snap: DashboardSnapshot) => flowsOf(snap).map((f) => f.id);
+const byId = (snap: DashboardSnapshot, id: string): FlowObservation | undefined =>
+  flowsOf(snap).find((f) => f.id === id);
 
 describe("deriveFlows — motion only from real state (PLA-267)", () => {
   it("idle scenario produces NO flows", () => {
-    expect(deriveFlows(makeFakeSnapshot("idle", NOW), NOW)).toEqual([]);
+    expect(flowsOf(makeFakeSnapshot("idle", NOW))).toEqual([]);
   });
 
-  it("downloads scenario renders the real pipeline: network → qb → arr → storage", () => {
-    const flows = deriveFlows(makeFakeSnapshot("downloads", NOW), NOW);
-    const flowIds = flows.map((f) => f.id);
-    expect(flowIds).toContain("download:network->qbittorrent");
-    expect(flowIds).toContain("handoff:qbittorrent->sonarr");
-    expect(flowIds).toContain("handoff:qbittorrent->radarr");
-    // Only Sonarr is importing in this fixture — and the import edge starts at
-    // SONARR, never at the downloader (PLA-275).
-    expect(flowIds).toContain("import:sonarr->pool:DataStore");
-    expect(flowIds.filter((id) => id.startsWith("import:radarr"))).toHaveLength(0);
+  it("downloads: WAN conduit + storage write + control signals + organizing", () => {
+    const flowIds = ids(makeFakeSnapshot("downloads", NOW));
+    expect(flowIds).toContain("wan-transfer:network->qbittorrent");
+    expect(flowIds).toContain("storage-transfer:qbittorrent->pool:NVME");
+    expect(flowIds).toContain("control:sonarr->qbittorrent");
+    expect(flowIds).toContain("control:radarr->qbittorrent");
+    // Only Sonarr is importing in this fixture — the organizing signal comes
+    // from SONARR toward the media pool, and the byte-carrying copy tunnel
+    // runs storage→storage, never through the Arr (PLA-275).
+    expect(flowIds).toContain("organize:sonarr->pool:DataStore");
+    expect(flowIds).toContain("import-copy:pool:NVME->pool:DataStore");
     expect(flowIds.some((id) => id.startsWith("playback"))).toBe(false);
-    for (const f of flows) {
-      expect(f.intensity).toBeGreaterThan(0);
-      expect(f.intensity).toBeLessThanOrEqual(1);
-    }
+    expect(flowIds.some((id) => id.includes("radarr->pool"))).toBe(false);
+  });
+
+  it("the WAN download channel carries the measured qB rate", () => {
+    const wan = byId(makeFakeSnapshot("downloads", NOW), "wan-transfer:network->qbittorrent")!;
+    expect(wan.plane).toBe("data");
+    expect(wan.evidence).toBe("measured");
+    expect(wan.freshness).toBe("live");
+    const fwd = wan.channels.find((c) => c.direction === "forward")!;
+    expect(fwd.role).toBe("ingress");
+    expect(fwd.bytesPerSecond).toBe(11_700_000); // 7.5 + 4.2 MB/s fixtures
   });
 
   it("playback scenario produces storage→jellyfin→egress, no acquisition", () => {
-    const flows = deriveFlows(makeFakeSnapshot("direct-play", NOW), NOW);
+    const flows = flowsOf(makeFakeSnapshot("direct-play", NOW));
     expect(flows.map((f) => f.id)).toEqual([
       "playback:pool:DataStore->jellyfin",
       "egress:jellyfin->network",
     ]);
+    for (const f of flows) {
+      expect(f.plane).toBe("data");
+      expect(f.evidence).toBe("derived"); // session bitrate attributed to the path
+      expect(f.channels[0]!.bytesPerSecond).toBeCloseTo(38_000_000 / 8, 0);
+    }
   });
 
   it("a stalled-only queue does not fake download motion", () => {
@@ -137,21 +207,180 @@ describe("deriveFlows — motion only from real state (PLA-267)", () => {
       ...snap,
       acquisition: {
         items,
-        rollup: { ...snap.acquisition.rollup, downloading: 0, aggregateRateBps: 0 },
+        rollup: {
+          ...snap.acquisition.rollup,
+          downloading: 0,
+          aggregateRateBps: 0,
+          uploadRateBps: 0,
+          seeding: 0,
+        },
       },
     };
-    expect(ids(stalledOnly).some((id) => id.startsWith("download"))).toBe(false);
+    expect(ids(stalledOnly).some((id) => id.startsWith("wan-transfer"))).toBe(false);
+    expect(ids(stalledOnly).some((id) => id.startsWith("storage-transfer"))).toBe(false);
+  });
+});
+
+describe("deriveFlows — bidirectional seeding (PLA-267 v2)", () => {
+  it("download + seed share ONE conduit with opposite measured channels", () => {
+    const snap = makeFakeSnapshot("seeding", NOW);
+    const wan = byId(snap, "wan-transfer:network->qbittorrent")!;
+    expect(wan.channels).toHaveLength(2);
+    const fwd = wan.channels.find((c) => c.direction === "forward")!;
+    const rev = wan.channels.find((c) => c.direction === "reverse")!;
+    expect(fwd.role).toBe("ingress");
+    expect(fwd.bytesPerSecond).toBe(7_500_000);
+    expect(rev.role).toBe("egress");
+    expect(rev.bytesPerSecond).toBe(5_800_000);
+    // And the storage side mirrors it: write in, seed-read out (derived).
+    const store = byId(snap, "storage-transfer:qbittorrent->pool:NVME")!;
+    expect(store.evidence).toBe("derived");
+    expect(store.channels.find((c) => c.direction === "forward")!.role).toBe("write");
+    expect(store.channels.find((c) => c.direction === "reverse")!.role).toBe("read");
   });
 
-  it("suppresses download + handoffs when qBittorrent is stale", () => {
+  it("an UNKNOWN upload rate never creates a seed flow (unknown ≠ zero ≠ rate)", () => {
+    const snap = makeFakeSnapshot("seeding", NOW);
+    const unknownUpload = {
+      ...snap,
+      acquisition: {
+        ...snap.acquisition,
+        rollup: { ...snap.acquisition.rollup, uploadRateBps: null },
+      },
+    };
+    const wan = byId(unknownUpload, "wan-transfer:network->qbittorrent")!;
+    expect(wan.channels.some((c) => c.direction === "reverse")).toBe(false);
+  });
+
+  it("seeding with zero seeding count does not invent an upload channel", () => {
+    const snap = makeFakeSnapshot("seeding", NOW);
+    const none = {
+      ...snap,
+      acquisition: {
+        ...snap.acquisition,
+        rollup: { ...snap.acquisition.rollup, seeding: 0 },
+      },
+    };
+    const wan = byId(none, "wan-transfer:network->qbittorrent")!;
+    expect(wan.channels.some((c) => c.direction === "reverse")).toBe(false);
+  });
+});
+
+describe("deriveFlows — control plane vs data plane (PLA-266 v2)", () => {
+  it("Arr→downloader is control-plane, state-only, and rate-free — always", () => {
+    for (const scenario of ["downloads", "seeding", "active"] as const) {
+      const flows = flowsOf(makeFakeSnapshot(scenario, NOW));
+      for (const f of flows.filter((x) => x.kind === "control")) {
+        expect(f.plane).toBe("control");
+        expect(f.evidence).toBe("state-only");
+        expect(f.channels.every((c) => c.bytesPerSecond === null)).toBe(true);
+        expect(primaryRate(f)).toBeNull();
+      }
+    }
+  });
+
+  it("the downloaded bytes NEVER route through Sonarr/Radarr", () => {
+    for (const scenario of ["downloads", "seeding", "importing", "active"] as const) {
+      const flows = flowsOf(makeFakeSnapshot(scenario, NOW));
+      for (const f of flows.filter((x) => x.plane === "data")) {
+        const touchesArr = [f.from, f.to].some(
+          (e) => e.kind === "service" && (e.id === "sonarr" || e.id === "radarr"),
+        );
+        expect(touchesArr, `${f.id} carries data through an Arr`).toBe(false);
+      }
+    }
+  });
+
+  it("organizing is control-plane state-only; the copy tunnel is storage→storage", () => {
+    const flows = flowsOf(makeFakeSnapshot("importing", NOW));
+    const organize = flows.find((f) => f.kind === "organize")!;
+    expect(organize.plane).toBe("control");
+    expect(organize.evidence).toBe("state-only");
+    expect(organize.from).toEqual({ kind: "service", id: "sonarr" });
+    const copy = flows.find((f) => f.kind === "import-copy")!;
+    expect(copy.plane).toBe("data");
+    expect(copy.evidence).toBe("derived");
+    expect(copy.from).toEqual({ kind: "pool", name: "NVME" });
+    expect(copy.to).toEqual({ kind: "pool", name: "DataStore" });
+  });
+});
+
+describe("deriveFlows — same-pool vs cross-pool imports (PLA-275)", () => {
+  it("same-pool import (rename/hardlink) NEVER becomes a bulk transfer tunnel", () => {
+    const snap = makeFakeSnapshot("importing", NOW);
+    // Declare downloads and media on the SAME pool with heavy write activity:
+    // the honest rendering is local organizing, not a copy tunnel.
+    const samePool = withPoolIo(
+      { ...snap, downloadPool: "DataStore" },
+      [{ pool: "DataStore", readBps: 40_000_000, writeBps: 40_000_000 }],
+    );
+    const flows = flowsOf(samePool);
+    expect(flows.some((f) => f.kind === "import-copy")).toBe(false);
+    expect(flows.some((f) => f.kind === "organize")).toBe(true);
+  });
+
+  it("cross-pool import without destination-write evidence stays state-only", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "DataStore", readBps: 0, writeBps: 0 }, // no writes arriving
+      { pool: "NVME", readBps: 0, writeBps: 0 },
+    ]);
+    const flows = flowsOf(snap);
+    expect(flows.some((f) => f.kind === "import-copy")).toBe(false);
+    expect(flows.some((f) => f.kind === "organize")).toBe(true);
+  });
+
+  it("unrelated writes on another pool cannot fabricate or redirect the copy", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "DataStore", readBps: 0, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: 500_000_000 }, // busiest ≠ chosen
+    ]);
+    expect(flowsOf(snap).some((f) => f.kind === "import-copy")).toBe(false);
+  });
+
+  it("import evidence scales from the DECLARED destination pool only", () => {
+    const copy = byId(makeFakeSnapshot("importing", NOW), "import-copy:pool:NVME->pool:DataStore")!;
+    const rate = copy.channels[0]!.bytesPerSecond!;
+    // The fixture writes ~30 MB/s (±30% deterministic wobble) to DataStore.
+    expect(rate).toBeGreaterThan(15_000_000);
+    expect(rate).toBeLessThan(45_000_000);
+  });
+});
+
+describe("deriveFlows — staleness and unavailability (PLA-273)", () => {
+  it("a stale qBittorrent yields a FROZEN flow, not a live one, and not silence", () => {
     const snap = withStale(makeFakeSnapshot("downloads", NOW), "qbittorrent");
-    const flowIds = ids(snap);
-    expect(flowIds.some((id) => id.startsWith("download"))).toBe(false);
-    expect(flowIds.some((id) => id.startsWith("handoff"))).toBe(false);
+    const wan = byId(snap, "wan-transfer:network->qbittorrent");
+    expect(wan).toBeDefined();
+    expect(wan!.freshness).toBe("stale");
+    const store = byId(snap, "storage-transfer:qbittorrent->pool:NVME");
+    expect(store!.freshness).toBe("stale");
   });
 
-  it("unavailable disk telemetry does not zero out real imports", () => {
-    const snap = makeFakeSnapshot("downloads", NOW);
+  it("an UNAVAILABLE qBittorrent suppresses its flows entirely", () => {
+    const snap = withUnavailable(makeFakeSnapshot("downloads", NOW), "qbittorrent");
+    const flowIds = ids(snap);
+    expect(flowIds.some((id) => id.startsWith("wan-transfer"))).toBe(false);
+    expect(flowIds.some((id) => id.startsWith("storage-transfer"))).toBe(false);
+    expect(flowIds.some((id) => id.startsWith("control"))).toBe(false);
+  });
+
+  it("a stale Sonarr freezes ONLY Sonarr's edges while Radarr stays live", () => {
+    const snap = withStale(makeFakeSnapshot("downloads", NOW), "sonarr");
+    const flows = flowsOf(snap);
+    const sonarrEdges = flows.filter((f) => f.id.includes("sonarr"));
+    expect(sonarrEdges.length).toBeGreaterThan(0);
+    for (const f of sonarrEdges) expect(f.freshness).toBe("stale");
+    expect(byId(snap, "control:radarr->qbittorrent")!.freshness).toBe("live");
+    expect(byId(snap, "wan-transfer:network->qbittorrent")!.freshness).toBe("live");
+  });
+
+  it("a stale Arr never launches a live cross-pool copy", () => {
+    const snap = withStale(makeFakeSnapshot("importing", NOW), "sonarr");
+    expect(flowsOf(snap).some((f) => f.kind === "import-copy")).toBe(false);
+  });
+
+  it("unavailable disk telemetry does not kill the organizing signal", () => {
+    const snap = makeFakeSnapshot("importing", NOW);
     const noDisk = {
       ...snap,
       telemetry: {
@@ -159,67 +388,44 @@ describe("deriveFlows — motion only from real state (PLA-267)", () => {
         disk: { status: "unavailable" as const, updatedAt: null, value: null },
       },
     };
-    const importFlow = deriveFlows(noDisk, NOW).find((f) => f.kind === "import");
-    expect(importFlow).toBeDefined();
-    expect(importFlow!.intensity).toBeGreaterThanOrEqual(0.25);
+    const flows = flowsOf(noDisk);
+    expect(flows.some((f) => f.kind === "organize")).toBe(true);
+    // …but the copy tunnel needs real corroboration, so it must vanish.
+    expect(flows.some((f) => f.kind === "import-copy")).toBe(false);
+  });
+
+  it("a Jellyfin session without bitrate is state-only with a null rate", () => {
+    const snap = makeFakeSnapshot("direct-play", NOW);
+    const noBitrate = {
+      ...snap,
+      jellyfin: {
+        ...snap.jellyfin,
+        sessions: snap.jellyfin.sessions.map((s) => ({ ...s, bitrateBps: null })),
+      },
+    };
+    const playback = byId(noBitrate, "playback:pool:DataStore->jellyfin")!;
+    expect(playback.evidence).toBe("state-only");
+    expect(playback.channels[0]!.bytesPerSecond).toBeNull();
+    expect(primaryRate(playback)).toBeNull();
   });
 });
 
-describe("deriveFlows — honest correlations (PLA-275)", () => {
-  it("a stale Sonarr suppresses ONLY Sonarr's edges while Radarr stays live", () => {
-    const snap = withStale(makeFakeSnapshot("downloads", NOW), "sonarr");
-    const flowIds = ids(snap);
-    // Sonarr edges gone — including its import, even though items say importing.
-    expect(flowIds.some((id) => id.includes("sonarr"))).toBe(false);
-    // Radarr's handoff is untouched; the shared download edge is untouched.
-    expect(flowIds).toContain("handoff:qbittorrent->radarr");
-    expect(flowIds).toContain("download:network->qbittorrent");
-  });
-
-  it("a Radarr-only import creates exactly one import edge, from Radarr", () => {
-    const snap = makeFakeSnapshot("downloads", NOW);
-    const items = snap.acquisition.items.map((i) =>
-      i.state === "importing" ? { ...i, source: "radarr" as const } : i,
-    );
-    const flows = deriveFlows(
-      { ...snap, acquisition: { ...snap.acquisition, items } },
-      NOW,
-    );
-    const imports = flows.filter((f) => f.kind === "import");
-    expect(imports).toHaveLength(1);
-    expect(imports[0]!.id).toBe("import:radarr->pool:DataStore");
-  });
-
-  it("unrelated writes on another pool cannot redirect the import target", () => {
-    // NVME gets hammered by something unrelated; media pool is DataStore.
-    const snap = withPoolIo(makeFakeSnapshot("downloads", NOW), [
-      { pool: "DataStore", readBps: 0, writeBps: 1_000_000 },
-      { pool: "NVME", readBps: 0, writeBps: 500_000_000 },
-    ]);
-    const imports = deriveFlows(snap, NOW).filter((f) => f.kind === "import");
-    expect(imports).toHaveLength(1);
-    expect(imports[0]!.to).toEqual({ kind: "pool", name: "DataStore" });
-  });
-
-  it("unrelated reads on another pool cannot redirect the playback source", () => {
-    const snap = withPoolIo(makeFakeSnapshot("direct-play", NOW), [
-      { pool: "DataStore", readBps: 2_000_000, writeBps: 0 },
-      { pool: "eSATA", readBps: 800_000_000, writeBps: 0 },
-    ]);
-    const playback = deriveFlows(snap, NOW).find((f) => f.kind === "playback");
-    expect(playback).toBeDefined();
-    expect(playback!.from).toEqual({ kind: "pool", name: "DataStore" });
-  });
-
-  it("no declared media pool ⇒ generic storage endpoint, never a guessed pool", () => {
-    const snap = { ...makeFakeSnapshot("downloads", NOW), mediaPool: null };
+describe("deriveFlows — declared storage identity only (PLA-275)", () => {
+  it("no declared pools ⇒ generic endpoints, never a guessed pool", () => {
+    const snap = {
+      ...makeFakeSnapshot("downloads", NOW),
+      mediaPool: null,
+      downloadPool: null,
+    };
     const heavyIo = withPoolIo(snap, [
       { pool: "NVME", readBps: 0, writeBps: 500_000_000 },
     ]);
     expect(mediaStorageEndpoint(heavyIo)).toEqual({ kind: "storage" });
-    const imports = deriveFlows(heavyIo, NOW).filter((f) => f.kind === "import");
-    expect(imports).toHaveLength(1);
-    expect(imports[0]!.to).toEqual({ kind: "storage" });
+    expect(downloadStorageEndpoint(heavyIo)).toEqual({ kind: "storage" });
+    const flowIds = ids(heavyIo);
+    expect(flowIds).toContain("storage-transfer:qbittorrent->storage");
+    expect(flowIds).toContain("organize:sonarr->storage");
+    expect(flowIds.every((id) => !id.includes("import-copy"))).toBe(true);
   });
 
   it("a declared pool that does not exist degrades to generic storage", () => {
@@ -227,14 +433,40 @@ describe("deriveFlows — honest correlations (PLA-275)", () => {
     expect(mediaStorageEndpoint(snap)).toEqual({ kind: "storage" });
   });
 
+  it("unrelated reads on another pool cannot redirect the playback source", () => {
+    const snap = withPoolIo(makeFakeSnapshot("direct-play", NOW), [
+      { pool: "DataStore", readBps: 2_000_000, writeBps: 0 },
+      { pool: "eSATA", readBps: 800_000_000, writeBps: 0 },
+    ]);
+    const playback = flowsOf(snap).find((f) => f.kind === "playback");
+    expect(playback).toBeDefined();
+    expect(playback!.from).toEqual({ kind: "pool", name: "DataStore" });
+  });
+
   it("multiple simultaneous workflows stay one flow per edge", () => {
     const snap = makeFakeSnapshot("active", NOW);
-    const flows = deriveFlows(snap, NOW);
+    const flows = flowsOf(snap);
     const unique = new Set(flows.map((f) => f.id));
     expect(unique.size).toBe(flows.length);
-    // Every flow's endpoints are semantically justified kinds.
     for (const f of flows) {
-      expect(["download", "handoff", "import", "playback", "egress"]).toContain(f.kind);
+      expect([
+        "wan-transfer",
+        "storage-transfer",
+        "import-copy",
+        "playback",
+        "egress",
+        "control",
+        "organize",
+      ]).toContain(f.kind);
+    }
+  });
+
+  it("every flow carries provenance and a semantic label for inspection", () => {
+    for (const scenario of ["downloads", "seeding", "importing", "active"] as const) {
+      for (const f of flowsOf(makeFakeSnapshot(scenario, NOW))) {
+        expect(f.provenance.length).toBeGreaterThan(0);
+        expect(f.label.length).toBeGreaterThan(0);
+      }
     }
   });
 });

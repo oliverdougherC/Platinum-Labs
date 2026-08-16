@@ -1,5 +1,6 @@
 /**
- * Telemetry smoothing for the living topology (PLA-266/267) — pure, tested.
+ * Telemetry smoothing + throughput mapping for the living topology
+ * (PLA-266/267) — pure, tested.
  *
  * Raw Linux utilization jitters at polling frequency; a living display should
  * breathe. Every animated visual channel passes through an exponential moving
@@ -48,17 +49,56 @@ export function deadband(value: number, floor: number): number {
   return value < floor ? 0 : value;
 }
 
-/** Ignore background chatter below this when animating network/disk flows. */
-export const FLOW_DEADBAND_BPS = 250_000; // 250 kB/s
+/**
+ * Data-plane flow deadband: protocol chatter below this never draws an active
+ * tunnel. Deliberately low (16 KB/s) so a genuinely slow transfer still shows
+ * one patient packet rather than nothing; hysteresis lives in the motion
+ * system's slow release, not here.
+ */
+export const FLOW_DEADBAND_BPS = 16_000;
+
+/** Local pool-I/O shimmer keeps a higher floor: background writes are noise. */
+export const POOL_IO_DEADBAND_BPS = 250_000;
 
 /**
- * Map a byte rate onto a 0..1 visual intensity, log-scaled between the
- * deadband floor and `fullBps` (default 80 MB/s ≈ saturated gigabit-ish).
- * Below the deadband → exactly 0 (no motion for background noise).
+ * Throughput → tunnel core width, in world units (≈ CSS px at 1920×1080).
+ * Piecewise-linear in log10 space through perceptual anchors (spec: low
+ * traffic ≈ 1.5–2.5 px, moderate ≈ 4–7 px, very high ≈ 9–13 px, clamped so a
+ * busy transfer can never consume the composition). Monotonic by construction;
+ * below the deadband the tunnel does not exist (0).
+ */
+const WIDTH_ANCHORS: Array<[bps: number, width: number]> = [
+  [FLOW_DEADBAND_BPS, 1.5],
+  [100_000, 2.2],
+  [1_000_000, 3.6],
+  [10_000_000, 6.4],
+  [100_000_000, 9.6],
+  [1_000_000_000, 12.5],
+];
+
+export const FLOW_WIDTH_MAX = WIDTH_ANCHORS[WIDTH_ANCHORS.length - 1]![1];
+
+export function widthFromRate(bps: number | null): number {
+  if (bps === null || !Number.isFinite(bps) || bps < FLOW_DEADBAND_BPS) return 0;
+  const x = Math.log10(bps);
+  for (let i = 1; i < WIDTH_ANCHORS.length; i++) {
+    const [b1, w1] = WIDTH_ANCHORS[i]!;
+    if (bps <= b1) {
+      const [b0, w0] = WIDTH_ANCHORS[i - 1]!;
+      const t = (x - Math.log10(b0)) / (Math.log10(b1) - Math.log10(b0));
+      return w0 + (w1 - w0) * t;
+    }
+  }
+  return FLOW_WIDTH_MAX;
+}
+
+/**
+ * Throughput → 0..1 intensity used for glow/particle scaling, log-scaled
+ * between the flow deadband and `fullBps`. Below the deadband → exactly 0.
  */
 export function intensityFromRate(
   bps: number,
-  fullBps = 80_000_000,
+  fullBps = 200_000_000,
   floorBps = FLOW_DEADBAND_BPS,
 ): number {
   if (!Number.isFinite(bps) || bps < floorBps) return 0;
@@ -68,12 +108,13 @@ export function intensityFromRate(
 }
 
 /**
- * Flow-dash animation duration (seconds) for an intensity: calm at low
- * intensity (slow drift), never frantic at high intensity. Infinity (no
- * animation) at zero intensity.
+ * Particle cadence: seconds between packet arrivals at a fixed point of the
+ * tunnel. Slow single packets at low rates, a steady (but never frantic)
+ * stream at high rates.
  */
-export function flowDurationSeconds(intensity: number): number {
-  if (intensity <= 0) return Number.POSITIVE_INFINITY;
-  // 14s crawl at minimum intensity → 3.5s at full. Deliberately slow.
-  return 14 - 10.5 * clamp(intensity, 0, 1);
+export function particlePeriodSeconds(bps: number): number {
+  const i = intensityFromRate(bps);
+  if (i <= 0) return Number.POSITIVE_INFINITY;
+  // 6s between packets at the deadband → 0.55s at full scale.
+  return 6 - 5.45 * i;
 }
