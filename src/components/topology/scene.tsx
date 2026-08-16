@@ -137,6 +137,10 @@ export function TopologyScene({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [hovered, setHovered] = useState<string | null>(null);
+  // Overlays render only after mount: the server has no viewport, so SSR'ing
+  // projected positions would paint garbage and mismatch on hydration.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const motionEnabled = !frozen && !reducedMotion;
 
@@ -313,7 +317,7 @@ export function TopologyScene({
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" aria-hidden />
       {/* Typography overlay: real text, projected from world coordinates. */}
       <div className="pointer-events-none absolute inset-0" aria-hidden>
-        {labels.map((lb) => {
+        {mounted && labels.map((lb) => {
           const p = project(lb.anchor.x, lb.anchor.y);
           return (
             <div
@@ -341,7 +345,7 @@ export function TopologyScene({
       </div>
       {/* Interaction overlay: semantic, keyboard-reachable hit areas. */}
       <div className="absolute inset-0" role="group" aria-label="Live homelab topology">
-        {bodies.map((b) => {
+        {mounted && bodies.map((b) => {
           const p = project(b.cx, b.cy);
           const rPx = b.r * camera.scale;
           return (

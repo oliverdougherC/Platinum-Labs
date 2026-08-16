@@ -43,9 +43,9 @@ export function buildBackground(): BackgroundField {
   const layers: StarLayer[] = [];
   // Far → near: more/fainter to fewer/slightly brighter.
   const specs = [
-    { count: 90, rMin: 0.4, rMax: 0.8, aMin: 0.025, aMax: 0.07, drift: 0.25 },
-    { count: 52, rMin: 0.5, rMax: 1.1, aMin: 0.04, aMax: 0.1, drift: 0.55 },
-    { count: 26, rMin: 0.7, rMax: 1.5, aMin: 0.05, aMax: 0.14, drift: 1 },
+    { count: 90, rMin: 0.4, rMax: 0.8, aMin: 0.05, aMax: 0.12, drift: 0.25 },
+    { count: 52, rMin: 0.5, rMax: 1.1, aMin: 0.07, aMax: 0.17, drift: 0.55 },
+    { count: 26, rMin: 0.7, rMax: 1.6, aMin: 0.1, aMax: 0.24, drift: 1 },
   ];
   for (const spec of specs) {
     const stars: Star[] = [];
@@ -68,7 +68,7 @@ export function buildBackground(): BackgroundField {
       x: 0.14 + t * 0.72 + (rng() - 0.5) * 0.1,
       y: 0.82 - t * 0.62 + (rng() - 0.5) * 0.12,
       r: 0.09 + rng() * 0.1,
-      alpha: 0.014 + rng() * 0.012,
+      alpha: 0.02 + rng() * 0.016,
     });
   }
   return { layers, dust };

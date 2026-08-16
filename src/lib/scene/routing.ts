@@ -88,7 +88,13 @@ function radialFlow(
   body: BodyGeom,
   inward: boolean,
 ): { points: Vec[]; from: Vec; to: Vec } {
-  const a = coreAngleOf(layout, body);
+  // The network endpoint must sit ON the drawn boundary arc — clamp the
+  // body's angle into the arc's angular range (with a margin) so no path
+  // ever runs to an invisible point off the rim.
+  const margin = 0.14;
+  const bodyAngle = coreAngleOf(layout, body);
+  const canonical = bodyAngle < 0 ? bodyAngle + Math.PI * 2 : bodyAngle;
+  const a = Math.min(Math.max(canonical, arc.a0 + margin), arc.a1 - margin);
   const arcPoint = pointOnCircle(arc.center, arc.r, a);
   const radialIn = norm(sub(layout.core.center, arcPoint));
   // The body port faces the network (its outer side).
@@ -156,15 +162,17 @@ function laneFlow(
   const viaAngle = via === "top" ? -Math.PI / 2 : Math.PI / 2;
   const sweep = sweepThrough(aFrom, aTo, viaAngle);
   const sgn = Math.sign(sweep || 1);
-  // Consume a little sweep on each side for the on/off blends.
-  const entryOff = (44 / L) * sgn;
+  // Consume some sweep on each side for the on/off blends — more for larger
+  // bodies, so the transition into a big storage body stays graceful.
+  const entryOff = ((40 + from.r * 0.5) / L) * sgn;
+  const exitOff = ((40 + to.r * 0.5) / L) * sgn;
   const e1a = aFrom + entryOff;
-  const e2a = aTo - entryOff;
+  const e2a = aTo - exitOff;
   const e1 = pointOnCircle(core, L, e1a);
   const e2 = pointOnCircle(core, L, e2a);
   const fromPort = pointOnCircle(from.center, from.r + PORT_PAD, angleOf(from.center, e1));
   const toPort = pointOnCircle(to.center, to.r + PORT_PAD, angleOf(to.center, e2));
-  const freeSweep = sweep - 2 * entryOff;
+  const freeSweep = sweep - entryOff - exitOff;
   const arcSamples = Math.max(10, Math.ceil((Math.abs(freeSweep) * L) / 12));
   const points = joinRuns(
     sampleBlend(fromPort, norm(sub(e1, fromPort)), e1, laneTangent(e1a, sgn), BLEND_SAMPLES),

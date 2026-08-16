@@ -91,11 +91,11 @@ const SERVICE_ANGLES: Record<ServiceId, number> = {
 };
 
 const SERVICE_RADII: Record<ServiceId, number> = {
-  jellyfin: 30, // playback is high-value — slightly more prominent
-  seerr: 15, // quiet
-  sonarr: 21,
-  radarr: 21, // sibling of sonarr
-  qbittorrent: 25, // denser, utilitarian
+  jellyfin: 32, // playback is high-value — slightly more prominent
+  seerr: 16, // quiet
+  sonarr: 23,
+  radarr: 23, // sibling of sonarr
+  qbittorrent: 27, // denser, utilitarian
 };
 
 /** Storage body sizes by semantic rank (largest first). Not literal capacity. */

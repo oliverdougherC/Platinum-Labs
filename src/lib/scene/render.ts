@@ -140,8 +140,8 @@ function drawGuides(ctx: CanvasRenderingContext2D, s: RenderState): void {
 function drawNetworkArc(ctx: CanvasRenderingContext2D, s: RenderState): void {
   const arc = s.layout.networkArc;
   const activity = Math.max(s.motion.rxNorm, s.motion.txNorm);
-  ctx.lineWidth = 1.1;
-  ctx.strokeStyle = rgba("hairline", 0.85);
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = rgba("border", 0.8);
   ctx.beginPath();
   ctx.arc(arc.center.x, arc.center.y, arc.r, arc.a0, arc.a1);
   ctx.stroke();
@@ -256,8 +256,8 @@ function drawDockerBelt(ctx: CanvasRenderingContext2D, s: RenderState): void {
   for (let i = 0; i < docker.dots.length; i++) {
     const dot = docker.dots[i]!;
     const fi = docker.dots.length === 1 ? 0.5 : i / (docker.dots.length - 1);
-    const a = belt.a0 + span * fi + (rng() - 0.5) * (span / docker.dots.length) * 0.9;
-    const rr = belt.r + (rng() - 0.5) * 26;
+    const a = belt.a0 + span * fi + (rng() - 0.5) * (span / docker.dots.length) * 0.5;
+    const rr = belt.r + (rng() - 0.5) * 18;
     const size = 1.1 + rng() * 1.1;
     const p = pointOnCircle(belt.center, rr, a);
     if (dot.bad) {
@@ -266,7 +266,7 @@ function drawDockerBelt(ctx: CanvasRenderingContext2D, s: RenderState): void {
       ctx.arc(p.x, p.y, size + 0.7, 0, TAU);
       ctx.fill();
     } else {
-      ctx.fillStyle = rgba("fg", stale ? 0.12 : 0.2 + rng() * 0.12);
+      ctx.fillStyle = rgba("fg", stale ? 0.14 : 0.26 + rng() * 0.14);
       ctx.beginPath();
       ctx.arc(p.x, p.y, size, 0, TAU);
       ctx.fill();
@@ -275,8 +275,6 @@ function drawDockerBelt(ctx: CanvasRenderingContext2D, s: RenderState): void {
 }
 
 // --- storage bodies -----------------------------------------------------------
-
-const CAP_SEGMENTS = 36;
 
 function drawStorageBody(
   ctx: CanvasRenderingContext2D,
@@ -291,31 +289,45 @@ function drawStorageBody(
   const toneToken: ColorTokenName =
     pool.capacityTone === "critical" ? "danger" : pool.capacityTone === "warn" ? "warn" : "fg";
 
-  // Atmosphere: a soft halo giving the body mass; unhealthy pools carry a
-  // local red cast — the warning lives on the object (spec §16).
-  const halo = ctx.createRadialGradient(center.x, center.y, r * 0.72, center.x, center.y, g.atmosphereR + 10);
-  const haloColor = pool.healthy ? rgba("accent", 0.05) : rgba("danger", 0.1);
-  halo.addColorStop(0, haloColor);
+  // Atmosphere: a soft halo giving the body mass. Live I/O breathes THROUGH
+  // the atmosphere (blue-lit while serving reads, green-lit while absorbing
+  // writes) instead of adding another UI ring; unhealthy pools carry a local
+  // red cast — the warning lives on the object (spec §16).
+  const writeDominant = pool.writeBps > pool.readBps;
+  const haloToken: ColorTokenName = !pool.healthy
+    ? "danger"
+    : io > 0.02
+      ? writeDominant
+        ? "ok"
+        : "accent"
+      : "accent";
+  const haloPeak = !pool.healthy ? 0.11 : 0.04 + 0.07 * io;
+  const halo = ctx.createRadialGradient(center.x, center.y, r * 0.6, center.x, center.y, g.atmosphereR + 10);
+  const limbT = (r - r * 0.6) / (g.atmosphereR + 10 - r * 0.6);
+  halo.addColorStop(0, rgba(haloToken, haloPeak * 0.22)); // faint interior cast
+  halo.addColorStop(Math.min(0.9, limbT), rgba(haloToken, haloPeak)); // peak at limb
   halo.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = halo;
   ctx.fillRect(center.x - g.atmosphereR - 12, center.y - g.atmosphereR - 12, (g.atmosphereR + 12) * 2, (g.atmosphereR + 12) * 2);
 
-  // Interior: deterministic surface speckle whose density follows occupancy —
-  // texture as data, not decoration.
+  // Interior: deterministic surface speckle whose density follows occupancy,
+  // fading toward the limb so the disc reads as a body with a surface rather
+  // than a noise-filled circle. Texture as data, not decoration.
   let seed = 0;
   for (let i = 0; i < pool.name.length; i++) seed = (seed * 31 + pool.name.charCodeAt(i)) | 0;
   const rng = makeRng(seed ^ 0x5a17);
-  const speckles = Math.round((r * r) / 34);
+  const speckles = Math.round((r * r) / 40);
   const rot = s.motionEnabled ? TAU * drift(s.t, 620, seed % 7) : 0;
   for (let i = 0; i < speckles; i++) {
     const ang = rng() * TAU + rot;
-    const rad = Math.sqrt(rng()) * (r - 5);
-    const within = rng() < 0.22 + fill * 0.62; // density ∝ occupancy
+    const rad = Math.sqrt(rng()) * (r - 4);
+    const within = rng() < 0.18 + fill * 0.6; // density ∝ occupancy
     if (!within) continue;
+    const limbFade = 1 - Math.pow(rad / r, 3); // fade near the edge
     const p = pointOnCircle(center, rad, ang);
-    ctx.fillStyle = rgba("fg", 0.028 + rng() * 0.05 + (hovered ? 0.015 : 0));
+    ctx.fillStyle = rgba("fg", (0.022 + rng() * 0.042 + (hovered ? 0.014 : 0)) * (0.35 + 0.65 * limbFade));
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 0.7 + rng() * 0.9, 0, TAU);
+    ctx.arc(p.x, p.y, 0.6 + rng() * 0.8, 0, TAU);
     ctx.fill();
   }
 
@@ -326,34 +338,60 @@ function drawStorageBody(
   ctx.arc(center.x, center.y, r, 0, TAU);
   ctx.stroke();
 
-  // Capacity: an illuminated, segmented circumference — filled segments are
-  // lit, from 12 o'clock clockwise. Reads as structure, not a pie chart.
-  const litSegments = Math.round(fill * CAP_SEGMENTS);
-  const segGap = 0.012 * TAU;
-  for (let i = 0; i < CAP_SEGMENTS; i++) {
-    const a0 = -Math.PI / 2 + (i / CAP_SEGMENTS) * TAU + segGap / 2;
-    const a1 = -Math.PI / 2 + ((i + 1) / CAP_SEGMENTS) * TAU - segGap / 2;
-    const lit = i < litSegments;
-    ctx.strokeStyle = lit ? rgba(toneToken, 0.55) : rgba("hairline", 0.4);
-    ctx.lineWidth = lit ? 2.4 : 1;
+  // Capacity: an illuminated circumference — a faint full instrument ring,
+  // quarter ticks, and a luminous occupancy arc from 12 o'clock. Reads as a
+  // lit planetary limb, never as a dashed outline or a pie chart.
+  const capR = r + 6;
+  ctx.strokeStyle = rgba("hairline", 0.4);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(center.x, center.y, capR, 0, TAU);
+  ctx.stroke();
+  for (let q = 0; q < 4; q++) {
+    const a = -Math.PI / 2 + (q / 4) * TAU;
+    const t0 = pointOnCircle(center, capR - 2.4, a);
+    const t1 = pointOnCircle(center, capR + 2.4, a);
+    ctx.strokeStyle = rgba("hairline", 0.7);
     ctx.beginPath();
-    ctx.arc(center.x, center.y, r + 6, a0, a1);
+    ctx.moveTo(t0.x, t0.y);
+    ctx.lineTo(t1.x, t1.y);
+    ctx.stroke();
+  }
+  if (fill > 0.005) {
+    const a0 = -Math.PI / 2;
+    const a1 = a0 + fill * TAU;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = rgba(toneToken, 0.12);
+    ctx.lineWidth = 4.6;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, capR, a0, a1);
+    ctx.stroke();
+    ctx.strokeStyle = rgba(toneToken, 0.62);
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, capR, a0, a1);
     ctx.stroke();
   }
 
-  // Live I/O: the inner ring slowly turns while the pool works; direction by
-  // read/write dominance; honest stillness when idle.
-  if (io > 0.01) {
-    const writeDominant = pool.writeBps > pool.readBps;
-    const spin = s.motionEnabled ? TAU * drift(s.t, 34 - 20 * io) * (writeDominant ? 1 : -1) : 0;
-    ctx.strokeStyle = writeDominant ? rgba("ok", 0.16 + 0.34 * io) : rgba("accent", 0.16 + 0.34 * io);
-    ctx.lineWidth = 1.2;
-    const dashes = 9;
-    for (let i = 0; i < dashes; i++) {
-      const a = spin + (i / dashes) * TAU;
+  // Live I/O, second channel: a sparse drift of luminous surface motes —
+  // matter stirring on the body while it works. Deterministic positions,
+  // phase-driven by time; still (but present) in reduced-motion.
+  if (io > 0.02) {
+    const ioToken: ColorTokenName = writeDominant ? "ok" : "accent";
+    const moteRng = makeRng(seed ^ 0x10a7);
+    const motes = Math.max(3, Math.round((r / 22) * (1 + 3 * io)));
+    const phase = s.motionEnabled ? drift(s.t, 26 - 14 * io) : 0.35;
+    for (let i = 0; i < motes; i++) {
+      const ang = moteRng() * TAU + phase * TAU * (writeDominant ? 1 : -1);
+      const rad = (0.25 + moteRng() * 0.6) * r;
+      // Each mote fades in/out on its own offset cycle so the surface shimmers
+      // rather than blinks.
+      const twinkle = 0.5 + 0.5 * Math.sin(TAU * (phase * 2 + moteRng()));
+      const p = pointOnCircle(center, rad, ang);
+      ctx.fillStyle = rgba(ioToken, (0.1 + 0.3 * io) * twinkle);
       ctx.beginPath();
-      ctx.arc(center.x, center.y, r * 0.55, a, a + TAU / dashes * 0.28);
-      ctx.stroke();
+      ctx.arc(p.x, p.y, 0.9 + moteRng() * 0.8, 0, TAU);
+      ctx.fill();
     }
   }
 
@@ -393,7 +431,7 @@ function serviceStroke(s: ServiceBodyModel, glow: number, hovered: boolean): { t
   if (s.status === "neutral") return { token: "border", alpha: 0.75, width: 1 };
   return {
     token: glow > 0.04 ? "accent" : "border",
-    alpha: 0.62 + glow * 0.34 + (hovered ? 0.12 : 0),
+    alpha: 0.74 + glow * 0.24 + (hovered ? 0.12 : 0),
     width: 1.1 + glow * 0.5,
   };
 }
@@ -408,6 +446,14 @@ function drawServiceBody(
   const glow = s.motion.serviceGlowOf(svc.id);
   const hovered = s.hovered === g.id;
   const stroke = serviceStroke(svc, glow, hovered);
+
+  // A whisper of interior so every body has mass, not just an outline.
+  const body = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, r);
+  body.addColorStop(0, rgba("fg", svc.status === "not-configured" ? 0.015 : 0.045));
+  body.addColorStop(0.75, rgba("fg", 0.012));
+  body.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = body;
+  ctx.fillRect(center.x - r, center.y - r, r * 2, r * 2);
 
   // Active service: a soft interior light rises with real work.
   if (glow > 0.02 && svc.status === "ok") {
@@ -442,13 +488,18 @@ function drawServiceBody(
     ctx.fill();
   } else if (svc.id === "sonarr" || svc.id === "radarr") {
     // Siblings: three tiny satellites, phase-shifted so they are not twins.
+    ctx.strokeStyle = rgba(stroke.token, stroke.alpha * 0.22);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, r * 0.58, 0, TAU);
+    ctx.stroke();
     const phase = svc.id === "sonarr" ? 0 : Math.PI / 3;
     for (let i = 0; i < 3; i++) {
       const a = rot * 0.5 + phase + (i / 3) * TAU;
       const p = pointOnCircle(center, r * 0.58, a);
-      ctx.fillStyle = rgba("fg", 0.34 + glow * 0.3);
+      ctx.fillStyle = rgba("fg", 0.46 + glow * 0.3);
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 1.3, 0, TAU);
+      ctx.arc(p.x, p.y, 1.7, 0, TAU);
       ctx.fill();
     }
   } else if (svc.id === "qbittorrent") {
@@ -495,28 +546,39 @@ function drawCore(ctx: CanvasRenderingContext2D, s: RenderState): void {
     ctx.fillRect(center.x - fieldR, center.y - fieldR, fieldR * 2, fieldR * 2);
   }
 
-  // 2. Memory halo: a particulate dust torus. Density is real occupancy —
-  // the filled fraction of the ring carries denser, brighter grains.
+  // 2. Memory halo: a particulate dust torus — grains ALL the way around so
+  // it always reads as one ring; the occupied fraction (from 12 o'clock)
+  // carries denser, brighter grains with a soft taper at its edge, plus a
+  // hairline measurement arc so the value is readable up close.
   const memFraction = m.memFraction;
   const rng = makeRng(0x3e30a11);
-  const grains = 340;
+  const grains = 420;
   const haloRot = s.motionEnabled ? TAU * drift(s.t, 410) : 0;
   for (let i = 0; i < grains; i++) {
     const baseA = (i / grains) * TAU + rng() * 0.02;
-    const a = baseA + haloRot;
+    const a = baseA - Math.PI / 2 + haloRot;
     const rr = core.memR + (rng() - 0.5) * core.memBandW;
-    // Position within the occupancy arc (from 12 o'clock) is "filled".
-    const posFrac = ((baseA + Math.PI / 2) % TAU) / TAU;
-    const filled = memFraction !== null && posFrac <= memFraction;
-    const keep = filled ? true : rng() < 0.42;
-    if (!keep) continue;
+    const posFrac = i / grains; // 0 at 12 o'clock, clockwise
+    // 0..1 how "occupied" this angular position is, tapering over ~4% of the
+    // circle at the boundary so the ring never has a hard cliff.
+    const occ =
+      memFraction === null
+        ? 0
+        : Math.max(0, Math.min(1, (memFraction - posFrac) / 0.04 + 1));
+    if (occ <= 0 && rng() > 0.8) continue; // the torus stays whole when free
     const p = pointOnCircle(center, rr, a);
-    ctx.fillStyle = filled
-      ? rgba("fg", (0.1 + rng() * 0.16) * alphaScale)
-      : rgba("fg", (0.028 + rng() * 0.05) * alphaScale);
+    const alpha = (0.03 + rng() * 0.045 + occ * (0.1 + rng() * 0.1)) * alphaScale;
+    ctx.fillStyle = rgba("fg", alpha);
     ctx.beginPath();
-    ctx.arc(p.x, p.y, filled ? 0.9 + rng() * 0.7 : 0.6 + rng() * 0.5, 0, TAU);
+    ctx.arc(p.x, p.y, 0.6 + rng() * 0.5 + occ * 0.55, 0, TAU);
     ctx.fill();
+  }
+  if (memFraction !== null) {
+    ctx.strokeStyle = rgba("fg", 0.16 * alphaScale);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, core.memR + core.memBandW * 0.5 + 7, -Math.PI / 2, -Math.PI / 2 + memFraction * TAU);
+    ctx.stroke();
   }
   // Swap pressure: a short warm arc riding just outside the halo — only when
   // meaningful, and always local.
@@ -528,33 +590,39 @@ function drawCore(ctx: CanvasRenderingContext2D, s: RenderState): void {
     ctx.stroke();
   }
 
-  // 3. Corona: one filament per REAL logical CPU (truthful count), integrated
-  // as stellar prominences — uniform base ring, smoothed length/brightness.
+  // 3. Corona: one filament per REAL logical CPU (truthful count), drawn as
+  // stellar prominences — seeded base-length variation and a two-pass soft +
+  // bright stroke so the corona reads as matter, not a radial bar chart.
   const cores = m.perCore;
   const coronaRot = s.motionEnabled ? TAU * drift(s.t, 340) : 0;
   if (cores.length > 0) {
+    const coronaRng = makeRng(0xc0207a);
     for (let i = 0; i < cores.length; i++) {
       const util = Math.min(1, cores[i]!);
       const a = (i / cores.length) * TAU - Math.PI / 2 + coronaRot;
-      const inner = pointOnCircle(center, core.spokeBaseR, a);
-      const lenF = 0.2 + 0.8 * util;
+      const baseVar = 0.16 + coronaRng() * 0.14; // organic, deterministic
+      const lenF = baseVar + (1 - baseVar) * util;
+      const inner = pointOnCircle(center, core.spokeBaseR - 6, a);
       const outer = pointOnCircle(center, core.spokeBaseR + core.spokeMaxLen * lenF, a);
       const grad = ctx.createLinearGradient(inner.x, inner.y, outer.x, outer.y);
-      grad.addColorStop(0, rgba("fg", (0.4 + 0.42 * util) * alphaScale));
-      grad.addColorStop(1, rgba("accent", 0.02));
+      grad.addColorStop(0, rgba("fg", (0.34 + 0.5 * util) * alphaScale));
+      grad.addColorStop(0.65, rgba("accent", (0.12 + 0.3 * util) * alphaScale));
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      // Soft under-stroke gives the filament body; bright core gives it edge.
       ctx.strokeStyle = grad;
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = 2.6;
+      ctx.globalAlpha = 0.45;
+      ctx.beginPath();
+      ctx.moveTo(inner.x, inner.y);
+      ctx.lineTo(outer.x, outer.y);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(inner.x, inner.y);
       ctx.lineTo(outer.x, outer.y);
       ctx.stroke();
     }
-    // Fine base ring binding the filaments into one object.
-    ctx.strokeStyle = rgba("fg", 0.22 * alphaScale);
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, core.spokeBaseR, 0, TAU);
-    ctx.stroke();
   } else if (dimmed) {
     // No fake corona: an honest dim shell.
     ctx.strokeStyle = rgba("hairline", 0.9);
