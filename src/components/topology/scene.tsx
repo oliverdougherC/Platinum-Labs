@@ -296,6 +296,12 @@ export function TopologyScene({
     [size, camera, background, frozen, motionEnabled, snapshot.generatedAt, now],
   );
 
+  // Scene clock epoch. Lives OUTSIDE the loop effect: `drawFrame` gets a new
+  // identity on every data update (snapshot/now props), which re-runs the
+  // effect — an effect-local epoch would rewind t to 0 on every SSE event and
+  // visibly restart all time-parameterized motion.
+  const epochRef = useRef<number | null>(null);
+
   // The render loop.
   useEffect(() => {
     if (!motionEnabled) {
@@ -305,14 +311,14 @@ export function TopologyScene({
     }
     let raf = 0;
     let last = 0;
-    const t0 = performance.now();
     const loop = (ts: number) => {
       raf = requestAnimationFrame(loop);
+      if (epochRef.current === null) epochRef.current = ts;
       const hasFlows = motionRef.current!.liveFlows().length > 0;
       const budget = hasFlows ? ACTIVE_FRAME_MS : IDLE_FRAME_MS;
       if (ts - last < budget) return;
       last = ts;
-      drawFrame((ts - t0) / 1000);
+      drawFrame((ts - epochRef.current) / 1000);
     };
     const start = () => {
       if (!raf) raf = requestAnimationFrame(loop);
