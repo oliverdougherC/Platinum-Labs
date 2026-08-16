@@ -1,0 +1,83 @@
+{
+  "viewport": {
+    "width": 1920,
+    "height": 1080
+  },
+  "method": "Chromium CDP Performance.getMetrics; 5-second samples after a 2-second settle",
+  "units": {
+    "mainThreadTaskMsPerSecond": "milliseconds of main-thread task time per wall second",
+    "scriptMsPerSecond": "milliseconds of script execution per wall second",
+    "layoutMsPerSecond": "milliseconds of layout work per wall second",
+    "styleRecalcMsPerSecond": "milliseconds of style recalculation per wall second"
+  },
+  "measurements": [
+    {
+      "profile": "idle",
+      "scenario": "idle",
+      "reducedMotion": false,
+      "hiddenRequested": false,
+      "hiddenMethod": null,
+      "documentHidden": false,
+      "sampleSeconds": 5,
+      "mainThreadTaskMsPerSecond": 252.22,
+      "scriptMsPerSecond": 9.01,
+      "layoutMsPerSecond": 0.14,
+      "styleRecalcMsPerSecond": 0.14,
+      "jsHeapUsedMiB": 17.36,
+      "domNodes": 381,
+      "documents": 2,
+      "appMotionState": "on"
+    },
+    {
+      "profile": "representative-active",
+      "scenario": "active",
+      "reducedMotion": false,
+      "hiddenRequested": false,
+      "hiddenMethod": null,
+      "documentHidden": false,
+      "sampleSeconds": 5,
+      "mainThreadTaskMsPerSecond": 459.4,
+      "scriptMsPerSecond": 14.07,
+      "layoutMsPerSecond": 0.12,
+      "styleRecalcMsPerSecond": 0.11,
+      "jsHeapUsedMiB": 19.03,
+      "domNodes": 392,
+      "documents": 1,
+      "appMotionState": "on"
+    },
+    {
+      "profile": "reduced-motion",
+      "scenario": "active",
+      "reducedMotion": true,
+      "hiddenRequested": false,
+      "hiddenMethod": null,
+      "documentHidden": false,
+      "sampleSeconds": 5,
+      "mainThreadTaskMsPerSecond": 13.04,
+      "scriptMsPerSecond": 8.84,
+      "layoutMsPerSecond": 0.15,
+      "styleRecalcMsPerSecond": 0.47,
+      "jsHeapUsedMiB": 15.75,
+      "domNodes": 392,
+      "documents": 1,
+      "appMotionState": "off"
+    },
+    {
+      "profile": "hidden-tab",
+      "scenario": "active",
+      "reducedMotion": false,
+      "hiddenRequested": true,
+      "hiddenMethod": "visibility-event-emulation",
+      "documentHidden": true,
+      "sampleSeconds": 5,
+      "mainThreadTaskMsPerSecond": 7.94,
+      "scriptMsPerSecond": 7.3,
+      "layoutMsPerSecond": 0,
+      "styleRecalcMsPerSecond": 0,
+      "jsHeapUsedMiB": 15.05,
+      "domNodes": 392,
+      "documents": 1,
+      "appMotionState": "on"
+    }
+  ]
+}
