@@ -66,10 +66,15 @@ services:
     expose:
       - "9797"
     hostname: zfs-collector
+    # Two-network isolation (PLA-265): `zfs_private` carries homepage →
+    # collector polling; `docker_telemetry_private` carries collector →
+    # docker-proxy only. The homepage never joins the latter, so it can reach
+    # the collector but can never reach the Docker socket proxy.
     networks:
       zfs_private:
         aliases:
           - zfs-collector
+      docker_telemetry_private: {}
     cap_drop:
       - ALL
     security_opt:
@@ -94,10 +99,13 @@ services:
 
   # Narrow read-only Docker telemetry access (PLA-265/272 review blocker).
   # The collector may ONLY reach `GET /containers/*` (list + one-shot stats):
-  # the proxy denies every other API section, POST is disabled, the socket is
-  # mounted read-only, and the proxy lives exclusively on the private sidecar
-  # network — it is never published and nothing else can reach it. This is
-  # deliberately NOT an unrestricted /var/run/docker.sock mount.
+  # the proxy denies every other API section, POST is disabled, and the socket
+  # is mounted read-only. The proxy lives exclusively on the internal
+  # `docker_telemetry_private` network, which only `zfs-collector` shares —
+  # `homepage` sits on `zfs_private` (homepage ↔ collector) and is NOT attached
+  # to `docker_telemetry_private`, so the dashboard container has no route to
+  # the Docker socket at all. This is deliberately NOT an unrestricted
+  # /var/run/docker.sock mount.
   docker-proxy:
     profiles: ["zfs-sidecar"]
     image: tecnativa/docker-socket-proxy:0.3.0
@@ -110,7 +118,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
-      zfs_private:
+      docker_telemetry_private:
         aliases:
           - docker-proxy
     security_opt:
@@ -133,4 +141,8 @@ networks:
     external: true
     name: ${JELLYFIN_NETWORK_NAME:-jellyfin_default}
   zfs_private:
+    internal: true
+  # Collector-only hop to the Docker socket proxy. Internal (no egress), and
+  # joined by exactly zfs-collector + docker-proxy — never homepage.
+  docker_telemetry_private:
     internal: true
