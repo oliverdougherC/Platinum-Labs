@@ -11,8 +11,28 @@ import type {
  * Live data transport for the topology (PLA-265).
  *
  * Primary: one SSE connection to `/api/stream` (`snapshot` + `telemetry`
- * events). Fallback: interval polling of `/api/dashboard` while SSE is down —
- * the page always converges on last-known-good rather than blanking.
+ * events). Fallback: interval polling of `/api/dashboard` while the SNAPSHOT
+ * channel is down — the page always converges on last-known-good rather than
+ * blanking.
+ *
+ * CHANNEL MODEL (V2.1 transport blocker): snapshot delivery and telemetry
+ * delivery are tracked separately. The `/api/dashboard` fallback exists to
+ * cover the snapshot channel, so ONLY a valid SSE snapshot stands it down —
+ * a healthy telemetry stream must never silence snapshot fallback while
+ * snapshots are dead. In the other direction the dependency is real and
+ * documented: a full snapshot CONTAINS the complete telemetry payload, so
+ * fresh snapshot receipt (SSE or fallback) is the telemetry channel's
+ * lower-frequency fallback — telemetry merely degrades from ~2s to ~5s/7s
+ * cadence, which the shell treats as healthy.
+ *
+ * ORDERING: snapshot and telemetry application is guarded by monotonic
+ * server `generatedAt` — an older fallback response racing a newer SSE
+ * snapshot, or a replayed old SSE frame, is discarded rather than becoming
+ * current. A valid SSE snapshot also aborts any in-flight fallback request.
+ *
+ * OFFLINE is a DELIVERY judgment, never a readyState claim: an EventSource
+ * that stays `open`/`connecting` while delivering nothing for the offline
+ * horizon — with fallback failing too — derives `offline`.
  *
  * 24/7 hygiene:
  *  - the SSE connection is CLOSED after the tab has been hidden for a grace
@@ -34,11 +54,12 @@ const HIDDEN_CLOSE_MS = 60_000;
 const STALE_AFTER_MS = 20_000;
 const OFFLINE_AFTER_MS = 45_000;
 /**
- * SSE delivery watchdog: the server emits telemetry every ~2s and snapshots
- * every ~5s, so a connection that has parsed no valid frame for this long is
- * not actually delivering — regardless of what `EventSource.readyState`
- * claims. An open-but-silent, heartbeat-only, buffered, or malformed stream
- * must fall back to polling instead of leaving the page delayed forever.
+ * SSE snapshot-delivery watchdog: the server emits snapshots every ~5s, so a
+ * connection that has parsed no valid SNAPSHOT frame for this long has a dead
+ * snapshot channel — regardless of what `EventSource.readyState` claims, and
+ * regardless of how lively the telemetry channel is. An open-but-silent,
+ * heartbeat-only, telemetry-only, buffered, or malformed stream must fall
+ * back to snapshot polling instead of leaving the page delayed forever.
  */
 const SSE_SILENT_AFTER_MS = 15_000;
 const WATCHDOG_INTERVAL_MS = 5_000;
@@ -64,15 +85,41 @@ export type ShellTransportState =
   | "offline";
 
 export interface TransportObservation {
+  /** Last applied full snapshot from ANY transport (SSE or fallback). */
   lastSnapshotReceivedAt: number;
   lastTelemetryReceivedAt: number | null;
   lastSnapshotGeneratedAt: number;
   lastTelemetryGeneratedAt: number | null;
+  /**
+   * Last VALID snapshot applied from the SSE channel specifically — null
+   * until one arrives. Distinguishes "snapshots are fresh" (which fallback
+   * can provide) from "the SSE snapshot channel itself is delivering".
+   */
+  lastSseSnapshotAt: number | null;
   sseState: SseState;
   pollingState: PollingState;
   lastFallbackSuccessAt: number | null;
 }
 
+/**
+ * Channel-aware shell state. Freshness derives independently for the full
+ * application snapshot, the high-frequency telemetry stream, and polling
+ * fallback:
+ *
+ *  - SNAPSHOT freshness: last applied full snapshot (either transport).
+ *  - TELEMETRY freshness: high-frequency events, OR fresh snapshot receipt —
+ *    a full snapshot contains the complete telemetry payload, so snapshots
+ *    are the telemetry channel's documented lower-frequency fallback.
+ *  - OFFLINE: nothing valid received on any channel for the offline horizon
+ *    AND fallback is not delivering — derived purely from delivery, so an
+ *    EventSource stuck `open` or `connecting` without frames still goes
+ *    offline instead of trusting readyState indefinitely.
+ *  - RECONNECTING-WITH-FALLBACK: snapshot data is fresh but arriving via the
+ *    fallback while the SSE snapshot channel is not delivering (or SSE is
+ *    retrying) — degraded-but-covered, visibly.
+ *
+ * Healthy state stays silent.
+ */
 export function deriveShellTransportState(
   transport: TransportObservation,
   now: number,
@@ -82,14 +129,12 @@ export function deriveShellTransportState(
   const snapshotFresh =
     now - transport.lastSnapshotReceivedAt <= STALE_AFTER_MS &&
     now - transport.lastSnapshotGeneratedAt <= STALE_AFTER_MS;
-  // The initial full snapshot includes telemetry, so its receipt grants one
-  // grace window while the high-frequency stream opens. Afterwards telemetry
-  // events must advance independently when SSE claims to be open.
-  const telemetryFresh = transport.lastTelemetryReceivedAt === null
-    ? now - transport.lastSnapshotReceivedAt <= STALE_AFTER_MS
-    : now - transport.lastTelemetryReceivedAt <= STALE_AFTER_MS &&
-      transport.lastTelemetryGeneratedAt !== null &&
-      now - transport.lastTelemetryGeneratedAt <= STALE_AFTER_MS;
+  const telemetryEventFresh =
+    transport.lastTelemetryReceivedAt !== null &&
+    now - transport.lastTelemetryReceivedAt <= STALE_AFTER_MS &&
+    transport.lastTelemetryGeneratedAt !== null &&
+    now - transport.lastTelemetryGeneratedAt <= STALE_AFTER_MS;
+  const telemetryFresh = telemetryEventFresh || snapshotFresh;
   const fallbackFresh =
     transport.lastFallbackSuccessAt !== null &&
     now - transport.lastFallbackSuccessAt <= STALE_AFTER_MS;
@@ -99,18 +144,17 @@ export function deriveShellTransportState(
     transport.lastFallbackSuccessAt ?? 0,
   );
 
-  if (
-    (transport.sseState === "retrying" || transport.sseState === "closed") &&
-    !fallbackFresh &&
-    now - lastReceipt > OFFLINE_AFTER_MS
-  ) {
+  if (!fallbackFresh && now - lastReceipt > OFFLINE_AFTER_MS) {
     return "offline";
   }
   if (!snapshotFresh) return "data-delayed";
-  if (transport.sseState === "retrying" && fallbackFresh) {
+  const sseSnapshotFresh =
+    transport.lastSseSnapshotAt !== null &&
+    now - transport.lastSseSnapshotAt <= STALE_AFTER_MS;
+  if (fallbackFresh && (transport.sseState === "retrying" || !sseSnapshotFresh)) {
     return "reconnecting-with-fallback";
   }
-  if (transport.sseState === "open" && !telemetryFresh) return "data-delayed";
+  if (!telemetryFresh) return "data-delayed";
   return "healthy";
 }
 
@@ -148,6 +192,7 @@ export function useLiveData(
       lastTelemetryReceivedAt: null,
       lastSnapshotGeneratedAt: initial.generatedAt,
       lastTelemetryGeneratedAt: null,
+      lastSseSnapshotAt: null,
       sseState: frozen ? "closed" : "connecting",
       pollingState: "idle",
       lastFallbackSuccessAt: null,
@@ -165,27 +210,62 @@ export function useLiveData(
     let disposed = false;
     /** In-flight guard: fallback requests never overlap or abort each other. */
     let pollInFlight = false;
-    /** The in-flight request's own controller, aborted only on teardown. */
+    /** The in-flight request's own controller, aborted on teardown or when a valid SSE snapshot supersedes it. */
     let activePollAbort: AbortController | null = null;
-    /** Last time a VALID SSE frame was parsed and applied (connect resets it). */
-    let lastSseDeliveryAt = Date.now();
+    /** Last time a VALID SSE SNAPSHOT was parsed and applied (connect resets it). Telemetry frames deliberately do not count. */
+    let lastSseSnapshotDeliveryAt = Date.now();
+    /**
+     * Monotonic generatedAt guards, local to this transport generation
+     * (a scenario change re-runs the effect and resets them along with every
+     * other piece of transport state). An older or replayed payload — a slow
+     * fallback response racing a newer SSE snapshot, or a replayed SSE frame
+     * — must never become current merely because it arrived later.
+     */
+    let lastAppliedSnapshotGeneratedAt = initial.generatedAt;
+    let lastAppliedTelemetryGeneratedAt = initial.generatedAt;
 
     const query = scenario ? `?scenario=${encodeURIComponent(scenario)}` : "";
 
-    const applySnapshot = (snap: DashboardSnapshot): boolean => {
+    const applySnapshot = (
+      snap: DashboardSnapshot,
+      source: "sse" | "fallback",
+    ): boolean => {
       if (disposed || document.hidden) return false;
+      if (
+        typeof snap.generatedAt !== "number" ||
+        !Number.isFinite(snap.generatedAt) ||
+        snap.generatedAt < lastAppliedSnapshotGeneratedAt
+      ) {
+        return false; // stale/replayed/malformed-clock payload: never current
+      }
+      lastAppliedSnapshotGeneratedAt = snap.generatedAt;
+      // The snapshot CONTAINS telemetry as of its generation instant, so an
+      // older telemetry event must not later overwrite what it applied.
+      lastAppliedTelemetryGeneratedAt = Math.max(
+        lastAppliedTelemetryGeneratedAt,
+        snap.generatedAt,
+      );
       setSnapshot(snap);
       const receivedAt = Date.now();
       setTransport((prev) => ({
         ...prev,
         lastSnapshotGeneratedAt: snap.generatedAt,
         lastSnapshotReceivedAt: receivedAt,
+        ...(source === "sse" ? { lastSseSnapshotAt: receivedAt } : {}),
       }));
       return true;
     };
 
     const applyTelemetry = (ev: TelemetryEvent): boolean => {
       if (disposed || document.hidden) return false;
+      if (
+        typeof ev.generatedAt !== "number" ||
+        !Number.isFinite(ev.generatedAt) ||
+        ev.generatedAt < lastAppliedTelemetryGeneratedAt
+      ) {
+        return false; // replayed/older than the newest applied telemetry
+      }
+      lastAppliedTelemetryGeneratedAt = ev.generatedAt;
       setSnapshot((prev) => ({
         ...prev,
         telemetry: ev.telemetry,
@@ -208,11 +288,15 @@ export function useLiveData(
       }
     };
 
-    // Fallback stops ONLY here: a frame counted as delivered after both JSON
-    // parsing and application succeeded. `onopen` and pre-parse listener entry
-    // prove nothing about delivery and must not silence the fallback.
-    const markSseDelivery = () => {
-      lastSseDeliveryAt = Date.now();
+    // Fallback stops ONLY here: a SNAPSHOT frame counted as delivered after
+    // both JSON parsing and application succeeded. `onopen`, pre-parse
+    // listener entry, and TELEMETRY frames prove nothing about the snapshot
+    // channel and must not silence its fallback. A superseded in-flight
+    // fallback request is aborted so its (older) response can never race the
+    // snapshot that just arrived.
+    const markSseSnapshotDelivery = () => {
+      lastSseSnapshotDeliveryAt = Date.now();
+      activePollAbort?.abort();
       stopPolling();
     };
 
@@ -233,7 +317,10 @@ export function useLiveData(
           signal: abort.signal,
         });
         if (res.ok) {
-          applySnapshot((await res.json()) as DashboardSnapshot);
+          // Application is generation-guarded: a response that lost the race
+          // to a newer SSE snapshot is discarded (the transport still worked,
+          // so the fallback success is recorded either way).
+          applySnapshot((await res.json()) as DashboardSnapshot, "fallback");
           const receivedAt = Date.now();
           if (!disposed) {
             setTransport((prev) => ({
@@ -268,20 +355,20 @@ export function useLiveData(
     const connect = () => {
       if (disposed || source) return;
       // A fresh connection earns one full delivery window before the
-      // watchdog may declare it silent.
-      lastSseDeliveryAt = Date.now();
+      // watchdog may declare its snapshot channel silent.
+      lastSseSnapshotDeliveryAt = Date.now();
       setTransport((prev) => ({ ...prev, sseState: "connecting" }));
       source = new EventSource(`/api/stream${query}`);
       source.onopen = () => {
         // `open` is a socket claim, not proof of delivery — fallback keeps
-        // running until a valid frame is parsed and applied.
+        // running until a valid snapshot frame is parsed and applied.
         if (disposed) return;
         setTransport((prev) => ({ ...prev, sseState: "open" }));
       };
       source.addEventListener("snapshot", (e) => {
         try {
           const snap = JSON.parse((e as MessageEvent).data) as DashboardSnapshot;
-          if (applySnapshot(snap)) markSseDelivery();
+          if (applySnapshot(snap, "sse")) markSseSnapshotDelivery();
         } catch {
           // malformed frame: not delivery — the watchdog/fallback stay armed
         }
@@ -289,7 +376,9 @@ export function useLiveData(
       source.addEventListener("telemetry", (e) => {
         try {
           const ev = JSON.parse((e as MessageEvent).data) as TelemetryEvent;
-          if (applyTelemetry(ev)) markSseDelivery();
+          // Telemetry delivery is tracked for ITS channel only — it must not
+          // stand down snapshot fallback while snapshots are dead.
+          applyTelemetry(ev);
         } catch {
           // malformed frame: not delivery
         }
@@ -330,12 +419,15 @@ export function useLiveData(
     };
 
     connect();
-    // Delivery watchdog: even an "open" stream must keep proving itself with
-    // valid frames; silence beyond the window re-arms fallback polling, and
-    // markSseDelivery() stands it back down when real delivery resumes.
+    // Snapshot-delivery watchdog: even an "open" stream must keep proving
+    // itself with valid SNAPSHOT frames; silence beyond the window re-arms
+    // fallback polling (telemetry liveliness is irrelevant here), and
+    // markSseSnapshotDelivery() stands it back down when snapshots resume.
     watchdogTimer = setInterval(() => {
       if (disposed || document.hidden || !source) return;
-      if (Date.now() - lastSseDeliveryAt > SSE_SILENT_AFTER_MS) startPolling();
+      if (Date.now() - lastSseSnapshotDeliveryAt > SSE_SILENT_AFTER_MS) {
+        startPolling();
+      }
     }, WATCHDOG_INTERVAL_MS);
     document.addEventListener("visibilitychange", onVisibility);
 
