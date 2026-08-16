@@ -106,7 +106,7 @@ async function main() {
           waitUntil: "networkidle",
         });
         await page.waitForTimeout(1_200);
-        const path = `${OUT_DIR}/12-flow-design-treatment-${treatment}.png`;
+        const path = `${OUT_DIR}/14-flow-design-treatment-${treatment}.png`;
         await page.screenshot({ path, fullPage: true });
         console.log(`captured ${path}`);
         await page.close();
