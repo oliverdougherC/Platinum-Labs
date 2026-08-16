@@ -150,20 +150,34 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
     const angle = SERVICE_ANGLES[s.id];
     const r = SERVICE_RADII[s.id];
     const center = pointOnCircle(core.center, SERVICE_ORBIT_R, angle);
+    // Label placement: upper-hemisphere services label radially outward (the
+    // space is clear). Lower-hemisphere services must NOT label radially —
+    // that corridor belongs to the bottom transport lane — so Sonarr/Radarr
+    // hang their labels beside the body (outward-facing side), clear of both
+    // the control lane and the acquisition tunnel.
+    const lower = Math.sin(angle) > 0.5;
+    const labelAnchor = lower
+      ? vec(
+          center.x + Math.sign(Math.cos(angle) || 1) * (r + 58),
+          center.y - 12,
+        )
+      : pointOnCircle(core.center, SERVICE_ORBIT_R + r + 36, angle);
     services.set(s.id, {
       id: `service:${s.id}`,
       center,
       r,
       atmosphereR: r + 9,
       orbitAngle: angle,
-      // Labels sit outside the orbit, along the radial direction, so they
-      // never collide with the orbit guide or the lane.
-      labelAnchor: pointOnCircle(core.center, SERVICE_ORBIT_R + r + 36, angle),
+      labelAnchor,
     });
   }
 
   // Storage: rank 0 anchors the right side at core height; smaller bodies
-  // bracket it high/low, clear of the (top) playback and (bottom) import lanes.
+  // bracket it high/low, clear of the (top) playback and (bottom) import
+  // lanes. The declared DOWNLOAD pool takes the bottom-right anchor
+  // regardless of size rank — downloads arrive on the bottom lane, so the
+  // staging pool belongs on the acquisition side, with the import copy
+  // hopping up to the library from there.
   const storageAnchors: Array<{ at: Vec; r: number }> = [
     { at: vec(w * 0.762, h * 0.462), r: STORAGE_RADII[0]! },
     { at: vec(w * 0.884, h * 0.772), r: STORAGE_RADII[1]! },
@@ -171,6 +185,15 @@ export function computeLayout(model: SceneModel, aspect: number): SceneLayout {
   ];
   const storage = new Map<string, BodyGeom>();
   const byRank = [...model.storage].sort((a, b) => a.rank - b.rank);
+  const downloadIdx = byRank.findIndex(
+    (p, i) => i > 0 && i <= 2 && p.name === model.downloadPoolName,
+  );
+  if (downloadIdx === 2 && byRank.length > 2) {
+    // Swap the download pool into the bottom-right (acquisition-side) anchor.
+    const tmp = byRank[1]!;
+    byRank[1] = byRank[2]!;
+    byRank[2] = tmp;
+  }
   byRank.forEach((pool, i) => {
     const anchor =
       storageAnchors[i] ??

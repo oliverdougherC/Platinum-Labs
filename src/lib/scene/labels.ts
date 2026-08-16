@@ -171,11 +171,12 @@ export function buildLabels(model: SceneModel, layout: SceneLayout, now: number)
 
   // --- network ----------------------------------------------------------------
   // The label belongs to the gateway aperture — the place traffic actually
-  // crosses the boundary — not to an arbitrary point of the arc.
+  // crosses the boundary — not to an arbitrary point of the arc. Nudged a few
+  // degrees above the aperture so the text never sits on the WAN conduit.
   const netAnchor = pointOnCircle(
     layout.networkArc.center,
-    layout.networkArc.r + 40,
-    layout.gateway.angle,
+    layout.networkArc.r + 44,
+    layout.gateway.angle + (6 * Math.PI) / 180,
   );
   const net = model.network;
   labels.push(

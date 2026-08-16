@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { buildSceneModel, capacityTone } from "@/lib/scene/model";
 import { computeLayout, WORLD_H, type SceneLayout } from "@/lib/scene/layout";
-import { buildLabels, labelsOverlap } from "@/lib/scene/labels";
-import { pathClearance, PORT_PAD, routeFlows, sweepThrough } from "@/lib/scene/routing";
+import { buildLabels, describeFlow, labelsOverlap } from "@/lib/scene/labels";
+import {
+  dormantRoutes,
+  pathClearance,
+  PORT_PAD,
+  routeFlows,
+  sweepThrough,
+} from "@/lib/scene/routing";
+import { SceneMotion } from "@/lib/scene/motion";
 import { dist } from "@/lib/scene/geom";
 import { buildBackground } from "@/lib/scene/background";
 import { appConfig } from "@/lib/config";
+import { deriveFlows } from "@/lib/topology/activity";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
 import { FAKE_CORE_COUNT } from "@/lib/fake/telemetry";
 import { testPool } from "@/lib/test/factories";
@@ -200,6 +208,168 @@ describe("flow routing geometry", () => {
     const s2 = sweepThrough((170 * Math.PI) / 180, (-10 * Math.PI) / 180, -Math.PI / 2);
     expect(s2).toBeGreaterThan(0);
     expect(Math.abs(Math.abs(s1) + Math.abs(s2) - Math.PI * 2)).toBeLessThan(1e-9);
+  });
+});
+
+describe("gateway + dormant topology", () => {
+  it("every network-terminated flow passes through the ONE gateway aperture", () => {
+    for (const scenario of ["downloads", "seeding", "direct-play", "active"] as const) {
+      const m = model(scenario);
+      const layout = computeLayout(m, VIEWPORTS[0]!.w / VIEWPORTS[0]!.h);
+      for (const g of routeFlows(layout, m.flows)) {
+        const endpoints = [
+          { port: g.ports.from, ep: g.flow.from },
+          { port: g.ports.to, ep: g.flow.to },
+        ];
+        for (const { port, ep } of endpoints) {
+          if (ep.kind !== "network") continue;
+          expect(dist(port, layout.gateway.point)).toBeLessThan(0.5);
+        }
+      }
+    }
+  });
+
+  it("dormant routes exist for the configured topology and stay finite + clear", () => {
+    const m = model("idle");
+    const layout = computeLayout(m, VIEWPORTS[0]!.w / VIEWPORTS[0]!.h);
+    const routes = dormantRoutes(layout, m);
+    // WAN, staging-storage, 2× control, playback, egress for the demo stack.
+    expect(routes.length).toBe(6);
+    for (const g of routes) {
+      for (const p of g.path.points) {
+        expect(Number.isFinite(p.x)).toBe(true);
+        expect(Number.isFinite(p.y)).toBe(true);
+      }
+      for (const p of g.path.points) {
+        expect(dist(p, layout.core.center)).toBeGreaterThan(layout.core.boundaryR - 0.5);
+      }
+    }
+  });
+
+  it("unconfigured services contribute NO dormant routes (quiet, not fake)", () => {
+    const m = model("unconfigured");
+    const layout = computeLayout(m, VIEWPORTS[0]!.w / VIEWPORTS[0]!.h);
+    expect(dormantRoutes(layout, m)).toHaveLength(0);
+  });
+});
+
+describe("flow inspection text", () => {
+  it("describes a measured flow with evidence, rates, and freshness", () => {
+    const flows = deriveFlows(makeFakeSnapshot("seeding", NOW), NOW);
+    const wan = flows.find((f) => f.kind === "wan-transfer")!;
+    const d = describeFlow(wan, NOW);
+    expect(d.summary).toContain("measured");
+    expect(d.summary).toMatch(/in \d/);
+    expect(d.summary).toMatch(/out \d/);
+    expect(d.summary).toContain("updated");
+    expect(d.detail).toContain("qBittorrent");
+  });
+
+  it("a state-only data flow admits its byte rate is unavailable", () => {
+    const snap = makeFakeSnapshot("direct-play", NOW);
+    const noBitrate = {
+      ...snap,
+      jellyfin: {
+        ...snap.jellyfin,
+        sessions: snap.jellyfin.sessions.map((s) => ({ ...s, bitrateBps: null })),
+      },
+    };
+    const playback = deriveFlows(noBitrate, NOW).find((f) => f.kind === "playback")!;
+    const d = describeFlow(playback, NOW);
+    expect(d.summary).toContain("state confirmed");
+    expect(d.summary).toContain("byte rate unavailable");
+  });
+
+  it("a stale flow says so", () => {
+    const snap = makeFakeSnapshot("downloads", NOW);
+    const stale = {
+      ...snap,
+      health: snap.health.map((h) =>
+        h.id === "qbittorrent" ? { ...h, lastSuccessAt: NOW - 10 * 60_000 } : h,
+      ),
+    };
+    const wan = deriveFlows(stale, NOW).find((f) => f.kind === "wan-transfer")!;
+    expect(describeFlow(wan, NOW).summary).toContain("stale");
+  });
+});
+
+describe("motion honesty (PLA-273)", () => {
+  it("stale pool I/O releases surface shimmer to zero — never keeps animating", () => {
+    const motion = new SceneMotion();
+    const live = model("downloads");
+    motion.applyModel(live);
+    motion.advance(0);
+    motion.advance(4_000);
+    expect(motion.storageIoOf("NVME")).toBeGreaterThan(0);
+    // Same values, but the disk domain went stale.
+    const staleModel = {
+      ...live,
+      storage: live.storage.map((p) => ({ ...p, ioFreshness: "stale" as const })),
+    };
+    motion.applyModel(staleModel);
+    for (let t = 5_000; t < 40_000; t += 1_000) motion.advance(t);
+    expect(motion.storageIoOf("NVME")).toBeLessThan(0.02);
+  });
+
+  it("unknown pool I/O (null) never produces shimmer", () => {
+    const motion = new SceneMotion();
+    const m = model("downloads");
+    const unknown = {
+      ...m,
+      storage: m.storage.map((p) => ({
+        ...p,
+        readBps: null,
+        writeBps: null,
+        ioFreshness: "unavailable" as const,
+      })),
+    };
+    motion.applyModel(unknown);
+    motion.advance(0);
+    motion.advance(10_000);
+    expect(motion.storageIoOf("NVME")).toBe(0);
+    expect(motion.storageIoOf("DataStore")).toBe(0);
+  });
+
+  it("a stale flow HOLDS its ghost width; a removed flow releases to nothing", () => {
+    const motion = new SceneMotion();
+    const live = model("downloads");
+    motion.applyModel(live);
+    for (let t = 0; t <= 6_000; t += 500) motion.advance(t);
+    const wan = motion.liveFlows().find((f) => f.obs.kind === "wan-transfer")!;
+    expect(wan.width).toBeGreaterThan(1);
+
+    const staleModel = {
+      ...live,
+      flows: live.flows.map((f) => ({ ...f, freshness: "stale" as const })),
+    };
+    motion.applyModel(staleModel);
+    for (let t = 7_000; t <= 30_000; t += 1_000) motion.advance(t);
+    const ghost = motion.liveFlows().find((f) => f.obs.kind === "wan-transfer")!;
+    expect(ghost.width).toBeGreaterThan(1); // frozen, not drained
+
+    motion.applyModel({ ...live, flows: [] });
+    for (let t = 31_000; t <= 90_000; t += 1_000) motion.advance(t);
+    expect(motion.liveFlows().find((f) => f.obs.kind === "wan-transfer")).toBeUndefined();
+  });
+
+  it("control-plane flows never acquire width from anything", () => {
+    const motion = new SceneMotion();
+    motion.applyModel(model("downloads"));
+    for (let t = 0; t <= 8_000; t += 500) motion.advance(t);
+    for (const f of motion.liveFlows()) {
+      if (f.obs.plane === "control") {
+        expect(f.width).toBe(0);
+        expect(f.activity).toBeGreaterThan(0.5); // present as a signal instead
+      }
+    }
+  });
+
+  it("snapToTargets lands exactly on targets for frozen/reduced-motion frames", () => {
+    const motion = new SceneMotion();
+    motion.applyModel(model("downloads"));
+    motion.snapToTargets(NOW);
+    const wan = motion.liveFlows().find((f) => f.obs.kind === "wan-transfer")!;
+    expect(wan.width).toBeGreaterThan(4); // 11.7 MB/s ⇒ mid-range width, instantly
   });
 });
 
