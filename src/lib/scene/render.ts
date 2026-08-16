@@ -50,6 +50,44 @@ export interface RenderState {
   t: number;
   /** False = reduced motion / frozen: static composition, no drift/packets. */
   motionEnabled: boolean;
+  /** Offscreen layer cache — required for the 24/7 idle CPU budget. */
+  cache: RenderCache;
+}
+
+/**
+ * Offscreen layer cache (spec §23). The scene runs for days: everything that
+ * does not change per frame — the ground gradients, star layers, each storage
+ * body's surface speckle, the memory dust torus — is rendered ONCE into
+ * offscreen canvases and blitted per frame. Keys encode every input that can
+ * change the pixels, so data changes invalidate exactly the right layer.
+ */
+export interface RenderCache {
+  layers: Map<string, { key: string; canvas: HTMLCanvasElement }>;
+}
+
+export function makeRenderCache(): RenderCache {
+  return { layers: new Map() };
+}
+
+/** Get-or-render an offscreen canvas layer. */
+function layer(
+  cache: RenderCache,
+  id: string,
+  key: string,
+  w: number,
+  h: number,
+  draw: (ctx: CanvasRenderingContext2D) => void,
+): HTMLCanvasElement {
+  const entry = cache.layers.get(id);
+  if (entry && entry.key === key) return entry.canvas;
+  const canvas = entry?.canvas ?? document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(w));
+  canvas.height = Math.max(1, Math.round(h));
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  draw(ctx);
+  cache.layers.set(id, { key, canvas });
+  return canvas;
 }
 
 function rgba(token: ColorTokenName, alpha: number): string {
@@ -68,56 +106,61 @@ function breathe(t: number, periodS: number, phase = 0): number {
 
 // --- background ---------------------------------------------------------------
 
-function drawBackground(
-  ctx: CanvasRenderingContext2D,
-  s: RenderState,
-): void {
+/**
+ * Ground + star layers are pre-rendered per canvas size and blitted; only the
+ * (cheap) vignette gradient and the sub-pixel parallax offsets happen per
+ * frame. This is the difference between a 24/7-viable idle CPU cost and
+ * redrawing hundreds of gradients and dots every frame.
+ */
+function drawBackground(ctx: CanvasRenderingContext2D, cam: Camera, s: RenderState): void {
   const { w, h } = s.layout.world;
-  // Deep ground with the faintest center lift so black never reads as void.
-  ctx.fillStyle = rgba("bg", 1);
-  ctx.fillRect(0, 0, w, h);
   const core = s.layout.core.center;
-  const lift = ctx.createRadialGradient(core.x, core.y, 0, core.x, core.y, h * 0.9);
-  lift.addColorStop(0, "rgba(30,36,52,0.32)");
-  lift.addColorStop(0.55, "rgba(18,22,33,0.12)");
-  lift.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = lift;
-  ctx.fillRect(0, 0, w, h);
+  const sizeKey = `${cam.w}x${cam.h}:${w.toFixed(1)}`;
+  const worldTransform = (g: CanvasRenderingContext2D) =>
+    g.setTransform(cam.scale, 0, 0, cam.scale, cam.ox, cam.oy);
 
-  // Dust band.
-  for (const d of s.background.dust) {
-    const g = ctx.createRadialGradient(d.x * w, d.y * h, 0, d.x * w, d.y * h, d.r * w);
-    g.addColorStop(0, rgba("accent", d.alpha));
-    g.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = g;
-    ctx.fillRect(d.x * w - d.r * w, d.y * h - d.r * w, d.r * w * 2, d.r * w * 2);
-  }
-
-  // Star layers with near-imperceptible parallax drift.
-  for (const layer of s.background.layers) {
-    const ox = s.motionEnabled
-      ? Math.sin(TAU * drift(s.t, 127)) * 4 * layer.drift
-      : 0;
-    const oy = s.motionEnabled
-      ? Math.cos(TAU * drift(s.t, 173)) * 2.6 * layer.drift
-      : 0;
-    ctx.fillStyle = rgba("fg", 1);
-    for (const star of layer.stars) {
-      ctx.globalAlpha = star.alpha;
-      ctx.beginPath();
-      ctx.arc(
-        ((star.x * w + ox) % w + w) % w,
-        ((star.y * h + oy) % h + h) % h,
-        star.r,
-        0,
-        TAU,
-      );
-      ctx.fill();
+  const ground = layer(s.cache, "ground", sizeKey, cam.w, cam.h, (g) => {
+    worldTransform(g);
+    // Deep ground with the faintest center lift so black never reads as void.
+    g.fillStyle = rgba("bg", 1);
+    g.fillRect(0, 0, w, h);
+    const lift = g.createRadialGradient(core.x, core.y, 0, core.x, core.y, h * 0.9);
+    lift.addColorStop(0, "rgba(30,36,52,0.32)");
+    lift.addColorStop(0.55, "rgba(18,22,33,0.12)");
+    lift.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = lift;
+    g.fillRect(0, 0, w, h);
+    for (const d of s.background.dust) {
+      const grad = g.createRadialGradient(d.x * w, d.y * h, 0, d.x * w, d.y * h, d.r * w);
+      grad.addColorStop(0, rgba("accent", d.alpha));
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      g.fillStyle = grad;
+      g.fillRect(d.x * w - d.r * w, d.y * h - d.r * w, d.r * w * 2, d.r * w * 2);
     }
-  }
-  ctx.globalAlpha = 1;
+  });
 
-  // Vignette.
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(ground, 0, 0);
+
+  s.background.layers.forEach((starLayer, i) => {
+    const canvas = layer(s.cache, `stars${i}`, sizeKey, cam.w, cam.h, (g) => {
+      worldTransform(g);
+      g.fillStyle = rgba("fg", 1);
+      for (const star of starLayer.stars) {
+        g.globalAlpha = star.alpha;
+        g.beginPath();
+        g.arc(star.x * w, star.y * h, star.r, 0, TAU);
+        g.fill();
+      }
+      g.globalAlpha = 1;
+    });
+    const ox = s.motionEnabled ? Math.sin(TAU * drift(s.t, 127)) * 4 * starLayer.drift * cam.scale : 0;
+    const oy = s.motionEnabled ? Math.cos(TAU * drift(s.t, 173)) * 2.6 * starLayer.drift * cam.scale : 0;
+    ctx.drawImage(canvas, ox, oy);
+  });
+
+  // Vignette, live (one gradient fill).
+  worldTransform(ctx);
   const vg = ctx.createRadialGradient(w / 2, h / 2, h * 0.42, w / 2, h / 2, h * 0.95);
   vg.addColorStop(0, "rgba(0,0,0,0)");
   vg.addColorStop(1, "rgba(0,0,0,0.42)");
@@ -281,6 +324,7 @@ function drawStorageBody(
   s: RenderState,
   pool: StorageBodyModel,
   g: BodyGeom,
+  pixelScale: number,
 ): void {
   const { center, r } = g;
   const fill = s.motion.storageFillOf(pool.name) ?? pool.capacityFraction;
@@ -312,24 +356,42 @@ function drawStorageBody(
 
   // Interior: deterministic surface speckle whose density follows occupancy,
   // fading toward the limb so the disc reads as a body with a surface rather
-  // than a noise-filled circle. Texture as data, not decoration.
+  // than a noise-filled circle. Pre-rendered per pool (re-rendered only when
+  // occupancy moves ≥2%) and blitted with a slow rotation transform.
   let seed = 0;
   for (let i = 0; i < pool.name.length; i++) seed = (seed * 31 + pool.name.charCodeAt(i)) | 0;
-  const rng = makeRng(seed ^ 0x5a17);
-  const speckles = Math.round((r * r) / 40);
+  const side = r * 2;
+  const ps = pixelScale;
+  const fillQ = Math.round(fill * 50); // 2% quanta
+  const disc = layer(
+    s.cache,
+    `pool:${pool.name}`,
+    `${fillQ}:${r}:${hovered ? 1 : 0}:${ps.toFixed(2)}`,
+    side * ps,
+    side * ps,
+    (g) => {
+      g.setTransform(ps, 0, 0, ps, r * ps, r * ps);
+      const rng = makeRng(seed ^ 0x5a17);
+      const speckles = Math.round((r * r) / 40);
+      for (let i = 0; i < speckles; i++) {
+        const ang = rng() * TAU;
+        const rad = Math.sqrt(rng()) * (r - 4);
+        const within = rng() < 0.18 + (fillQ / 50) * 0.6; // density ∝ occupancy
+        if (!within) continue;
+        const limbFade = 1 - Math.pow(rad / r, 3); // fade near the edge
+        g.fillStyle = rgba("fg", (0.022 + rng() * 0.042 + (hovered ? 0.014 : 0)) * (0.35 + 0.65 * limbFade));
+        g.beginPath();
+        g.arc(Math.cos(ang) * rad, Math.sin(ang) * rad, 0.6 + rng() * 0.8, 0, TAU);
+        g.fill();
+      }
+    },
+  );
   const rot = s.motionEnabled ? TAU * drift(s.t, 620, seed % 7) : 0;
-  for (let i = 0; i < speckles; i++) {
-    const ang = rng() * TAU + rot;
-    const rad = Math.sqrt(rng()) * (r - 4);
-    const within = rng() < 0.18 + fill * 0.6; // density ∝ occupancy
-    if (!within) continue;
-    const limbFade = 1 - Math.pow(rad / r, 3); // fade near the edge
-    const p = pointOnCircle(center, rad, ang);
-    ctx.fillStyle = rgba("fg", (0.022 + rng() * 0.042 + (hovered ? 0.014 : 0)) * (0.35 + 0.65 * limbFade));
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 0.6 + rng() * 0.8, 0, TAU);
-    ctx.fill();
-  }
+  ctx.save();
+  ctx.translate(center.x, center.y);
+  ctx.rotate(rot);
+  ctx.drawImage(disc, -r, -r, side, side);
+  ctx.restore();
 
   // Body limb: the defining circle.
   ctx.strokeStyle = pool.healthy ? rgba("border", hovered ? 1 : 0.8) : rgba("danger", 0.95);
@@ -524,7 +586,7 @@ function drawServiceBody(
 
 // --- compute star -------------------------------------------------------------
 
-function drawCore(ctx: CanvasRenderingContext2D, s: RenderState): void {
+function drawCore(ctx: CanvasRenderingContext2D, s: RenderState, pixelScale: number): void {
   const core = s.layout.core;
   const { center } = core;
   const m = s.motion;
@@ -549,30 +611,46 @@ function drawCore(ctx: CanvasRenderingContext2D, s: RenderState): void {
   // 2. Memory halo: a particulate dust torus — grains ALL the way around so
   // it always reads as one ring; the occupied fraction (from 12 o'clock)
   // carries denser, brighter grains with a soft taper at its edge, plus a
-  // hairline measurement arc so the value is readable up close.
+  // hairline measurement arc so the value is readable up close. Pre-rendered
+  // (re-rendered only when occupancy moves ≥1%) and blitted.
   const memFraction = m.memFraction;
-  const rng = makeRng(0x3e30a11);
-  const grains = 420;
-  const haloRot = s.motionEnabled ? TAU * drift(s.t, 410) : 0;
-  for (let i = 0; i < grains; i++) {
-    const baseA = (i / grains) * TAU + rng() * 0.02;
-    const a = baseA - Math.PI / 2 + haloRot;
-    const rr = core.memR + (rng() - 0.5) * core.memBandW;
-    const posFrac = i / grains; // 0 at 12 o'clock, clockwise
-    // 0..1 how "occupied" this angular position is, tapering over ~4% of the
-    // circle at the boundary so the ring never has a hard cliff.
-    const occ =
-      memFraction === null
-        ? 0
-        : Math.max(0, Math.min(1, (memFraction - posFrac) / 0.04 + 1));
-    if (occ <= 0 && rng() > 0.8) continue; // the torus stays whole when free
-    const p = pointOnCircle(center, rr, a);
-    const alpha = (0.03 + rng() * 0.045 + occ * (0.1 + rng() * 0.1)) * alphaScale;
-    ctx.fillStyle = rgba("fg", alpha);
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 0.6 + rng() * 0.5 + occ * 0.55, 0, TAU);
-    ctx.fill();
-  }
+  const memQ = memFraction === null ? -1 : Math.round(memFraction * 100);
+  const haloHalf = core.memR + core.memBandW + 6;
+  const halo2 = layer(
+    s.cache,
+    "memHalo",
+    `${memQ}:${alphaScale}:${pixelScale.toFixed(2)}`,
+    haloHalf * 2 * pixelScale,
+    haloHalf * 2 * pixelScale,
+    (g) => {
+      g.setTransform(pixelScale, 0, 0, pixelScale, haloHalf * pixelScale, haloHalf * pixelScale);
+      const rng = makeRng(0x3e30a11);
+      const grains = 420;
+      for (let i = 0; i < grains; i++) {
+        const baseA = (i / grains) * TAU + rng() * 0.02;
+        const a = baseA - Math.PI / 2;
+        const rr = core.memR + (rng() - 0.5) * core.memBandW;
+        const posFrac = i / grains; // 0 at 12 o'clock, clockwise
+        // 0..1 how "occupied" this angular position is, tapering over ~4% of
+        // the circle at the boundary so the ring never has a hard cliff.
+        const occ =
+          memQ < 0 ? 0 : Math.max(0, Math.min(1, (memQ / 100 - posFrac) / 0.04 + 1));
+        if (occ <= 0 && rng() > 0.8) continue; // the torus stays whole when free
+        const alpha = (0.03 + rng() * 0.045 + occ * (0.1 + rng() * 0.1)) * alphaScale;
+        g.fillStyle = rgba("fg", alpha);
+        g.beginPath();
+        g.arc(
+          Math.cos(a) * rr,
+          Math.sin(a) * rr,
+          0.6 + rng() * 0.5 + occ * 0.55,
+          0,
+          TAU,
+        );
+        g.fill();
+      }
+    },
+  );
+  ctx.drawImage(halo2, center.x - haloHalf, center.y - haloHalf, haloHalf * 2, haloHalf * 2);
   if (memFraction !== null) {
     ctx.strokeStyle = rgba("fg", 0.16 * alphaScale);
     ctx.lineWidth = 1;
@@ -695,22 +773,22 @@ export function drawDebug(ctx: CanvasRenderingContext2D, s: RenderState, labelsB
 export function renderScene(ctx: CanvasRenderingContext2D, cam: Camera, s: RenderState): void {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, cam.w, cam.h);
-  ctx.setTransform(cam.scale, 0, 0, cam.scale, cam.ox, cam.oy);
   ctx.lineCap = "round";
 
-  drawBackground(ctx, s);
+  drawBackground(ctx, cam, s); // manages its own transforms (blits + vignette)
+  ctx.setTransform(cam.scale, 0, 0, cam.scale, cam.ox, cam.oy);
   drawGuides(ctx, s);
   drawNetworkArc(ctx, s);
   drawFlows(ctx, s);
   drawDockerBelt(ctx, s);
   for (const pool of s.model.storage) {
     const g = s.layout.storage.get(pool.name);
-    if (g) drawStorageBody(ctx, s, pool, g);
+    if (g) drawStorageBody(ctx, s, pool, g, cam.scale);
   }
   drawGenericStorage(ctx, s);
   for (const svc of s.model.services) {
     const g = s.layout.services.get(svc.id);
     if (g) drawServiceBody(ctx, s, svc, g);
   }
-  drawCore(ctx, s);
+  drawCore(ctx, s, cam.scale);
 }

@@ -12,7 +12,14 @@ import { buildLabels, LABEL_PRIMARY_PX, LABEL_SECONDARY_PX } from "@/lib/scene/l
 import { computeLayout } from "@/lib/scene/layout";
 import { buildSceneModel, type SceneModel, type ServiceId } from "@/lib/scene/model";
 import { SceneMotion } from "@/lib/scene/motion";
-import { drawDebug, renderScene, type Camera, type LiveFlowGeom } from "@/lib/scene/render";
+import {
+  drawDebug,
+  makeRenderCache,
+  renderScene,
+  type Camera,
+  type LiveFlowGeom,
+  type RenderCache,
+} from "@/lib/scene/render";
 import { routeFlow, type FlowGeom } from "@/lib/scene/routing";
 import type { SceneLayout } from "@/lib/scene/layout";
 import type { DashboardSnapshot } from "@/lib/types";
@@ -56,7 +63,7 @@ export interface SceneProps {
 }
 
 const ACTIVE_FRAME_MS = 1000 / 30;
-const IDLE_FRAME_MS = 1000 / 12;
+const IDLE_FRAME_MS = 1000 / 10;
 
 interface HitBody {
   id: string;
@@ -169,6 +176,8 @@ export function TopologyScene({
   // Long-lived render state, mutated outside React.
   const motionRef = useRef<SceneMotion | null>(null);
   if (motionRef.current === null) motionRef.current = new SceneMotion();
+  const renderCacheRef = useRef<RenderCache | null>(null);
+  if (renderCacheRef.current === null) renderCacheRef.current = makeRenderCache();
   const geomCache = useRef<Map<string, FlowGeom | null>>(new Map());
   const stateRef = useRef({ model, layout, hovered, debug });
 
@@ -249,6 +258,7 @@ export function TopologyScene({
         hovered: hov,
         t: motionEnabled ? tSeconds : 120, // fixed, non-zero ambient phase
         motionEnabled,
+        cache: renderCacheRef.current!,
       };
       renderScene(ctx, cam, state);
       if (dbg && process.env.NODE_ENV !== "production") {
