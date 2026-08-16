@@ -5,7 +5,7 @@ import { shouldShowDevControls } from "@/lib/snapshot.server";
 /**
  * Flow design laboratory (PLA-266 v2 design study) — dev-only.
  *
- * Renders the EXACT production flow-drawing code against the ten canonical
+ * Renders the EXACT production flow-drawing code against the eleven canonical
  * flow states (dormant → clamped → bidirectional → derived → state-only →
  * stale → unavailable) under alternative tunnel treatments, so the visual
  * decision is inspectable side by side. Gated exactly like the scenario

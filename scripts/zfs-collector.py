@@ -429,6 +429,18 @@ class _BackgroundCache:
             time.sleep(self.interval)
 
 
+def _stamp_cached_sample(fetch, wall=time.time):
+    """Tag successful cached section fetches with their own sample time."""
+
+    def wrapped():
+        value = fetch()
+        if isinstance(value, dict) and value.get("status") == "ok" and "sampledAt" not in value:
+            return {**value, "sampledAt": int(wall() * 1000)}
+        return value
+
+    return wrapped
+
+
 def _fetch_gpu():
     try:
         out = subprocess.run(
@@ -590,11 +602,11 @@ def _fetch_pool_devices():
 
 
 GPU_CACHE = _BackgroundCache(
-    GPU_CACHE_SECONDS, _fetch_gpu, {"status": "unavailable"},
+    GPU_CACHE_SECONDS, _stamp_cached_sample(_fetch_gpu), {"status": "unavailable"},
     stale_after=_stale_bound(GPU_CACHE_SECONDS),
 )
 DOCKER_CACHE = _BackgroundCache(
-    DOCKER_CACHE_SECONDS, _fetch_docker, {"status": "unavailable"},
+    DOCKER_CACHE_SECONDS, _stamp_cached_sample(_fetch_docker), {"status": "unavailable"},
     stale_after=_stale_bound(DOCKER_CACHE_SECONDS),
 )
 # Device topology is not telemetry (it only groups per-pool I/O), so the last

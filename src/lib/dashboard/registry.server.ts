@@ -437,7 +437,12 @@ function persist(
 ): void {
   tryPersist((db) => {
     // Throughput sampled every cycle (feeds the ~45m media chart).
-    insertThroughput(db, { t: now, bps: snapshot.acquisition.rollup.aggregateRateBps });
+    if (snapshot.acquisition.rollup.aggregateRateBps !== null) {
+      insertThroughput(db, {
+        t: now,
+        bps: snapshot.acquisition.rollup.aggregateRateBps,
+      });
+    }
 
     // Storage sampled only on a NEW ZFS observation, throttled to a low cadence —
     // never once per aggregate cycle.

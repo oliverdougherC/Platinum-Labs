@@ -151,6 +151,28 @@ Direct command mode (`HOMELAB_ZFS_COMMAND=1`) is only for a bare-metal/native
 deploy running **on** the ZFS host. Do not combine it with the containerized
 dashboard.
 
+### Current p910 Living Topology prerequisites
+
+The final PLA-263 read-only production audit established these non-secret
+values for the server-owned `.env` at the next intentional deployment:
+
+```env
+HOMELAB_DOWNLOAD_POOL=DataStore
+HOMELAB_MEDIA_POOL=DataStore
+HOST_NET_INTERFACES=ens6f1
+```
+
+qBittorrent's active default save path is `/data/downloads/complete`, and its
+`/data` mount is backed by `/mnt/DataStore/data`; Jellyfin's `/data/media`
+library mount is backed by the same ZFS pool. Imports are therefore same-pool
+organizing on this host, not a measured cross-pool copy. `ens6f1` is the only
+active physical/default-route interface; selecting it excludes Tailscale and
+Docker virtual-interface counters from gateway throughput.
+
+These variables were unset or empty when audited. This document does not
+authorize editing the production `.env`; apply them only as part of a separate,
+intentional deployment/configuration change.
+
 ## Routine redeploy (the normal path)
 
 Day-to-day deployments go through the canonical deploy script — everything

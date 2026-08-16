@@ -76,6 +76,7 @@ const rawDiskSchema = z.object({
 
 const rawGpuSchema = z.object({
   status: sectionStatus,
+  sampledAt: z.number().nullish(),
   name: z.string().nullish(),
   utilizationPercent: z.number().nullish(),
   vramUsedBytes: z.number().nullish(),
@@ -102,6 +103,7 @@ const rawContainerSchema = z.object({
 
 const rawDockerSchema = z.object({
   status: sectionStatus,
+  sampledAt: z.number().nullish(),
   containers: z.array(rawContainerSchema).nullish(),
 });
 
@@ -183,6 +185,15 @@ function finiteOrNull(v: number | null | undefined): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+function sectionSampledAt(
+  section: { sampledAt?: number | null } | null | undefined,
+  fallback: number,
+): number {
+  return typeof section?.sampledAt === "number" && Number.isFinite(section.sampledAt)
+    ? section.sampledAt
+    : fallback;
+}
+
 // --- normalization -----------------------------------------------------------
 
 function normalizeCpu(
@@ -248,6 +259,7 @@ function normalizeMemory(curr: RawHostSample): TelemetryDomain<MemoryTelemetry> 
 
 function normalizeGpu(curr: RawHostSample): TelemetryDomain<GpuTelemetry> {
   const raw = curr.gpu;
+  const sampledAt = sectionSampledAt(raw, curr.sampledAt);
   if (raw.status === "not-configured") return notConfigured();
   if (
     raw.status !== "ok" ||
@@ -267,7 +279,7 @@ function normalizeGpu(curr: RawHostSample): TelemetryDomain<GpuTelemetry> {
       temperatureC: raw.temperatureC ?? null,
       powerWatts: raw.powerWatts ?? null,
     },
-    curr.sampledAt,
+    sampledAt,
   );
 }
 
@@ -384,16 +396,23 @@ const CONTAINER_STATES: ContainerState[] = [
 function normalizeDocker(
   prevRaw: RawHostSample | null,
   curr: RawHostSample,
+  prevDomain: TelemetryDomain<DockerTelemetry> | undefined,
 ): TelemetryDomain<DockerTelemetry> {
   const raw = curr.docker;
+  const sampledAt = sectionSampledAt(raw, curr.sampledAt);
   if (raw.status === "not-configured") return notConfigured();
   if (raw.status !== "ok" || !raw.containers) return unavailable();
+  const prevDocker = prevRaw?.docker;
+  const prevSampledAt = prevRaw ? sectionSampledAt(prevDocker, prevRaw.sampledAt) : null;
+  if (prevDomain && prevSampledAt !== null && sampledAt === prevSampledAt) {
+    return prevDomain;
+  }
   const prevContainers = new Map(
-    (prevRaw?.docker.containers ?? []).map((c) => [c.name, c]),
+    ((prevDocker?.status === "ok" && prevDocker.containers) ? prevDocker.containers : []).map((c) => [c.name, c]),
   );
   const coreCount =
     curr.cpu.status === "ok" && curr.cpu.cores ? curr.cpu.cores.length : null;
-  const elapsedMs = prevRaw ? curr.sampledAt - prevRaw.sampledAt : 0;
+  const elapsedMs = prevSampledAt === null ? 0 : sampledAt - prevSampledAt;
   // Rate from two cumulative per-container counters; null on a missing
   // counter, a reset (delta < 0), or an invalid window — never 0 (PLA-273).
   const counterRate = (
@@ -447,7 +466,7 @@ function normalizeDocker(
       restarting: containers.filter((c) => c.state === "restarting").length,
       containers,
     },
-    curr.sampledAt,
+    sampledAt,
   );
 }
 
@@ -485,7 +504,7 @@ export function normalizeHostTelemetry(
     gpu: normalizeGpu(curr),
     network: normalizeNetwork(prevRaw, curr, prevSnapshot?.network),
     disk: normalizeDisk(prevRaw, curr, prevSnapshot?.disk),
-    docker: normalizeDocker(prevRaw, curr),
+    docker: normalizeDocker(prevRaw, curr, prevSnapshot?.docker),
     arc: normalizeArc(curr),
   };
 }

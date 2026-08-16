@@ -183,7 +183,7 @@ export function correlateAcquisition(items: AcquisitionItem[]): AcquisitionItem[
 
 function rollupOf(
   items: AcquisitionItem[],
-  aggregateRateBps: number,
+  aggregateRateBps: number | null,
   upload: { uploadRateBps: number | null; seeding: number },
 ): AcquisitionSnapshot["rollup"] {
   return {
@@ -192,7 +192,10 @@ function rollupOf(
     failedOrStalled: items.filter(
       (i) => i.state === "stalled" || i.state === "failed",
     ).length,
-    aggregateRateBps: Math.max(0, Math.round(aggregateRateBps)),
+    aggregateRateBps:
+      aggregateRateBps === null
+        ? null
+        : Math.max(0, Math.round(aggregateRateBps)),
     uploadRateBps: upload.uploadRateBps,
     seeding: upload.seeding,
   };
@@ -211,8 +214,13 @@ export function mergeAcquisition(
 
   // qBittorrent's global download speed is the authoritative live throughput;
   // fall back to summing per-item rates for the *arr-only case.
-  const summedRates = items.reduce((sum, i) => sum + (i.rateBps ?? 0), 0);
-  const aggregateRateBps = qbittorrent?.rollup.aggregateRateBps ?? summedRates;
+  const downloadingItems = items.filter((item) => item.state === "downloading");
+  const summedRates = downloadingItems.every((item) => item.rateBps !== null)
+    ? downloadingItems.reduce((sum, item) => sum + item.rateBps!, 0)
+    : null;
+  const aggregateRateBps = qbittorrent
+    ? qbittorrent.rollup.aggregateRateBps
+    : summedRates;
 
   return {
     items,

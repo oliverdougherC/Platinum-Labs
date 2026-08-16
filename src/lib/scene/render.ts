@@ -19,8 +19,9 @@
  *                never throughput-sized;
  *   state-only   a breathing thin path: work exists, rate unknown — width
  *                must never imply throughput.
- * Evidence quality softens the treatment (derived < measured), stale freezes
- * it (dim ghost, zero motion), unavailable draws nothing beyond the dormant
+ * Evidence quality softens the treatment (derived < measured); stale or
+ * removed overlays release to quiet immediately (no particles, pulses, or
+ * endpoint excitation), and unavailable draws nothing beyond the dormant
  * structural route.
  *
  * Ambient motion uses long incommensurate periods (41 s, 73 s, 127 s) so idle
@@ -38,7 +39,7 @@ import type { BodyGeom, SceneLayout } from "@/lib/scene/layout";
 import type { SceneModel, ServiceBodyModel, StorageBodyModel } from "@/lib/scene/model";
 import type { SceneMotion, LiveFlow } from "@/lib/scene/motion";
 import type { FlowGeom } from "@/lib/scene/routing";
-import type { ChannelRole } from "@/lib/topology/activity";
+import type { ChannelRole, FlowChannel } from "@/lib/topology/activity";
 
 export interface Camera {
   /** Canvas size in CSS pixels. */
@@ -112,6 +113,19 @@ function layer(
 function rgba(token: ColorTokenName, alpha: number): string {
   const [r, g, b] = colorTokens[token];
   return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function mixRgba(
+  left: ColorTokenName,
+  right: ColorTokenName,
+  alpha: number,
+  weight = 0.5,
+): string {
+  const [lr, lg, lb] = colorTokens[left];
+  const [rr, rg, rb] = colorTokens[right];
+  const t = Math.max(0, Math.min(1, weight));
+  const u = 1 - t;
+  return `rgba(${lr * u + rr * t},${lg * u + rg * t},${lb * u + rb * t},${alpha})`;
 }
 
 /** Slow ambient phase in [0,1) with a long, non-looping feel. */
@@ -266,7 +280,9 @@ function drawGuides(ctx: CanvasRenderingContext2D, s: RenderState): void {
 function drawNetworkArc(ctx: CanvasRenderingContext2D, s: RenderState): void {
   const arc = s.layout.networkArc;
   const gw = s.layout.gateway;
-  const known = s.model.network.rxBps !== null || s.model.network.txBps !== null;
+  const known =
+    s.model.network.status === "available" &&
+    (s.model.network.rxBps !== null || s.model.network.txBps !== null);
   const rx = s.motion.rxNorm;
   const tx = s.motion.txNorm;
 
@@ -374,6 +390,48 @@ function liveChannels(f: LiveFlowGeom): ChannelDraw[] {
     out.push({ role: ch.role, direction: ch.direction, bps: ch.bytesPerSecond, width });
   }
   return out;
+}
+
+function channelVisible(ch: Pick<ChannelDraw, "width" | "bps">): boolean {
+  return ch.width > 0.05 || (ch.bps ?? 0) > 0;
+}
+
+export function tunnelBodyIsBidirectional(
+  channels: ReadonlyArray<Pick<ChannelDraw, "direction" | "width" | "bps">>,
+): boolean {
+  const visible = channels.filter(channelVisible);
+  return (
+    visible.some((channel) => channel.direction === "forward") &&
+    visible.some((channel) => channel.direction === "reverse")
+  );
+}
+
+function endpointTokenForDirection(
+  channel: Pick<FlowChannel, "role"> | undefined,
+  fallback: ColorTokenName,
+): ColorTokenName {
+  return channel ? roleToken(channel.role) : fallback;
+}
+
+export function tunnelEndpointTokens(
+  channels: ReadonlyArray<Pick<FlowChannel, "direction" | "role">>,
+  fallback: ColorTokenName,
+): { from: ColorTokenName; to: ColorTokenName } {
+  const forward = channels.find((c) => c.direction === "forward");
+  const reverse = channels.find((c) => c.direction === "reverse");
+  if (forward && reverse) {
+    return {
+      from: endpointTokenForDirection(reverse, fallback),
+      to: endpointTokenForDirection(forward, fallback),
+    };
+  }
+  const single = forward ?? reverse;
+  const token = endpointTokenForDirection(single, fallback);
+  return { from: token, to: token };
+}
+
+export function flowOverlayIsLive(live: LiveFlow): boolean {
+  return live.present && live.obs.freshness === "live";
 }
 
 /**
@@ -512,16 +570,17 @@ export function drawTunnel(
 ): void {
   const { geom, live } = f;
   const { obs } = live;
-  const stale = obs.freshness === "stale";
+  const overlayLive = flowOverlayIsLive(live);
   const hovered = s.hovered === obs.id;
   const width = live.width;
   const channels = liveChannels(f);
-  const bidirectional =
-    channels.filter((c) => c.width > 0.05 || (c.bps ?? 0) > 0).length > 1;
+  const activeChannels = channels.filter(channelVisible);
+  const bidirectional = tunnelBodyIsBidirectional(channels);
 
-  // Evidence encoding: derived flows are softer; stale flows are dim ghosts.
+  // Evidence encoding: derived flows are softer; stale/removed flows are dim
+  // release ghosts whose body may ease away without implying current work.
   const evidenceScale = obs.evidence === "measured" ? 1 : 0.78;
-  const alphaScale = (stale ? 0.42 : 1) * evidenceScale * (hovered ? 1.25 : 1);
+  const alphaScale = (!overlayLive ? 0.42 : 1) * evidenceScale * (hovered ? 1.25 : 1);
   const densityScale = obs.evidence === "measured" ? 1 : 0.6;
 
   // Dominant direction decides the body tint; a genuinely bidirectional
@@ -531,32 +590,41 @@ export function drawTunnel(
   const fToken = roleToken(channels.find((c) => c.direction === "forward")?.role ?? "ingress");
   const rToken = roleToken(channels.find((c) => c.direction === "reverse")?.role ?? "egress");
   const bodyToken: ColorTokenName = fw >= rv ? fToken : rToken;
+  const endpointTokens = tunnelEndpointTokens(activeChannels, bodyToken);
 
   if (width > 0.05) {
     const intensity = Math.min(1, width / 10);
     // 1. Outer atmospheric glow.
-    ctx.strokeStyle = rgba(bodyToken, style.glowAlpha * (0.35 + 0.65 * intensity) * alphaScale);
+    ctx.strokeStyle = bidirectional
+      ? mixRgba("flow-in", "flow-out", style.glowAlpha * (0.35 + 0.65 * intensity) * alphaScale)
+      : rgba(bodyToken, style.glowAlpha * (0.35 + 0.65 * intensity) * alphaScale);
     ctx.lineWidth = Math.max(width * style.glowScale, width + 6);
     strokeSampled(ctx, geom);
     // 2. Translucent tunnel body.
-    ctx.strokeStyle = rgba(bodyToken, style.bodyAlpha * (0.5 + 0.5 * intensity) * alphaScale);
+    ctx.strokeStyle = bidirectional
+      ? mixRgba("flow-in", "flow-out", style.bodyAlpha * (0.5 + 0.5 * intensity) * alphaScale)
+      : rgba(bodyToken, style.bodyAlpha * (0.5 + 0.5 * intensity) * alphaScale);
     ctx.lineWidth = width;
     strokeSampled(ctx, geom);
     // 3. Inner highlight(s).
     if (style.highlight !== "rails") {
-      ctx.strokeStyle = rgba(bodyToken, (0.3 + 0.28 * intensity) * alphaScale);
+      ctx.strokeStyle = bidirectional
+        ? mixRgba("flow-in", "flow-out", (0.3 + 0.28 * intensity) * alphaScale)
+        : rgba(bodyToken, (0.3 + 0.28 * intensity) * alphaScale);
       ctx.lineWidth = 1;
       strokeSampled(ctx, geom);
     }
     if (style.highlight !== "center") {
-      ctx.strokeStyle = rgba(bodyToken, (0.16 + 0.2 * intensity) * alphaScale);
+      ctx.strokeStyle = bidirectional
+        ? mixRgba("flow-in", "flow-out", (0.16 + 0.2 * intensity) * alphaScale)
+        : rgba(bodyToken, (0.16 + 0.2 * intensity) * alphaScale);
       ctx.lineWidth = 0.8;
       strokeOffset(ctx, geom, width * 0.5);
       strokeOffset(ctx, geom, -width * 0.5);
     }
 
     // 4. Directional matter.
-    if (!stale) {
+    if (overlayLive) {
       if (s.motionEnabled) {
         for (const ch of channels) {
           drawChannelParticles(ctx, geom, ch, {
@@ -578,14 +646,14 @@ export function drawTunnel(
       }
     }
 
-    // 5. Endpoint port glows — energy entering/leaving a body. Frozen for
-    // stale ghosts: last-known data must not keep exciting endpoints.
-    if (!stale) {
+    // 5. Endpoint port glows — energy entering/leaving a body. Only genuinely
+    // live overlays may excite endpoints.
+    if (overlayLive) {
       const portR = 5 + Math.min(6, width * 0.7);
       const pulse = s.motionEnabled ? 0.82 + 0.18 * breathe(s.t, 7, hashId(obs.id) % 5) : 1;
       for (const [port, token] of [
-        [geom.ports.to, fToken],
-        [geom.ports.from, bidirectional ? rToken : fToken],
+        [geom.ports.to, endpointTokens.to],
+        [geom.ports.from, endpointTokens.from],
       ] as const) {
         const g = ctx.createRadialGradient(port.x, port.y, 0, port.x, port.y, portR);
         g.addColorStop(0, rgba(token, (0.1 + 0.32 * Math.min(1, width / 8)) * alphaScale * pulse));
@@ -600,7 +668,9 @@ export function drawTunnel(
   // State-only data-plane activity (rate unknown): a thin breathing path —
   // present, honest, and deliberately NOT sized like throughput.
   if (live.activity > 0.02) {
-    const breatheA = stale || !s.motionEnabled ? 0.6 : 0.45 + 0.55 * breathe(s.t, 5.5, hashId(obs.id) % 7);
+    const breatheA = !overlayLive || !s.motionEnabled
+      ? 0.6
+      : 0.45 + 0.55 * breathe(s.t, 5.5, hashId(obs.id) % 7);
     ctx.strokeStyle = rgba(bodyToken, 0.24 * live.activity * breatheA * alphaScale);
     ctx.lineWidth = 1.2;
     strokeSampled(ctx, geom);
@@ -617,6 +687,7 @@ export function drawControlSignal(
   f: LiveFlowGeom,
 ): void {
   const { geom, live } = f;
+  const overlayLive = flowOverlayIsLive(live);
   const stale = live.obs.freshness === "stale";
   const hovered = s.hovered === live.obs.id;
   const a = live.activity * (stale ? 0.4 : 1) * (hovered ? 1.5 : 1);
@@ -626,10 +697,10 @@ export function drawControlSignal(
   strokeSampled(ctx, geom);
 
   // One discrete pulse every few seconds (deterministic phase per flow) —
-  // an instruction traveling, not a byte stream. Stale/reduced-motion holds
-  // a static midpoint bead instead.
+  // an instruction traveling, not a byte stream. Reduced-motion gets a
+  // static midpoint bead; stale/removed overlays stay quiet.
   const L = geom.path.totalLength;
-  if (s.motionEnabled && !stale) {
+  if (s.motionEnabled && overlayLive) {
     const periodS = 4.2;
     const phase = drift(s.t, periodS, (hashId(live.obs.id) % 100) / 100);
     const visible = phase < 0.34; // pulse travels, then the lane rests
@@ -643,7 +714,7 @@ export function drawControlSignal(
       ctx.fillStyle = g;
       ctx.fillRect(p.x - 5, p.y - 5, 10, 10);
     }
-  } else {
+  } else if (!s.motionEnabled && overlayLive) {
     const p = pointAtLength(geom.path, L * 0.5);
     ctx.fillStyle = rgba("flow-ctl", 0.35 * a);
     ctx.beginPath();
@@ -1113,7 +1184,7 @@ function drawCore(ctx: CanvasRenderingContext2D, s: RenderState, pixelScale: num
   // stellar prominences — seeded base-length variation and a two-pass soft +
   // bright stroke so the corona reads as matter, not a radial bar chart.
   const cores = m.perCore;
-  const coronaRot = s.motionEnabled ? TAU * drift(s.t, 340) : 0;
+  const coronaRot = s.motionEnabled && !stale ? TAU * drift(s.t, 340) : 0;
   if (cores.length > 0) {
     const coronaRng = makeRng(0xc0207a);
     for (let i = 0; i < cores.length; i++) {
@@ -1171,7 +1242,7 @@ function drawCore(ctx: CanvasRenderingContext2D, s: RenderState, pixelScale: num
 
   // 4. Inner core: a compact luminous disc, breathing very slowly with load.
   if (cpuKnown) {
-    const breathing = s.motionEnabled ? 1 + 0.025 * (breathe(s.t, 41) - 0.5) * 2 : 1;
+    const breathing = s.motionEnabled && !stale ? 1 + 0.025 * (breathe(s.t, 41) - 0.5) * 2 : 1;
     const discR = core.discR * (0.94 + 0.12 * load) * breathing;
     const disc = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, discR);
     disc.addColorStop(0, rgba("fg", (0.85 + 0.13 * load) * alphaScale));

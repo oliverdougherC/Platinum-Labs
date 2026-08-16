@@ -184,10 +184,13 @@ export function buildLabels(model: SceneModel, layout: SceneLayout, now: number)
       primaryTone: "muted",
       secondary:
         net.rxBps !== null && net.txBps !== null
-          ? `↓ ${formatRate(net.rxBps)} · ↑ ${formatRate(net.txBps)}`
+          ? `↓ ${formatRate(net.rxBps)} · ↑ ${formatRate(net.txBps)}${
+              net.status === "stale" ? " · stale" : ""
+            }`
           : net.status === "not-configured"
             ? "not collected"
             : net.status,
+      secondaryTone: net.status === "stale" ? "warn" : "faint",
     }),
   );
 

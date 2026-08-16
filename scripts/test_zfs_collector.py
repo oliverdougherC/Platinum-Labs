@@ -291,6 +291,21 @@ class BackgroundCacheTests(unittest.TestCase):
         # trigger a synchronous re-fetch.
         self.assertEqual(len(calls), 1)
 
+    def test_successful_cached_sections_get_their_own_sample_timestamp(self):
+        wrapped = zfs_collector._stamp_cached_sample(
+            lambda: {"status": "ok", "containers": []},
+            wall=lambda: 1234.567,
+        )
+        payload = wrapped()
+        self.assertEqual(payload["sampledAt"], 1_234_567)
+
+    def test_non_ok_cached_sections_are_not_rewritten_with_sample_timestamps(self):
+        wrapped = zfs_collector._stamp_cached_sample(
+            lambda: {"status": "unavailable"},
+            wall=lambda: 1234.567,
+        )
+        self.assertEqual(wrapped(), {"status": "unavailable"})
+
     def test_stale_cache_reports_unavailable_instead_of_old_data(self):
         clock = [1000.0]
         cache = zfs_collector._BackgroundCache(

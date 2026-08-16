@@ -16,7 +16,7 @@ import type { FlowGeom } from "@/lib/scene/routing";
 import type { FlowChannel, FlowObservation } from "@/lib/topology/activity";
 
 /**
- * Flow laboratory (dev-only): the ten canonical flow states, each drawn by
+ * Flow laboratory (dev-only): the eleven canonical flow states, each drawn by
  * the PRODUCTION drawing code on an isolated conduit, under a switchable
  * tunnel treatment. This page is the design-study artifact for the PLA-266
  * v2 tunnel language — the chosen treatment ships as PRODUCTION_FLOW_STYLE.
@@ -119,6 +119,14 @@ const CASES: LabCase[] = [
     }),
   },
   {
+    title: "bidirectional · 10 MB/s ↓ · 9 MB/s ↑",
+    subtitle: "near-equal — stable shared body, directional particles",
+    make: () => ({
+      obs: obsOf("lab-bidi-balanced", {}, [fwd(10_000_000), rev(9_000_000)]),
+      live: liveOf(10_000_000, 9_000_000),
+    }),
+  },
+  {
     title: "derived · 2.3 MB/s",
     subtitle: "softer treatment, fewer particles",
     make: () => ({
@@ -147,9 +155,12 @@ const CASES: LabCase[] = [
     }),
   },
   {
-    title: "unavailable",
-    subtitle: "no evidence — dormant path only, never fake zero",
-    make: () => null,
+    title: "unavailable · removed fade",
+    subtitle: "body releases; particles and endpoints stop immediately",
+    make: () => ({
+      obs: obsOf("lab-removed", {}, [fwd(6_000_000)]),
+      live: { ...liveOf(6_000_000, null, 0.35), present: false },
+    }),
   },
 ];
 

@@ -201,6 +201,14 @@ function acquisitionSeeding(): AcquisitionSnapshot {
   return { items, rollup: rollup(items, { uploadRateBps: 5_800_000, seeding: 4 }) };
 }
 
+/** Seed-upload only: proves reverse-only WAN/storage flow semantics. */
+function acquisitionSeedOnly(): AcquisitionSnapshot {
+  return {
+    items: [],
+    rollup: rollup([], { uploadRateBps: 5_800_000, seeding: 4 }),
+  };
+}
+
 /** Import-only queue: Sonarr organizing a finished download, nothing moving on the WAN. */
 function acquisitionImporting(): AcquisitionSnapshot {
   const items: AcquisitionItem[] = [
@@ -423,6 +431,7 @@ export const SCENARIOS = [
   "multi-session",
   "downloads",
   "seeding",
+  "seed-only",
   "importing",
   "stalled",
   "connector-unavailable",
@@ -452,6 +461,7 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "multi-session": "Multiple sessions",
   downloads: "Active downloads / imports",
   seeding: "Download + seed upload",
+  "seed-only": "Seed upload only",
   importing: "Sonarr import (organizing)",
   stalled: "Stalled / failed transfer",
   "connector-unavailable": "Connector unavailable",
@@ -471,7 +481,12 @@ function fakeHistory(
   zfs: ZfsSnapshot,
 ): DashboardHistory {
   const rate = acquisition.rollup.aggregateRateBps;
-  const level: ActivityLevel = rate > 20_000_000 ? "high" : rate > 0 ? "light" : "empty";
+  const level: ActivityLevel =
+    rate !== null && rate > 20_000_000
+      ? "high"
+      : rate !== null && rate > 0
+        ? "light"
+        : "empty";
 
   const throughput = throughputSeries({ now, level }).map((p) => ({
     t: p.t,
@@ -637,6 +652,14 @@ const BUILDERS: Record<FakeScenario, Builder> = {
     compose(now, {
       jellyfin: jellyfinIdle(now),
       acquisition: acquisitionSeeding(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "seeding",
+    }),
+
+  "seed-only": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionSeedOnly(),
       zfs: zfsHealthy(now),
       telemetryProfile: "seeding",
     }),

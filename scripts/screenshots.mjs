@@ -34,6 +34,7 @@ const SHOTS = [
   { name: "02-idle-2560x1440", params: `scenario=idle&freeze=${FREEZE_AT}`, w: 2560, h: 1440 },
   { name: "03-downloads-imports-1920x1080", params: `scenario=downloads&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
   { name: "04-download-plus-seed-1920x1080", params: `scenario=seeding&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
+  { name: "04b-seed-only-reverse-flow-1920x1080", params: `scenario=seed-only&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
   { name: "05-sonarr-import-organizing-1920x1080", params: `scenario=importing&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
   { name: "06-jellyfin-direct-play-1920x1080", params: `scenario=direct-play&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
   { name: "07-jellyfin-transcode-1920x1080", params: `scenario=transcode&freeze=${FREEZE_AT}`, w: 1920, h: 1080 },
@@ -97,7 +98,7 @@ async function main() {
     if (MOTION) {
       await captureMotion(browser, baseUrl);
     } else if (LAB) {
-      // Flow-design study (PLA-266 v2): the ten canonical flow states under
+      // Flow-design study (PLA-266 v2): the eleven canonical flow states under
       // each tunnel treatment, at one fixed animation clock so particle
       // placement is deterministic. Treatment A is the production choice.
       for (const treatment of ["A", "B", "C"]) {

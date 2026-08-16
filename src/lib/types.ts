@@ -145,8 +145,8 @@ export interface AcquisitionRollup {
   downloading: number;
   importing: number;
   failedOrStalled: number;
-  /** Aggregate download throughput in bytes/sec across active transfers. */
-  aggregateRateBps: number;
+  /** Aggregate download throughput in bytes/sec; null when not fully reported. */
+  aggregateRateBps: number | null;
   /**
    * Aggregate upload (seeding) throughput in bytes/sec, when the downloader
    * reports it. Null means unknown (older payloads) — never a fabricated 0,

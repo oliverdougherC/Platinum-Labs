@@ -185,6 +185,30 @@ function poolWriteBps(
   return disk.value.pools.find((p) => p.pool === target.name)?.writeBps ?? null;
 }
 
+/**
+ * Read throughput for a DECLARED pool, used only to corroborate a storage
+ * source that should be feeding a derived transfer. Null when the endpoint is
+ * generic or disk telemetry is missing/stale.
+ */
+function poolReadBps(
+  snapshot: DashboardSnapshot,
+  target: FlowEndpoint,
+): number | null {
+  if (target.kind !== "pool") return null;
+  const disk = snapshot.telemetry.disk;
+  if (disk.status !== "available" || !disk.value) return null;
+  return disk.value.pools.find((p) => p.pool === target.name)?.readBps ?? null;
+}
+
+function earliestUpdatedAt(...times: Array<number | null | undefined>): number | null {
+  let min: number | null = null;
+  for (const time of times) {
+    if (typeof time !== "number" || !Number.isFinite(time)) continue;
+    min = min === null ? time : Math.min(min, time);
+  }
+  return min;
+}
+
 const rate = (bps: number | null | undefined): number | null =>
   typeof bps === "number" && Number.isFinite(bps) ? Math.max(0, bps) : null;
 
@@ -331,20 +355,31 @@ export function deriveFlows(
     );
 
     // Cross-pool copy tunnel (once, shared by both Arrs): only when both pool
-    // identities are declared AND the destination pool shows real writes.
+    // identities are declared AND disk telemetry corroborates bytes leaving
+    // the source pool and arriving at the destination pool.
     if (crossPool && !importCopyEmitted && src.freshness === "live") {
+      const sourceRead = poolReadBps(snapshot, downloadStorage);
       const destWrite = poolWriteBps(snapshot, mediaStorage);
-      if (destWrite !== null && destWrite >= FLOW_DEADBAND_BPS) {
+      if (
+        sourceRead !== null &&
+        sourceRead >= FLOW_DEADBAND_BPS &&
+        destWrite !== null &&
+        destWrite >= FLOW_DEADBAND_BPS
+      ) {
+        const copyRate = Math.min(sourceRead, destWrite);
         importCopyEmitted = true;
         flows.push(
           makeFlow("import-copy", downloadStorage, mediaStorage, {
             plane: "data",
             evidence: "derived",
             freshness: "live",
-            channels: [{ direction: "forward", role: "write", bytesPerSecond: destWrite }],
-            provenance: `import in progress (${arrName}); rate derived from ${mediaStorage.kind === "pool" ? mediaStorage.name : "destination"} pool write telemetry`,
+            channels: [{ direction: "forward", role: "write", bytesPerSecond: copyRate }],
+            provenance: `import in progress (${arrName}); rate derived from corroborating ${downloadStorage.name} source reads and ${mediaStorage.name} destination writes`,
             label: "import copy between pools",
-            updatedAt: src.updatedAt,
+            updatedAt: earliestUpdatedAt(
+              src.updatedAt,
+              snapshot.telemetry.disk.updatedAt,
+            ),
           }),
         );
       }
@@ -354,7 +389,7 @@ export function deriveFlows(
   // --- playback: media storage → Jellyfin → network --------------------------
   const sessions = snapshot.jellyfin.sessions;
   if (jellyfin.usable && sessions.length > 0) {
-    const bitrateKnown = sessions.some((s) => s.bitrateBps !== null);
+    const bitrateKnown = sessions.every((s) => s.bitrateBps !== null);
     const totalBps = bitrateKnown
       ? sessions.reduce((sum, s) => sum + (s.bitrateBps ?? 0), 0) / 8
       : null;
@@ -375,7 +410,7 @@ export function deriveFlows(
         channels: [{ direction: "forward", role: "read", bytesPerSecond: totalBps }],
         provenance: bitrateKnown
           ? "derived from Jellyfin session bitrate (cache may serve part of the reads)"
-          : "session state reported by Jellyfin; bitrate unavailable",
+          : "session state reported by Jellyfin; one or more session bitrates unavailable",
         label,
         updatedAt: jellyfin.updatedAt,
       }),
@@ -388,7 +423,7 @@ export function deriveFlows(
         channels: [{ direction: "forward", role: "egress", bytesPerSecond: totalBps }],
         provenance: bitrateKnown
           ? "derived from Jellyfin session bitrate"
-          : "session state reported by Jellyfin; bitrate unavailable",
+          : "session state reported by Jellyfin; one or more session bitrates unavailable",
         label,
         updatedAt: jellyfin.updatedAt,
       }),

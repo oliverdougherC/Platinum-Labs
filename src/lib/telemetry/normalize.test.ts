@@ -44,6 +44,7 @@ function sample(at: number, overrides: Partial<RawHostSample> = {}): RawHostSamp
     },
     gpu: {
       status: "ok",
+      sampledAt: at,
       name: "NVIDIA GeForce GTX 1070",
       utilizationPercent: 12,
       vramUsedBytes: 2_097_152,
@@ -53,6 +54,7 @@ function sample(at: number, overrides: Partial<RawHostSample> = {}): RawHostSamp
     },
     docker: {
       status: "ok",
+      sampledAt: at,
       containers: [
         {
           name: "jellyfin",
@@ -62,6 +64,10 @@ function sample(at: number, overrides: Partial<RawHostSample> = {}): RawHostSamp
           cpuTotalNs: 1_000_000_000,
           systemCpuNs: 100_000_000_000,
           memoryBytes: 500_000_000,
+          netRxBytes: 4_000_000,
+          netTxBytes: 1_000_000,
+          blockReadBytes: 8_000_000,
+          blockWriteBytes: 2_000_000,
         },
         {
           name: "broken",
@@ -71,6 +77,10 @@ function sample(at: number, overrides: Partial<RawHostSample> = {}): RawHostSamp
           cpuTotalNs: null,
           systemCpuNs: null,
           memoryBytes: null,
+          netRxBytes: null,
+          netTxBytes: null,
+          blockReadBytes: null,
+          blockWriteBytes: null,
         },
       ],
     },
@@ -110,6 +120,7 @@ function advance(at: number): RawHostSample {
     },
     docker: {
       status: "ok",
+      sampledAt: at,
       containers: [
         {
           name: "jellyfin",
@@ -120,6 +131,10 @@ function advance(at: number): RawHostSample {
           cpuTotalNs: 3_000_000_000,
           systemCpuNs: 300_000_000_000,
           memoryBytes: 600_000_000,
+          netRxBytes: 14_000_000,
+          netTxBytes: 3_000_000,
+          blockReadBytes: 18_000_000,
+          blockWriteBytes: 5_000_000,
         },
         {
           name: "broken",
@@ -129,6 +144,10 @@ function advance(at: number): RawHostSample {
           cpuTotalNs: null,
           systemCpuNs: null,
           memoryBytes: null,
+          netRxBytes: null,
+          netTxBytes: null,
+          blockReadBytes: null,
+          blockWriteBytes: null,
         },
       ],
     },
@@ -221,9 +240,174 @@ describe("normalizeHostTelemetry", () => {
     const jellyfin = docker.containers.find((c) => c.name === "jellyfin")!;
     expect(jellyfin.cpuFraction).toBeCloseTo(0.02, 5);
     expect(jellyfin.memoryBytes).toBe(600_000_000);
+    expect(jellyfin.netRxBps).toBeCloseTo(5_000_000, 3);
+    expect(jellyfin.netTxBps).toBeCloseTo(1_000_000, 3);
+    expect(jellyfin.blockReadBps).toBeCloseTo(5_000_000, 3);
+    expect(jellyfin.blockWriteBps).toBeCloseTo(1_500_000, 3);
     const broken = docker.containers.find((c) => c.name === "broken")!;
     expect(broken.cpuFraction).toBeNull();
     expect(broken.state).toBe("exited");
+  });
+
+  it("uses docker section sampledAt for deltas and preserves repeated cached samples", () => {
+    const first = sample(1000, {
+      docker: {
+        status: "ok",
+        sampledAt: 2000,
+        containers: [
+          {
+            name: "jellyfin",
+            state: "running",
+            health: "healthy",
+            restartCount: 0,
+            cpuTotalNs: 1_000_000_000,
+            systemCpuNs: 100_000_000_000,
+            memoryBytes: 500_000_000,
+            netRxBytes: 4_000,
+            netTxBytes: 2_000,
+            blockReadBytes: 8_000,
+            blockWriteBytes: 6_000,
+          },
+        ],
+      },
+    } as Partial<RawHostSample>);
+    const second = sample(3000, {
+      docker: {
+        status: "ok",
+        sampledAt: 7000,
+        containers: [
+          {
+            name: "jellyfin",
+            state: "running",
+            health: "healthy",
+            restartCount: 0,
+            cpuTotalNs: 3_000_000_000,
+            systemCpuNs: 300_000_000_000,
+            memoryBytes: 600_000_000,
+            netRxBytes: 19_000,
+            netTxBytes: 7_000,
+            blockReadBytes: 18_000,
+            blockWriteBytes: 11_000,
+          },
+        ],
+      },
+    } as Partial<RawHostSample>);
+    const fresh = normalizeHostTelemetry(first, second);
+    const jellyfin = fresh.docker.value!.containers[0]!;
+    expect(fresh.docker.updatedAt).toBe(7000);
+    expect(jellyfin.netRxBps).toBeCloseTo(3_000, 3);
+    expect(jellyfin.netTxBps).toBeCloseTo(1_000, 3);
+    const repeated = sample(5000, {
+      docker: second.docker,
+    } as Partial<RawHostSample>);
+    const cached = normalizeHostTelemetry(second, repeated, fresh);
+    expect(cached.docker.updatedAt).toBe(7000);
+    expect(cached.docker.value).toEqual(fresh.docker.value);
+  });
+
+  it("ignores host polls that repeat Docker sample A, then rates sample B across the real 5s window", () => {
+    const dockerAt = (sampledAt: number, hostAt: number, netRxBytes: number) =>
+      sample(hostAt, {
+        docker: {
+          status: "ok",
+          sampledAt,
+          containers: [
+            {
+              name: "jellyfin",
+              state: "running",
+              health: "healthy",
+              restartCount: 0,
+              cpuTotalNs: sampledAt,
+              systemCpuNs: sampledAt * 10,
+              memoryBytes: 500_000_000,
+              netRxBytes,
+              netTxBytes: netRxBytes,
+              blockReadBytes: netRxBytes,
+              blockWriteBytes: netRxBytes,
+            },
+          ],
+        },
+      } as Partial<RawHostSample>);
+
+    const at0 = dockerAt(0, 0, 1_000);
+    const normalized0 = normalizeHostTelemetry(null, at0);
+    const at2 = dockerAt(0, 2_000, 1_000);
+    const normalized2 = normalizeHostTelemetry(at0, at2, normalized0);
+    const at4 = dockerAt(0, 4_000, 1_000);
+    const normalized4 = normalizeHostTelemetry(at2, at4, normalized2);
+    expect(normalized2.docker).toEqual(normalized0.docker);
+    expect(normalized4.docker).toEqual(normalized0.docker);
+
+    const at5 = dockerAt(5_000, 5_000, 11_000);
+    const normalized5 = normalizeHostTelemetry(at4, at5, normalized4);
+    expect(normalized5.docker.updatedAt).toBe(5_000);
+    expect(normalized5.docker.value!.containers[0]!.netRxBps).toBe(2_000);
+  });
+
+  it("keeps docker counter rates null for new, missing, or reset counters", () => {
+    const prev = sample(1000, {
+      docker: {
+        status: "ok",
+        sampledAt: 1000,
+        containers: [
+          {
+            name: "steady",
+            state: "running",
+            health: "healthy",
+            restartCount: 0,
+            cpuTotalNs: 1,
+            systemCpuNs: 10,
+            memoryBytes: 10,
+            netRxBytes: 100,
+            netTxBytes: 200,
+            blockReadBytes: 300,
+            blockWriteBytes: 400,
+          },
+        ],
+      },
+    } as Partial<RawHostSample>);
+    const curr = sample(3000, {
+      docker: {
+        status: "ok",
+        sampledAt: 3000,
+        containers: [
+          {
+            name: "steady",
+            state: "running",
+            health: "healthy",
+            restartCount: 0,
+            cpuTotalNs: 2,
+            systemCpuNs: 20,
+            memoryBytes: 20,
+            netRxBytes: 50,
+            netTxBytes: null,
+            blockReadBytes: 350,
+            blockWriteBytes: 450,
+          },
+          {
+            name: "newbie",
+            state: "running",
+            health: null,
+            restartCount: 0,
+            cpuTotalNs: 5,
+            systemCpuNs: 20,
+            memoryBytes: 5,
+            netRxBytes: 10,
+            netTxBytes: 20,
+            blockReadBytes: 30,
+            blockWriteBytes: 40,
+          },
+        ],
+      },
+    } as Partial<RawHostSample>);
+    const snap = normalizeHostTelemetry(prev, curr);
+    const byName = Object.fromEntries(
+      snap.docker.value!.containers.map((container) => [container.name, container]),
+    ) as Record<string, NonNullable<typeof snap.docker.value>["containers"][number]>;
+    expect(byName.steady!.netRxBps).toBeNull();
+    expect(byName.steady!.netTxBps).toBeNull();
+    expect(byName.newbie!.netRxBps).toBeNull();
+    expect(byName.newbie!.blockReadBps).toBeNull();
   });
 
   it("keeps unknown restart counts null instead of fabricating 0 (PLA-273)", () => {
@@ -308,6 +492,22 @@ describe("normalizeHostTelemetry", () => {
     expect(snap.memory.value!.usedBytes).toBe(135_050_678_272 - 81_880_268_800);
     expect(snap.arc.value!.hitRatio).toBeCloseTo(0.9, 5);
   });
+
+  it("uses the GPU section sampledAt for freshness tracking when present", () => {
+    const snap = normalizeHostTelemetry(null, sample(3000, {
+      gpu: {
+        status: "ok",
+        sampledAt: 1200,
+        name: "NVIDIA GeForce GTX 1070",
+        utilizationPercent: 12,
+        vramUsedBytes: 2_097_152,
+        vramTotalBytes: 8_589_934_592,
+        temperatureC: 46,
+        powerWatts: 11.8,
+      },
+    } as Partial<RawHostSample>));
+    expect(snap.gpu.updatedAt).toBe(1200);
+  });
 });
 
 describe("freshness grading", () => {
@@ -318,6 +518,25 @@ describe("freshness grading", () => {
     expect(graded.cpu.value!.totalFraction).toBeCloseTo(0.5, 5);
     const fresh = gradeTelemetryFreshness(snap, 3000 + 1_000, 6_000);
     expect(fresh.cpu.status).toBe("available");
+  });
+
+  it("ages a cached Docker observation stale without changing its rates or sample time", () => {
+    const snap = normalizeHostTelemetry(sample(1_000), advance(3_000));
+    const graded = gradeTelemetryFreshness(snap, 12_000, 6_000);
+    expect(graded.docker.status).toBe("stale");
+    expect(graded.docker.updatedAt).toBe(snap.docker.updatedAt);
+    expect(graded.docker.value).toEqual(snap.docker.value);
+  });
+
+  it("marks Docker unavailable after last-known-good instead of emitting zero rates", () => {
+    const previousRaw = advance(3_000);
+    const previous = normalizeHostTelemetry(sample(1_000), previousRaw);
+    const unavailableRaw = sample(5_000, {
+      docker: { status: "unavailable" },
+    } as Partial<RawHostSample>);
+    const current = normalizeHostTelemetry(previousRaw, unavailableRaw, previous);
+    expect(current.docker.status).toBe("unavailable");
+    expect(current.docker.value).toBeNull();
   });
 });
 

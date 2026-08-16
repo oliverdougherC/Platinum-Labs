@@ -66,12 +66,15 @@ describe("TopologyApp — frozen/reduced-motion and composition", () => {
 });
 
 describe("scene overlay — semantics without pixels", () => {
-  function renderScene(scenario: Parameters<typeof makeFakeSnapshot>[0]) {
+  function renderScene(
+    scenario: Parameters<typeof makeFakeSnapshot>[0],
+    now = NOW,
+  ) {
     const snapshot = makeFakeSnapshot(scenario, NOW);
     return render(
       <TopologyScene
         snapshot={snapshot}
-        now={NOW}
+        now={now}
         seerrConfigured={false}
         frozen
         reducedMotion={false}
@@ -93,6 +96,14 @@ describe("scene overlay — semantics without pixels", () => {
     expect(screen.getByText("Requests")).toBeInTheDocument();
     // seerrConfigured=false → the label carries the truthful state.
     expect(screen.getAllByText(/not set up/).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("ages an unchanged payload into stale scene flows when transport delivery stops", () => {
+    renderScene("seeding", NOW + 31_000);
+    expect(
+      screen.getByRole("button", { name: /qBittorrent download.*stale/i }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("stale").length).toBeGreaterThan(0);
   });
 });
 

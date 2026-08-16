@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   DashboardSnapshot,
   HostTelemetrySnapshot,
@@ -27,6 +27,18 @@ const HIDDEN_CLOSE_MS = 60_000;
 /** Data older than this renders the stale indicator. */
 const STALE_AFTER_MS = 20_000;
 
+export function liveDataIsStale(
+  generatedAt: number,
+  receivedAt: number,
+  now: number,
+  frozen: boolean,
+): boolean {
+  return (
+    !frozen &&
+    (now - generatedAt > STALE_AFTER_MS || now - receivedAt > STALE_AFTER_MS)
+  );
+}
+
 interface TelemetryEvent {
   telemetry: HostTelemetrySnapshot;
   history: TelemetryHistory;
@@ -37,8 +49,12 @@ export interface LiveData {
   snapshot: DashboardSnapshot;
   /** True when the newest data is older than the freshness window. */
   stale: boolean;
-  /** Epoch ms of the last received payload. */
+  /** Epoch ms when the server produced the newest payload. */
+  generatedAt: number;
+  /** Epoch ms when the browser received the newest payload (transport health only). */
   receivedAt: number;
+  /** Live wall-clock reference for scene aging; snapshot time only in frozen mode. */
+  referenceNow: number;
 }
 
 export function useLiveData(
@@ -46,10 +62,9 @@ export function useLiveData(
   opts: { scenario?: string; frozen: boolean },
 ): LiveData {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot>(initial);
+  const [generatedAt, setGeneratedAt] = useState<number>(initial.generatedAt);
   const [receivedAt, setReceivedAt] = useState<number>(() => Date.now());
   const [staleTick, setStaleTick] = useState(0);
-  const receivedAtRef = useRef(receivedAt);
-  receivedAtRef.current = receivedAt;
 
   const { scenario, frozen } = opts;
 
@@ -67,6 +82,7 @@ export function useLiveData(
     const applySnapshot = (snap: DashboardSnapshot) => {
       if (disposed || document.hidden) return;
       setSnapshot(snap);
+      setGeneratedAt(snap.generatedAt);
       setReceivedAt(Date.now());
     };
 
@@ -77,6 +93,7 @@ export function useLiveData(
         telemetry: ev.telemetry,
         telemetryHistory: ev.history,
       }));
+      setGeneratedAt(ev.generatedAt);
       setReceivedAt(Date.now());
     };
 
@@ -169,6 +186,14 @@ export function useLiveData(
   }, [frozen]);
   void staleTick;
 
-  const stale = !frozen && Date.now() - receivedAt > STALE_AFTER_MS;
-  return { snapshot, stale, receivedAt };
+  const wallNow = Date.now();
+  // A delayed/replayed frame must not become "fresh" merely because it just
+  // reached the browser. Server sample age carries data truth; receipt age is
+  // retained separately to detect a transport that stopped delivering.
+  const stale = liveDataIsStale(generatedAt, receivedAt, wallNow, frozen);
+  // Scene freshness must keep aging when transport delivery stops. Pinning this
+  // clock to generatedAt would leave the shell saying "reconnecting" while
+  // the last observed flows continued to look live indefinitely.
+  const referenceNow = frozen ? snapshot.generatedAt : wallNow;
+  return { snapshot, stale, generatedAt, receivedAt, referenceNow };
 }

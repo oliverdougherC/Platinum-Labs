@@ -35,7 +35,7 @@ export interface InitialPanels {
   drawer?: string | null;
 }
 
-function Freshness({ receivedAt, stale, frozen }: { receivedAt: number; stale: boolean; frozen: boolean }) {
+function Freshness({ generatedAt, stale, frozen }: { generatedAt: number; stale: boolean; frozen: boolean }) {
   const [, force] = useState(0);
   useEffect(() => {
     if (frozen) return;
@@ -49,7 +49,7 @@ function Freshness({ receivedAt, stale, frozen }: { receivedAt: number; stale: b
         style={{ opacity: 0.8 }}
         aria-hidden
       />
-      {stale ? "reconnecting…" : frozen ? "frozen" : `updated ${formatRelativeTime(receivedAt, Date.now())}`}
+      {stale ? "reconnecting…" : frozen ? "frozen" : `updated ${formatRelativeTime(generatedAt, Date.now())}`}
     </span>
   );
 }
@@ -97,7 +97,7 @@ export function TopologyApp({
     };
   }, [devControls]);
 
-  const { snapshot, stale, receivedAt } = useLiveData(initial, {
+  const { snapshot, stale, generatedAt, referenceNow } = useLiveData(initial, {
     scenario: scenarioOverride ?? scenario,
     frozen,
   });
@@ -118,8 +118,6 @@ export function TopologyApp({
     mq.addEventListener("change", apply);
     return () => mq.removeEventListener("change", apply);
   }, []);
-
-  const referenceNow = frozen ? snapshot.generatedAt : receivedAt;
 
   // Dev-only geometry debug overlay (?debug=geometry). Never in production.
   const [debugGeometry] = useState<boolean>(() => {
@@ -169,7 +167,7 @@ export function TopologyApp({
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <Freshness receivedAt={receivedAt} stale={stale} frozen={frozen} />
+          <Freshness generatedAt={generatedAt} stale={stale} frozen={frozen} />
           {seerr.search && (
             <button
               type="button"

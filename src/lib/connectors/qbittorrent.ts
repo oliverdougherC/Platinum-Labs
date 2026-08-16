@@ -49,7 +49,14 @@ type RawTorrent = z.infer<typeof torrentSchema>;
 /** qBittorrent's "infinity" ETA sentinel. */
 const ETA_INFINITY = 8_640_000;
 
-export function mapQbState(state: string | undefined, dlspeed: number): AcquisitionState {
+function finiteBpsOrNull(value: number | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : null;
+}
+
+export function mapQbState(
+  state: string | undefined,
+  dlspeed: number | null,
+): AcquisitionState {
   switch (state) {
     case "error":
     case "missingFiles":
@@ -57,9 +64,9 @@ export function mapQbState(state: string | undefined, dlspeed: number): Acquisit
     case "stalledDL":
       // Truly stalled (no peers / 0 speed) vs a merely slow transfer: only 0
       // throughput counts as stalled; a slow-but-moving transfer stays
-      // "downloading". Time-based stall grace/hysteresis lives in the
-      // attention engine (PLA-189).
-      return dlspeed > 0 ? "downloading" : "stalled";
+      // "downloading". When the upstream omitted dlspeed we keep the
+      // downloader's own stalled state rather than fabricating a 0.
+      return dlspeed !== null && dlspeed > 0 ? "downloading" : "stalled";
     case "downloading":
     case "forcedDL":
       return "downloading";
@@ -80,13 +87,17 @@ function rollup(
   globalRateBps: number | null,
   upload: { rateBps: number | null; seeding: number },
 ): AcquisitionSnapshot["rollup"] {
-  const aggregate =
-    globalRateBps ?? items.reduce((sum, i) => sum + (i.rateBps ?? 0), 0);
+  const downloading = items.filter((item) => item.state === "downloading");
+  const perItemAggregate = downloading.every((item) => item.rateBps !== null)
+    ? downloading.reduce((sum, item) => sum + item.rateBps!, 0)
+    : null;
+  const aggregate = globalRateBps ?? perItemAggregate;
   return {
-    downloading: items.filter((i) => i.state === "downloading").length,
+    downloading: downloading.length,
     importing: items.filter((i) => i.state === "importing").length,
     failedOrStalled: items.filter((i) => i.state === "stalled" || i.state === "failed").length,
-    aggregateRateBps: Math.max(0, Math.round(aggregate)),
+    aggregateRateBps:
+      aggregate === null ? null : Math.max(0, Math.round(aggregate)),
     // Upload telemetry (PLA-267 seeding flows): the global transfer-info rate
     // when reported, else the per-torrent sum when torrents carried upspeed,
     // else null — an unknown upload rate must never render as a confirmed 0.
@@ -96,7 +107,7 @@ function rollup(
 }
 
 function normalizeTorrent(raw: RawTorrent, index: number): AcquisitionItem {
-  const dlspeed = raw.dlspeed ?? 0;
+  const dlspeed = finiteBpsOrNull(raw.dlspeed);
   const state = mapQbState(raw.state, dlspeed);
   const eta = raw.eta;
   // Never expose the raw infohash as a browser-visible id. The opaque, stable
@@ -111,7 +122,9 @@ function normalizeTorrent(raw: RawTorrent, index: number): AcquisitionItem {
     quality: null,
     state,
     progress: clamp(raw.progress ?? 0, 0, 1),
-    rateBps: state === "downloading" ? dlspeed : dlspeed > 0 ? dlspeed : 0,
+    // Preserve explicit upstream zeros, but keep omitted rates unknown (`null`)
+    // so the UI can distinguish "not moving" from "not reported".
+    rateBps: dlspeed,
     etaSeconds: eta == null || eta >= ETA_INFINITY ? null : eta,
     correlationKey: key,
   };
@@ -138,15 +151,18 @@ export function normalizeQbittorrent(input: {
   const items = torrents.map(normalizeTorrent);
   // Actively seeding = in a seed state AND moving bytes right now.
   const seeding = torrents.filter(
-    (t) => SEED_STATES.has(t.state ?? "") && (t.upspeed ?? 0) > 0,
+    (t) => SEED_STATES.has(t.state ?? "") && (finiteBpsOrNull(t.upspeed) ?? 0) > 0,
   ).length;
-  const upspeedSum = torrents.some((t) => typeof t.upspeed === "number")
-    ? torrents.reduce((sum, t) => sum + (t.upspeed ?? 0), 0)
+  const uploadRates = torrents
+    .map((t) => finiteBpsOrNull(t.upspeed))
+    .filter((rate): rate is number => rate !== null);
+  const upspeedSum = uploadRates.length > 0
+    ? uploadRates.reduce((sum, rate) => sum + rate, 0)
     : null;
-  const uploadRateBps = transfer?.up_info_speed ?? upspeedSum;
+  const uploadRateBps = finiteBpsOrNull(transfer?.up_info_speed) ?? upspeedSum;
   return {
     items,
-    rollup: rollup(items, transfer?.dl_info_speed ?? null, {
+    rollup: rollup(items, finiteBpsOrNull(transfer?.dl_info_speed), {
       rateBps: uploadRateBps,
       seeding,
     }),

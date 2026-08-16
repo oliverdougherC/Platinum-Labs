@@ -239,6 +239,26 @@ describe("deriveFlows — bidirectional seeding (PLA-267 v2)", () => {
     expect(store.channels.find((c) => c.direction === "reverse")!.role).toBe("read");
   });
 
+  it("seed-only traffic keeps one reverse WAN channel and one reverse storage channel", () => {
+    const snap = makeFakeSnapshot("seed-only", NOW);
+    const wan = byId(snap, "wan-transfer:network->qbittorrent")!;
+    expect(wan.channels).toEqual([
+      expect.objectContaining({
+        direction: "reverse",
+        role: "egress",
+        bytesPerSecond: 5_800_000,
+      }),
+    ]);
+    const store = byId(snap, "storage-transfer:qbittorrent->pool:NVME")!;
+    expect(store.channels).toEqual([
+      expect.objectContaining({
+        direction: "reverse",
+        role: "read",
+        bytesPerSecond: 5_800_000,
+      }),
+    ]);
+  });
+
   it("an UNKNOWN upload rate never creates a seed flow (unknown ≠ zero ≠ rate)", () => {
     const snap = makeFakeSnapshot("seeding", NOW);
     const unknownUpload = {
@@ -329,6 +349,16 @@ describe("deriveFlows — same-pool vs cross-pool imports (PLA-275)", () => {
     expect(flows.some((f) => f.kind === "organize")).toBe(true);
   });
 
+  it("cross-pool import without source-read evidence stays state-only", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "DataStore", readBps: 0, writeBps: 30_000_000 },
+      { pool: "NVME", readBps: 0, writeBps: 0 },
+    ]);
+    const flows = flowsOf(snap);
+    expect(flows.some((f) => f.kind === "import-copy")).toBe(false);
+    expect(flows.some((f) => f.kind === "organize")).toBe(true);
+  });
+
   it("unrelated writes on another pool cannot fabricate or redirect the copy", () => {
     const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
       { pool: "DataStore", readBps: 0, writeBps: 0 },
@@ -337,12 +367,33 @@ describe("deriveFlows — same-pool vs cross-pool imports (PLA-275)", () => {
     expect(flowsOf(snap).some((f) => f.kind === "import-copy")).toBe(false);
   });
 
-  it("import evidence scales from the DECLARED destination pool only", () => {
-    const copy = byId(makeFakeSnapshot("importing", NOW), "import-copy:pool:NVME->pool:DataStore")!;
-    const rate = copy.channels[0]!.bytesPerSecond!;
-    // The fixture writes ~30 MB/s (±30% deterministic wobble) to DataStore.
-    expect(rate).toBeGreaterThan(15_000_000);
-    expect(rate).toBeLessThan(45_000_000);
+  it("unrelated reads on another pool cannot fabricate or redirect the copy", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "DataStore", readBps: 0, writeBps: 30_000_000 },
+      { pool: "NVME", readBps: 0, writeBps: 0 },
+      { pool: "eSATA", readBps: 500_000_000, writeBps: 0 },
+    ]);
+    expect(flowsOf(snap).some((f) => f.kind === "import-copy")).toBe(false);
+  });
+
+  it("import evidence scales from the weaker corroborating side only", () => {
+    const snap = makeFakeSnapshot("importing", NOW);
+    const copy = byId(snap, "import-copy:pool:NVME->pool:DataStore")!;
+    const pools = snap.telemetry.disk.value!.pools;
+    const sourceRead = pools.find((p) => p.pool === "NVME")!.readBps;
+    const destWrite = pools.find((p) => p.pool === "DataStore")!.writeBps;
+    expect(copy.channels[0]!.bytesPerSecond).toBe(Math.min(sourceRead, destWrite));
+    expect(copy.provenance).toContain("NVME source reads");
+    expect(copy.provenance).toContain("DataStore destination writes");
+  });
+
+  it("copy rate is capped by the slower corroborating pool leg", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 18_000_000, writeBps: 0 },
+      { pool: "DataStore", readBps: 0, writeBps: 31_000_000 },
+    ]);
+    const copy = byId(snap, "import-copy:pool:NVME->pool:DataStore")!;
+    expect(copy.channels[0]!.bytesPerSecond).toBe(18_000_000);
   });
 });
 
@@ -394,6 +445,24 @@ describe("deriveFlows — staleness and unavailability (PLA-273)", () => {
     expect(flows.some((f) => f.kind === "import-copy")).toBe(false);
   });
 
+  it("stale disk telemetry does not claim a live import-copy tunnel", () => {
+    const snap = makeFakeSnapshot("importing", NOW);
+    const staleDisk = {
+      ...snap,
+      telemetry: {
+        ...snap.telemetry,
+        disk: {
+          ...snap.telemetry.disk,
+          status: "stale" as const,
+          updatedAt: NOW - 10 * 60_000,
+        },
+      },
+    };
+    const flows = flowsOf(staleDisk);
+    expect(flows.some((f) => f.kind === "organize")).toBe(true);
+    expect(flows.some((f) => f.kind === "import-copy")).toBe(false);
+  });
+
   it("a Jellyfin session without bitrate is state-only with a null rate", () => {
     const snap = makeFakeSnapshot("direct-play", NOW);
     const noBitrate = {
@@ -407,6 +476,43 @@ describe("deriveFlows — staleness and unavailability (PLA-273)", () => {
     expect(playback.evidence).toBe("state-only");
     expect(playback.channels[0]!.bytesPerSecond).toBeNull();
     expect(primaryRate(playback)).toBeNull();
+  });
+
+  it("partially-known Jellyfin session bitrates stay state-only and unknown", () => {
+    const snap = makeFakeSnapshot("multi-session", NOW);
+    const partial = {
+      ...snap,
+      jellyfin: {
+        ...snap.jellyfin,
+        sessions: snap.jellyfin.sessions.map((s, index) =>
+          index === 0 ? { ...s, bitrateBps: null } : s,
+        ),
+      },
+    };
+    const playback = byId(partial, "playback:pool:DataStore->jellyfin")!;
+    const egress = byId(partial, "egress:jellyfin->network")!;
+    expect(playback.evidence).toBe("state-only");
+    expect(egress.evidence).toBe("state-only");
+    expect(playback.channels[0]!.bytesPerSecond).toBeNull();
+    expect(egress.channels[0]!.bytesPerSecond).toBeNull();
+    expect(playback.provenance).toContain("one or more session bitrates unavailable");
+  });
+
+  it("aggregates multiple Jellyfin sessions only when every bitrate is known", () => {
+    const snap = makeFakeSnapshot("multi-session", NOW);
+    const allKnown = {
+      ...snap,
+      jellyfin: {
+        ...snap.jellyfin,
+        sessions: snap.jellyfin.sessions.map((s, index) => ({
+          ...s,
+          bitrateBps: index === 0 ? 8_000_000 : 16_000_000,
+        })),
+      },
+    };
+    const playback = byId(allKnown, "playback:pool:DataStore->jellyfin")!;
+    expect(playback.evidence).toBe("derived");
+    expect(playback.channels[0]!.bytesPerSecond).toBe(3_000_000);
   });
 });
 

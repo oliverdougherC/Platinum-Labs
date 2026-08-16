@@ -15,8 +15,9 @@
  *
  * Flow channels smooth the WIDTH (log-domain of the rate), so a 5.1 → 5.3 MB/s
  * polling wiggle is invisible while a real ramp reads within half a second.
- * Honesty gates live here too: a stale observation keeps its last geometry but
- * its excitation target drops to zero; unknown rates never produce width.
+ * Honesty gates live here too: stale host telemetry freezes its displayed
+ * values, stale flows retain only a dim non-excited ghost, removed flows
+ * release, and unknown rates never produce width.
  *
  * Pure TS; the React host owns the clock.
  */
@@ -100,6 +101,10 @@ function channelRate(
   return sum;
 }
 
+function held(current: number | null, fallback: number): number {
+  return current ?? fallback;
+}
+
 /**
  * All smoothed visual state. `applyModel` sets targets; `advance` moves the
  * current values and returns nothing — read the public fields after it.
@@ -164,19 +169,42 @@ export class SceneMotion {
       this.perCoreEma = cores.map(() => new Ema(TAU.core));
       this.perCore = new Array(cores.length).fill(0);
     }
+    const coreLive = m.core.status === "available";
+    const coreFrozen = m.core.status === "stale";
     for (let i = 0; i < cores.length; i++) {
-      this.perCore[i] = this.perCoreEma[i]!.update(cores[i]!, nowMs);
+      const current = this.perCoreEma[i]!.current();
+      const target = coreFrozen ? held(current, cores[i]!) : coreLive ? cores[i]! : 0;
+      this.perCore[i] = this.perCoreEma[i]!.update(target, nowMs);
     }
-    this.totalLoad = this.totalLoadEma.update(m.core.totalFraction ?? 0, nowMs);
+    this.totalLoad = this.totalLoadEma.update(
+      coreFrozen
+        ? held(this.totalLoadEma.current(), m.core.totalFraction ?? 0)
+        : coreLive
+          ? (m.core.totalFraction ?? 0)
+          : 0,
+      nowMs,
+    );
     this.memFraction =
       m.core.memFraction === null ? null : this.memEma.update(m.core.memFraction, nowMs);
-    this.gpuLoad = this.gpuEma.update(m.core.gpuFraction ?? 0, nowMs);
+    this.gpuLoad = this.gpuEma.update(
+      coreFrozen
+        ? held(this.gpuEma.current(), m.core.gpuFraction ?? 0)
+        : (m.core.gpuFraction ?? 0),
+      nowMs,
+    );
 
     // Network normalized against a gigabit-ish full scale, log-free (the rim
     // treatment is subtle; flows carry the log scale).
     const full = 120_000_000;
-    this.rxNorm = this.rxEma.update(Math.min(1, (m.network.rxBps ?? 0) / full), nowMs);
-    this.txNorm = this.txEma.update(Math.min(1, (m.network.txBps ?? 0) / full), nowMs);
+    const networkLive = m.network.status === "available";
+    this.rxNorm = this.rxEma.update(
+      networkLive ? Math.min(1, (m.network.rxBps ?? 0) / full) : 0,
+      nowMs,
+    );
+    this.txNorm = this.txEma.update(
+      networkLive ? Math.min(1, (m.network.txBps ?? 0) / full) : 0,
+      nowMs,
+    );
 
     for (const pool of m.storage) {
       let fill = this.storageFill.get(pool.name);
@@ -212,9 +240,10 @@ export class SceneMotion {
     for (const [id, entry] of this.flows) {
       const { obs, present } = entry;
       const live = present && obs.freshness === "live";
+      const stale = present && obs.freshness === "stale";
       // Width targets: data-plane channels with known rates only. A stale
-      // flow HOLDS its last width (frozen ghost) rather than easing to zero,
-      // but a removed flow always releases.
+      // flow holds its last body geometry as a dim, frozen ghost; a removed
+      // flow releases. Excitation is gated separately in the renderer.
       const fTarget = !present
         ? 0
         : obs.plane !== "data"
@@ -225,15 +254,9 @@ export class SceneMotion {
         : obs.plane !== "data"
           ? 0
           : widthFromRate(channelRate(obs, "reverse"));
-      if (present && obs.freshness === "stale") {
-        // Hold: re-target current values so the ghost neither grows nor drains.
-        entry.forward.update(entry.forward.current() ?? fTarget, nowMs);
-        entry.reverse.update(entry.reverse.current() ?? rTarget, nowMs);
-      } else {
-        entry.forward.update(fTarget, nowMs);
-        entry.reverse.update(rTarget, nowMs);
-      }
-      const presence = entry.presence.update(live ? 1 : present ? 0.4 : 0, nowMs);
+      entry.forward.update(stale ? held(entry.forward.current(), fTarget) : fTarget, nowMs);
+      entry.reverse.update(stale ? held(entry.reverse.current(), rTarget) : rTarget, nowMs);
+      const presence = entry.presence.update(live ? 1 : stale ? 0.4 : 0, nowMs);
       if (!present && presence < 0.01 && (entry.forward.current() ?? 0) < 0.05) {
         this.flows.delete(id);
       }

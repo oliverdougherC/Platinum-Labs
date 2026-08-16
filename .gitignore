@@ -28,6 +28,7 @@ soak-report*.ndjson
 
 # transient agent/session state (OMX, Claude, etc.) — never commit
 .omx/
+.claude/
 .claude/local/
 
 # misc

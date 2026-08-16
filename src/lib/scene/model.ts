@@ -195,14 +195,29 @@ function serviceModel(
   }
   if (id === "qbittorrent") {
     const r = snapshot.acquisition.rollup;
-    const n = r.downloading + r.failedOrStalled;
+    const downloading = r.downloading > 0;
+    const seeding = (r.seeding ?? 0) > 0;
     return {
       id,
       label,
       status,
-      active: r.downloading > 0 && status === "ok",
-      count: n > 0 ? n : null,
-      detail: null,
+      active: status === "ok" && (downloading || seeding),
+      count:
+        downloading && seeding
+          ? null
+          : downloading
+            ? r.downloading
+            : seeding
+              ? (r.seeding ?? 0)
+              : null,
+      detail:
+        downloading && seeding
+          ? `downloading ${r.downloading} · seeding ${r.seeding ?? 0}`
+          : downloading
+            ? "downloading"
+            : seeding
+              ? "seeding"
+              : null,
     };
   }
   // sonarr / radarr
