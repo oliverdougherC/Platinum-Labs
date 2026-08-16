@@ -257,7 +257,9 @@ async function validateShot(page, shot, beforeActionBox) {
 
   // Truthful container accounting: rendered bodies + overflow = population.
   const expected = CONTAINER_EXPECTATIONS[shot.scenario] ?? CONTAINER_EXPECTATIONS.default;
-  const containerTargets = page.locator('button[aria-label*=" container detail"]');
+  // The trailing period distinguishes per-container bodies ("<name> container
+  // detail. <state>…") from the overflow body ("… Open all container details").
+  const containerTargets = page.locator('button[aria-label*=" container detail."]');
   const rendered = await containerTargets.count();
   if (rendered !== expected.rendered) {
     throw new Error(
@@ -610,6 +612,10 @@ async function captureMotion(browser, baseUrl) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
     recordVideo: { dir: OUT_DIR, size: { width: 1280, height: 720 } },
+    // The production build ships a CSP without 'unsafe-eval', which blocks
+    // Playwright's injected waitForFunction predicate. Bypassing CSP here
+    // affects only this harness context — the app under test is unchanged.
+    bypassCSP: true,
   });
   const page = await context.newPage();
   console.log("recording motion (same mounted scene): 7s idle → 13s active → 6s easing…");
