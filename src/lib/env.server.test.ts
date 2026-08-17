@@ -182,6 +182,26 @@ describe("HOMELAB_FABRIC_RELATIONSHIPS parsing", () => {
     expect(getFabricRelationships()).toEqual(expected);
   });
 
+  it("accepts a renderable pool endpoint with its case preserved", () => {
+    setEnv({
+      HOMELAB_FABRIC_RELATIONSHIPS: JSON.stringify([
+        { from: "pool:DataStore", to: "service:jellyfin", kind: "dependency" },
+      ]),
+    });
+    expect(getFabricRelationships()[0]?.from).toBe("pool:DataStore");
+  });
+
+  it("rejects safe-looking endpoint ids the renderer cannot resolve", () => {
+    for (const from of ["resource:cpu", "fabric:external", "host:anything"]) {
+      setEnv({
+        HOMELAB_FABRIC_RELATIONSHIPS: JSON.stringify([
+          { from, to: "service:jellyfin", kind: "control" },
+        ]),
+      });
+      expect(() => getServerEnv()).toThrow(/HOMELAB_FABRIC_RELATIONSHIPS/);
+    }
+  });
+
   it("rejects malformed JSON", () => {
     setEnv({ HOMELAB_FABRIC_RELATIONSHIPS: "{bad json" });
     expect(() => getServerEnv()).toThrow(/HOMELAB_FABRIC_RELATIONSHIPS/);

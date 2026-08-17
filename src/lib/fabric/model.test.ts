@@ -45,8 +45,8 @@ describe("FabricModel", () => {
     ];
     const model = buildFabricModel(snapshot, { now: NOW, seerrConfigured: true });
     expect(model.relationships).toEqual(expect.arrayContaining([
-      expect.objectContaining({ fromNodeId: "fabric:service", toNodeId: "service:sonarr", label: "host control → sonarr" }),
-      expect.objectContaining({ fromNodeId: "pool:DataStore", toNodeId: "service:jellyfin", label: "DataStore → jellyfin" }),
+      expect.objectContaining({ fromNodeId: "fabric:service", toNodeId: "service:sonarr", label: "host control → sonarr", basis: "declared dependency" }),
+      expect.objectContaining({ fromNodeId: "pool:DataStore", toNodeId: "service:jellyfin", label: "DataStore → jellyfin", basis: "declared control" }),
     ]));
   });
 

@@ -28,12 +28,17 @@ const optionalSecret = z
   .optional()
   .or(z.literal("").transform(() => undefined));
 
-const fabricNodeId = z
-  .string()
-  .trim()
-  .min(1)
-  .max(64)
-  .regex(/^[a-z0-9][a-z0-9:_-]*$/);
+const fabricNodeId = z.union([
+  z.enum([
+    "service:jellyfin",
+    "service:qbittorrent",
+    "service:sonarr",
+    "service:radarr",
+    "service:seerr",
+    "host:control",
+  ]),
+  z.string().trim().max(53).regex(/^pool:[A-Za-z0-9][A-Za-z0-9._-]*$/),
+]);
 
 const fabricRelationshipSchema = z.object({
   from: fabricNodeId,

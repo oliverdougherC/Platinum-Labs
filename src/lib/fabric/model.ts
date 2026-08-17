@@ -265,7 +265,7 @@ function relationshipFromDeclaration(
     animated: false,
     visibility: "focus",
     provenance: "operator-declared topology configuration",
-    basis: "declared dependency",
+    basis: declaration.kind === "control" ? "declared control" : "declared dependency",
     attribution: "Declared relationship; not observed byte throughput.",
     route: routeBetweenPorts(fromPort, toPort, 10 + index * 3),
   };
