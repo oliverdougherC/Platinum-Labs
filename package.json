@@ -30,6 +30,11 @@
     "screenshots:performance": "node scripts/screenshots.mjs --performance",
     "screenshots:performance:prod": "node scripts/screenshots.mjs --performance --prod",
     "screenshots:determinism": "node scripts/screenshots.mjs --determinism --prod",
+    "screenshots:fabric": "node scripts/screenshots.mjs --fabric",
+    "screenshots:fabric:prod": "node scripts/screenshots.mjs --fabric --prod",
+    "screenshots:fabric:motion:prod": "node scripts/screenshots.mjs --fabric --motion --prod",
+    "screenshots:fabric:performance:prod": "node scripts/screenshots.mjs --fabric --performance --prod",
+    "screenshots:fabric:determinism": "node scripts/screenshots.mjs --fabric --determinism --prod",
     "dev:fake": "HOMELAB_DATA_MODE=fake HOMELAB_ENABLE_DEV_CONTROLS=1 next dev -p 3911"
   },
   "dependencies": {

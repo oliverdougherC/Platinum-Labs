@@ -60,6 +60,10 @@ function sample(at: number, overrides: Partial<RawHostSample> = {}): RawHostSamp
           name: "jellyfin",
           state: "running",
           health: "healthy",
+          stableId: "ctr-107f331d4217e3f4",
+          composeProject: "media-stack",
+          composeService: "jellyfin",
+          networkNames: ["media_default", "bridge"],
           restartCount: 0,
           cpuTotalNs: 1_000_000_000,
           systemCpuNs: 100_000_000_000,
@@ -126,6 +130,10 @@ function advance(at: number): RawHostSample {
           name: "jellyfin",
           state: "running",
           health: "healthy",
+          stableId: "ctr-107f331d4217e3f4",
+          composeProject: "media-stack",
+          composeService: "jellyfin",
+          networkNames: ["media_default", "bridge"],
           restartCount: 0,
           // +2e9 container ns over +200e9 system ns on 2 cores = 0.02 cores
           cpuTotalNs: 3_000_000_000,
@@ -240,6 +248,10 @@ describe("normalizeHostTelemetry", () => {
     const jellyfin = docker.containers.find((c) => c.name === "jellyfin")!;
     expect(jellyfin.cpuFraction).toBeCloseTo(0.02, 5);
     expect(jellyfin.memoryBytes).toBe(600_000_000);
+    expect(jellyfin.stableId).toBe("ctr-107f331d4217e3f4");
+    expect(jellyfin.composeProject).toBe("media-stack");
+    expect(jellyfin.composeService).toBe("jellyfin");
+    expect(jellyfin.networkNames).toEqual(["media_default", "bridge"]);
     expect(jellyfin.netRxBps).toBeCloseTo(5_000_000, 3);
     expect(jellyfin.netTxBps).toBeCloseTo(1_000_000, 3);
     expect(jellyfin.blockReadBps).toBeCloseTo(5_000_000, 3);
@@ -434,6 +446,64 @@ describe("normalizeHostTelemetry", () => {
     expect(byName.steady!.netTxBps).toBeNull();
     expect(byName.newbie!.netRxBps).toBeNull();
     expect(byName.newbie!.blockReadBps).toBeNull();
+  });
+
+  it("sanitizes additive docker topology identity fields", () => {
+    const prev = sample(1000);
+    const curr = sample(3000, {
+      docker: {
+        status: "ok",
+        sampledAt: 3000,
+        containers: [
+          {
+            name: "safe",
+            state: "running",
+            health: "healthy",
+            stableId: "CTR-ABC123",
+            composeProject: "project-alpha",
+            composeService: "svc_1",
+            networkNames: ["media_default", "media_default", "bad/name", "bridge"],
+            restartCount: 0,
+            cpuTotalNs: 2,
+            systemCpuNs: 20,
+            memoryBytes: 20,
+            netRxBytes: 200,
+            netTxBytes: 300,
+            blockReadBytes: 400,
+            blockWriteBytes: 500,
+          },
+          {
+            name: "unsafe",
+            state: "running",
+            health: null,
+            stableId: "bad id",
+            composeProject: "../secrets",
+            composeService: "svc with spaces",
+            networkNames: ["bad/name"],
+            restartCount: 0,
+            cpuTotalNs: 3,
+            systemCpuNs: 30,
+            memoryBytes: 30,
+            netRxBytes: 300,
+            netTxBytes: 400,
+            blockReadBytes: 500,
+            blockWriteBytes: 600,
+          },
+        ],
+      },
+    } as Partial<RawHostSample>);
+    const docker = normalizeHostTelemetry(prev, curr).docker.value!;
+    const byName = Object.fromEntries(
+      docker.containers.map((container) => [container.name, container]),
+    ) as Record<string, NonNullable<typeof docker>["containers"][number]>;
+    expect(byName.safe!.stableId).toBe("ctr-abc123");
+    expect(byName.safe!.composeProject).toBe("project-alpha");
+    expect(byName.safe!.composeService).toBe("svc_1");
+    expect(byName.safe!.networkNames).toEqual(["media_default", "bridge"]);
+    expect(byName.unsafe!.stableId).toBeNull();
+    expect(byName.unsafe!.composeProject).toBeNull();
+    expect(byName.unsafe!.composeService).toBeNull();
+    expect(byName.unsafe!.networkNames).toBeUndefined();
   });
 
   it("keeps unknown restart counts null instead of fabricating 0 (PLA-273)", () => {

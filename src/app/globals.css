@@ -164,6 +164,246 @@
   }
 }
 
+/* --- V3 Server Fabric ------------------------------------------------------ */
+
+.fabric-ground {
+  background:
+    radial-gradient(100% 82% at 56% 42%, rgb(var(--color-surface) / 0.5), transparent 66%),
+    linear-gradient(180deg, rgb(var(--color-bg)), rgb(7 9 13));
+}
+
+.fabric-region {
+  fill: rgb(var(--color-surface) / 0.08);
+  stroke: rgb(var(--color-hairline) / 0.52);
+  stroke-width: 0.8;
+  stroke-dasharray: 2 7;
+}
+
+.fabric-region-label,
+.fabric-eyebrow,
+.fabric-bus-title,
+.fabric-title,
+.fabric-service-title,
+.fabric-group-title,
+.fabric-member-label,
+.fabric-metric,
+.fabric-state-glyph {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+}
+
+.fabric-region-label {
+  fill: rgb(var(--color-faint) / 0.72);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.fabric-node {
+  fill: rgb(var(--color-surface) / 0.42);
+  stroke-width: 0.9;
+  vector-effect: non-scaling-stroke;
+}
+
+.fabric-node-fabric {
+  fill: rgb(var(--color-surface-2) / 0.48);
+  stroke: rgb(var(--color-border) / 0.72);
+}
+
+.fabric-node-resource {
+  fill: rgb(var(--color-surface) / 0.5);
+}
+
+.fabric-node-workload {
+  fill: rgb(var(--color-surface-2) / 0.46);
+}
+
+.fabric-node-storage {
+  fill: rgb(var(--color-surface) / 0.55);
+}
+
+.fabric-node-group {
+  fill: rgb(var(--color-surface) / 0.27);
+}
+
+.fabric-node-selected {
+  stroke-width: 1.8;
+  filter: drop-shadow(0 0 8px rgb(var(--color-accent) / 0.18));
+}
+
+.fabric-node-interactive {
+  cursor: pointer;
+  transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .fabric-node-interactive:hover > .fabric-node {
+    stroke: rgb(var(--color-accent) / 0.78);
+  }
+}
+
+.fabric-eyebrow {
+  fill: rgb(var(--color-faint));
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+}
+
+.fabric-title {
+  fill: rgb(var(--color-fg));
+  font-size: 16px;
+  font-weight: 520;
+  letter-spacing: -0.02em;
+}
+
+.fabric-service-title {
+  fill: rgb(var(--color-fg));
+  font-size: 13px;
+  font-weight: 540;
+}
+
+.fabric-group-title {
+  fill: rgb(var(--color-muted));
+  font-size: 10px;
+  font-weight: 540;
+}
+
+.fabric-bus-title {
+  fill: rgb(var(--color-muted));
+  font-size: 8px;
+  font-weight: 650;
+  letter-spacing: 0.15em;
+}
+
+.fabric-metric {
+  fill: rgb(var(--color-muted));
+  font-size: 9px;
+}
+
+.fabric-metric-label {
+  fill: rgb(var(--color-faint));
+  font-size: 7.5px;
+  text-transform: uppercase;
+}
+
+.fabric-state-glyph {
+  fill: rgb(var(--color-muted));
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.fabric-gauge-track {
+  fill: rgb(var(--color-hairline) / 0.62);
+}
+
+.fabric-gauge-fill {
+  fill: rgb(var(--color-accent) / 0.82);
+}
+
+.fabric-storage-fill {
+  fill: rgb(var(--color-flow-out) / 0.7);
+}
+
+.fabric-member {
+  fill: rgb(var(--color-muted) / 0.54);
+  stroke: rgb(var(--color-border));
+  stroke-width: 0.5;
+}
+
+.fabric-member-unknown {
+  fill: transparent;
+  stroke: rgb(var(--color-faint));
+  stroke-width: 0.7;
+  stroke-dasharray: 1 1;
+}
+
+.fabric-member-attention {
+  fill: rgb(var(--color-warn) / 0.62);
+  stroke: rgb(var(--color-warn));
+  stroke-width: 0.8;
+}
+
+.fabric-member-label {
+  fill: rgb(var(--color-muted));
+  font-size: 8px;
+}
+
+.fabric-attachment,
+.fabric-flow,
+.fabric-flow-halo {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.fabric-attachment {
+  stroke-width: 0.75;
+  opacity: 0.32;
+}
+
+.fabric-attachment-network {
+  stroke: rgb(var(--color-border));
+}
+
+.fabric-attachment-control {
+  stroke: rgb(var(--color-flow-ctl) / 0.52);
+  stroke-dasharray: 2 5;
+}
+
+.fabric-attachment-read {
+  stroke: rgb(var(--color-flow-in) / 0.45);
+}
+
+.fabric-attachment-write {
+  stroke: rgb(var(--color-flow-out) / 0.45);
+}
+
+.fabric-attachment[data-known="false"] {
+  opacity: 0.18;
+  stroke-dasharray: 1 6;
+}
+
+.fabric-flow {
+  cursor: pointer;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  outline: none;
+}
+
+.fabric-flow:focus-visible {
+  filter: drop-shadow(0 0 4px rgb(var(--color-accent) / 0.8));
+}
+
+.fabric-flow-halo {
+  stroke: rgb(var(--color-bg) / 0.82);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.fabric-port {
+  fill: rgb(var(--color-bg));
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.fabric-port-network { stroke: rgb(var(--color-border)); }
+.fabric-port-control { stroke: rgb(var(--color-flow-ctl) / 0.78); stroke-dasharray: 1 1; }
+.fabric-port-read { stroke: rgb(var(--color-flow-in) / 0.88); }
+.fabric-port-write { stroke: rgb(var(--color-flow-out) / 0.88); }
+.fabric-port-core { fill: rgb(var(--color-muted)); }
+
+[data-motion="off"] .fabric-node-interactive {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fabric-node-interactive {
+    transition: none;
+  }
+}
+
 /* Ambient idle life: a barely-perceptible structural rotation (12 min/rev for
    the CPU corona, 20 min counter-rotation for the halo stipple). Purely
    structural — it never claims network/disk/playback work that isn't real. */

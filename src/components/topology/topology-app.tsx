@@ -8,6 +8,7 @@ import {
   OBSERVATORY_CONTROL_CLASS,
 } from "@/components/ui/icons";
 import { MediaSearch } from "@/components/media-search";
+import { FabricApp } from "@/components/fabric/fabric-app";
 import { DetailDrawer } from "@/components/topology/detail-drawer";
 import { MetricsRail } from "@/components/topology/metrics-rail";
 import {
@@ -41,6 +42,8 @@ export interface InitialPanels {
   panel?: "notifications" | null;
   drawer?: string | null;
 }
+
+export type TopologyUiMode = "topology" | "fabric";
 
 function TransportStatus({ state }: { state: ShellTransportState }) {
   if (state === "healthy") return null;
@@ -92,6 +95,7 @@ export function TopologyApp({
   initial,
   seerr,
   quickLinks,
+  uiMode = "topology",
   scenario,
   frozen,
   initialPanels,
@@ -101,6 +105,7 @@ export function TopologyApp({
   initial: DashboardSnapshot;
   seerr: SeerrAvailability;
   quickLinks: QuickLink[];
+  uiMode?: TopologyUiMode;
   scenario?: string;
   /** Screenshot-harness mode: no transport, no clock-driven changes, animations paused. */
   frozen: boolean;
@@ -285,15 +290,26 @@ export function TopologyApp({
       </header>
 
       <main className="relative min-h-0 flex-1">
-        <TopologyScene
-          snapshot={snapshot}
-          now={referenceNow}
-          seerrConfigured={seerr.search}
-          frozen={frozen}
-          reducedMotion={reducedMotion}
-          debug={debugGeometry}
-          onSelect={onSelect}
-        />
+        {uiMode === "fabric" ? (
+          <FabricApp
+            snapshot={snapshot}
+            now={referenceNow}
+            seerrConfigured={seerr.search}
+            frozen={frozen}
+            reducedMotion={reducedMotion}
+            devControls={devControls}
+          />
+        ) : (
+          <TopologyScene
+            snapshot={snapshot}
+            now={referenceNow}
+            seerrConfigured={seerr.search}
+            frozen={frozen}
+            reducedMotion={reducedMotion}
+            debug={debugGeometry}
+            onSelect={onSelect}
+          />
+        )}
       </main>
 
       <MetricsRail snapshot={snapshot} />

@@ -367,14 +367,45 @@ class BackgroundCacheTests(unittest.TestCase):
 
     def test_docker_stats_capture_network_and_blkio_counters(self):
         listing = [
-            {"Id": "aaa111", "Names": ["/one"], "State": "running", "Status": "Up 1 hour"},
-            {"Id": "bbb222", "Names": ["/two"], "State": "running", "Status": "Up 1 hour"},
+            {
+                "Id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "Names": ["/one"],
+                "State": "running",
+                "Status": "Up 1 hour",
+                "Labels": {
+                    "com.docker.compose.project": "media-stack",
+                    "com.docker.compose.service": "jellyfin",
+                    "ignored.label": "secret",
+                },
+                "NetworkSettings": {
+                    "Networks": {
+                        "media_default": {},
+                        "bridge": {},
+                    }
+                },
+            },
+            {
+                "Id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+                "Names": ["/two"],
+                "State": "running",
+                "Status": "Up 1 hour",
+                "Labels": {
+                    "com.docker.compose.project": "../unsafe",
+                    "com.docker.compose.service": "svc with spaces",
+                },
+                "NetworkSettings": {
+                    "Networks": {
+                        "bad/name": {},
+                        "bridge": {},
+                    }
+                },
+            },
         ]
 
         def fake_docker_get(path):
             if path.startswith("/containers/json"):
                 return listing
-            if "aaa111" in path:
+            if "0123456789abcdef" in path:
                 return {
                     "cpu_stats": {"cpu_usage": {"total_usage": 1}, "system_cpu_usage": 2},
                     "memory_stats": {"usage": 500, "stats": {}},
@@ -405,11 +436,19 @@ class BackgroundCacheTests(unittest.TestCase):
 
         by_name = {c["name"]: c for c in payload["containers"]}
         one = by_name["one"]
+        self.assertEqual(one["stableId"], "ctr-a8ae6e6ee929abea")
+        self.assertEqual(one["composeProject"], "media-stack")
+        self.assertEqual(one["composeService"], "jellyfin")
+        self.assertEqual(one["networkNames"], ["media_default", "bridge"])
         self.assertEqual(one["netRxBytes"], 1200)  # summed across interfaces
         self.assertEqual(one["netTxBytes"], 500)
         self.assertEqual(one["blockReadBytes"], 5120)  # case-insensitive ops
         self.assertEqual(one["blockWriteBytes"], 2048)  # "total" rows ignored
         two = by_name["two"]
+        self.assertEqual(two["stableId"], "ctr-7b9d07f2404b102b")
+        self.assertIsNone(two["composeProject"])
+        self.assertIsNone(two["composeService"])
+        self.assertEqual(two["networkNames"], ["bridge"])
         self.assertIsNone(two["netRxBytes"])
         self.assertIsNone(two["netTxBytes"])
         self.assertIsNone(two["blockReadBytes"])

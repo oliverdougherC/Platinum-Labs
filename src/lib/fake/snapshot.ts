@@ -443,6 +443,13 @@ export const SCENARIOS = [
   "seeding",
   "seed-only",
   "importing",
+  "radarr-import",
+  "same-pool-import",
+  "cross-pool-import",
+  "gpu-workload",
+  "pool-scrub",
+  "docker-unavailable",
+  "relationship-map",
   "stalled",
   "connector-unavailable",
   "stale",
@@ -484,6 +491,13 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   seeding: "Download + seed upload",
   "seed-only": "Seed upload only",
   importing: "Sonarr import (organizing)",
+  "radarr-import": "Radarr import",
+  "same-pool-import": "Same-pool import (organizing)",
+  "cross-pool-import": "Cross-pool import (copy)",
+  "gpu-workload": "GPU-heavy workload",
+  "pool-scrub": "DataStore scrub in progress",
+  "docker-unavailable": "Docker inventory unavailable",
+  "relationship-map": "Declared service relationships",
   stalled: "Stalled / failed transfer",
   "connector-unavailable": "Connector unavailable",
   stale: "Stale (last-known-good)",
@@ -856,6 +870,92 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       zfs: zfsHealthy(now),
       telemetryProfile: "importing",
     }),
+
+  "radarr-import": (now) => {
+    const acquisition = acquisitionImporting();
+    acquisition.items[0] = {
+      ...acquisition.items[0]!,
+      id: "q-radarr-import",
+      source: "radarr",
+      title: "Sinners (2025)",
+      quality: "Bluray-2160p",
+    };
+    return compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition,
+      zfs: zfsHealthy(now),
+      telemetryProfile: "importing",
+    });
+  },
+
+  "same-pool-import": (now) => {
+    const snapshot = compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionImporting(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "same-pool-import",
+    });
+    snapshot.downloadPool = "DataStore";
+    return snapshot;
+  },
+
+  "cross-pool-import": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionImporting(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "importing",
+    }),
+
+  "gpu-workload": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "gpu-workload",
+    }),
+
+  "pool-scrub": (now) => {
+    const zfs = zfsHealthy(now);
+    const dataStore = zfs.pools.find((item) => item.name === "DataStore");
+    if (dataStore) dataStore.scan = "scrubbing";
+    return compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs,
+      telemetryProfile: "idle",
+    });
+  },
+
+  "docker-unavailable": (now) => {
+    const snapshot = compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "idle",
+    });
+    snapshot.telemetry.docker = { status: "unavailable", updatedAt: null, value: null };
+    return snapshot;
+  },
+
+  "relationship-map": (now) => {
+    const snapshot = compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [session({ id: "s1", method: "direct-play" })],
+        lastPlaybackAt: now - 2 * MINUTE,
+      },
+      acquisition: acquisitionActive(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "active",
+    });
+    snapshot.fabricRelationships = [
+      { from: "service:sonarr", to: "service:jellyfin", kind: "control", label: "library refresh" },
+      { from: "host:control", to: "service:seerr", kind: "dependency", label: "operator control" },
+    ];
+    return snapshot;
+  },
 
   stalled: (now) =>
     compose(now, {

@@ -75,6 +75,7 @@ describe("TopologyApp — frozen/reduced-motion and composition", () => {
         initial={snapshot}
         seerr={{ search: true, requests: true }}
         quickLinks={[]}
+        uiMode="fabric"
         frozen
       />,
     );
@@ -88,6 +89,8 @@ describe("TopologyApp — frozen/reduced-motion and composition", () => {
     expect(request).toHaveClass("h-10");
     expect(request.querySelector("svg")).not.toBeNull();
     expect(cluster).not.toHaveTextContent("⌕");
+    expect(screen.getByRole("group", { name: /Server fabric/ })).toBeInTheDocument();
+    expect(screen.getByText("DataStore")).toBeInTheDocument();
   });
 
   it("keeps notifications, drawers, and media search mutually exclusive", () => {

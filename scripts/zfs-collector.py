@@ -52,6 +52,7 @@ USAGE
 """
 
 import hmac
+import hashlib
 import json
 import os
 import re
@@ -77,6 +78,9 @@ DOCKER_CACHE_SECONDS = 5.0  # background refresh cadence (between completions)
 POOL_DEVICES_CACHE_SECONDS = 30.0  # device topology changes rarely
 DOCKER_REFRESH_DEADLINE = 8.0  # total budget for one docker refresh cycle
 SECTOR_BYTES = 512  # /proc/diskstats sector counts are always 512-byte units
+SAFE_DOCKER_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+SAFE_DOCKER_ID = re.compile(r"^[a-f0-9]{12,64}$")
+MAX_DOCKER_NETWORKS = 16
 
 if not TOKEN:
     print("[zfs-collector] refusing to start: ZFS_COLLECTOR_TOKEN is required", file=sys.stderr)
@@ -490,6 +494,41 @@ def _docker_get(path):
         return json.loads(res.read())
 
 
+def _safe_docker_token(value):
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()
+    if not trimmed or len(trimmed) > 128 or not SAFE_DOCKER_TOKEN.match(trimmed):
+        return None
+    return trimmed
+
+
+def _stable_container_id(raw_id):
+    if not isinstance(raw_id, str):
+        return None
+    lowered = raw_id.strip().lower()
+    if not SAFE_DOCKER_ID.match(lowered):
+        return None
+    return "ctr-" + hashlib.sha256(lowered.encode("utf-8")).hexdigest()[:16]
+
+
+def _safe_network_names(entry):
+    networks = ((entry.get("NetworkSettings") or {}).get("Networks") or {})
+    if not isinstance(networks, dict):
+        return None
+    seen = set()
+    names = []
+    for raw_name in networks.keys():
+        name = _safe_docker_token(raw_name)
+        if name is None or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+        if len(names) >= MAX_DOCKER_NETWORKS:
+            break
+    return names or None
+
+
 def _fetch_docker(now=time.monotonic):
     if not DOCKER_PROXY_URL:
         return {"status": "not-configured"}
@@ -511,10 +550,15 @@ def _fetch_docker(now=time.monotonic):
             health = "unhealthy"
         elif "(health: starting)" in status_text:
             health = "starting"
+        labels = entry.get("Labels") or {}
         container = {
             "name": name,
             "state": state,
             "health": health,
+            "stableId": _stable_container_id(entry.get("Id")),
+            "composeProject": _safe_docker_token(labels.get("com.docker.compose.project")),
+            "composeService": _safe_docker_token(labels.get("com.docker.compose.service")),
+            "networkNames": _safe_network_names(entry),
             "restartCount": None,
             "cpuTotalNs": None,
             "systemCpuNs": None,

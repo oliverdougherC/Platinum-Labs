@@ -43,7 +43,7 @@ import { chromium } from "playwright";
 /** Fixed simulator clock: 2026-08-15 12:00:00 UTC. */
 export const FREEZE_AT = Date.UTC(2026, 7, 15, 12, 0, 0);
 
-const SHOTS = [
+const TOPOLOGY_SHOTS = [
   { name: "01-idle-1280x720", scenario: "idle", w: 1280, h: 720 },
   { name: "02-idle-1920x1080", scenario: "idle", w: 1920, h: 1080 },
   { name: "03-idle-2560x1440", scenario: "idle", w: 2560, h: 1440 },
@@ -92,6 +92,33 @@ const SHOTS = [
   { name: "38-flow-detail-open", scenario: "transcode", w: 1920, h: 1080, action: "flow-detail" },
 ];
 
+const FABRIC_SHOTS = [
+  { name: "00-v21-before", scenario: "idle", ui: "topology", w: 1280, h: 720 },
+  { name: "01-quiet-1280x720", scenario: "idle", ui: "fabric", w: 1280, h: 720 },
+  { name: "02-active-1280x720", scenario: "active", ui: "fabric", w: 1280, h: 720 },
+  { name: "02b-mixed-1280x720", scenario: "container-mixed", ui: "fabric", w: 1280, h: 720 },
+  { name: "03-mixed-1920x1080", scenario: "container-mixed", ui: "fabric", w: 1920, h: 1080 },
+  { name: "04-real-scale-1920x1080", scenario: "container-field-real", ui: "fabric", w: 1920, h: 1080 },
+  { name: "05-active-2560x1440", scenario: "active", ui: "fabric", w: 2560, h: 1440 },
+  { name: "06-active-ultrawide-2560x1080", scenario: "active", ui: "fabric", w: 2560, h: 1080 },
+  { name: "07-zoom-150", scenario: "active", ui: "fabric", w: 1280, h: 720, zoom: 1.5 },
+  { name: "08-zoom-200", scenario: "active", ui: "fabric", w: 960, h: 540, zoom: 2 },
+  { name: "09-jellyfin-focus", scenario: "transcode", ui: "fabric", w: 1920, h: 1080, action: "fabric-jellyfin" },
+  { name: "10-sonarr-relationship-focus", scenario: "relationship-map", ui: "fabric", w: 1920, h: 1080, action: "fabric-sonarr" },
+  { name: "10b-relationship-map", scenario: "relationship-map", ui: "fabric", relationships: true, w: 1920, h: 1080 },
+  { name: "11-qbittorrent-download-focus", scenario: "downloads", ui: "fabric", w: 1920, h: 1080, action: "fabric-qbittorrent" },
+  { name: "12-radarr-import", scenario: "radarr-import", ui: "fabric", w: 1920, h: 1080, action: "fabric-radarr" },
+  { name: "13-same-pool-import", scenario: "same-pool-import", ui: "fabric", w: 1920, h: 1080 },
+  { name: "14-cross-pool-import", scenario: "cross-pool-import", ui: "fabric", w: 1920, h: 1080 },
+  { name: "15-gpu-workload", scenario: "gpu-workload", ui: "fabric", w: 1920, h: 1080 },
+  { name: "16-pool-scrub", scenario: "pool-scrub", ui: "fabric", w: 1920, h: 1080 },
+  { name: "17-stale", scenario: "stale", ui: "fabric", w: 1920, h: 1080 },
+  { name: "18-docker-unavailable", scenario: "docker-unavailable", ui: "fabric", w: 1920, h: 1080 },
+  { name: "19-reduced-motion", scenario: "active", ui: "fabric", w: 1920, h: 1080, reducedMotion: true },
+  { name: "20-compact-inspector", scenario: "active", ui: "fabric", w: 1280, h: 720, action: "fabric-jellyfin" },
+  { name: "21-technical-details", scenario: "container-field-real", ui: "fabric", w: 1920, h: 1080, action: "fabric-technical" },
+];
+
 /**
  * Truthful container accounting per scenario — the harness fails loudly if a
  * fixture is silently truncated or an expectation drifts from the fixtures.
@@ -120,7 +147,9 @@ function arg(flag, fallback = null) {
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
-const OUT_DIR = arg("--out", "docs/review/v21-living-topology");
+const FABRIC = process.argv.includes("--fabric");
+const SHOTS = FABRIC ? FABRIC_SHOTS : TOPOLOGY_SHOTS;
+const OUT_DIR = arg("--out", FABRIC ? "docs/review/v3-server-fabric" : "docs/review/v21-living-topology");
 const ONLY = arg("--only");
 const MOTION = process.argv.includes("--motion");
 const PERFORMANCE = process.argv.includes("--performance");
@@ -226,6 +255,23 @@ async function performShotAction(page, action) {
       await page.getByRole("button", { name: "Host compute detail" }).focus();
       await page.keyboard.press("Enter");
       return;
+    case "fabric-jellyfin":
+    case "fabric-sonarr":
+    case "fabric-radarr":
+    case "fabric-qbittorrent": {
+      const id = action.slice("fabric-".length);
+      const target = page.locator(`[data-fabric-node="service:${id}"]`);
+      await target.focus();
+      await page.keyboard.press("Enter");
+      return;
+    }
+    case "fabric-technical": {
+      const target = page.locator('[data-fabric-node^="group:"]').first();
+      await target.focus();
+      await page.keyboard.press("Enter");
+      await page.getByRole("button", { name: "Technical details" }).click();
+      return;
+    }
     default:
       throw new Error(`unknown screenshot action: ${action}`);
   }
@@ -270,8 +316,25 @@ async function validateShot(page, shot, beforeActionBox) {
   await assertInsideViewport(page.locator("header button, header [role=status]"), page, "control");
   await assertInsideViewport(page.locator("main [role=status], [data-overlay-panel]"), page, "tooltip/overlay");
 
-  // Truthful container accounting: rendered bodies + overflow = population.
-  const expected = CONTAINER_EXPECTATIONS[shot.scenario] ?? CONTAINER_EXPECTATIONS.default;
+  const fabricShot = shot.ui === "fabric";
+  if (fabricShot) {
+    const stage = page.locator("[data-fabric-stage]");
+    if ((await stage.count()) !== 1) throw new Error(`fabric stage missing (${shot.name})`);
+    if ((await page.locator("[data-fabric-node]").count()) < 12) {
+      throw new Error(`fabric node population is incomplete (${shot.name})`);
+    }
+    const stageLabel = (await stage.getAttribute("aria-label")) ?? "";
+    if (!/workloads represented/.test(stageLabel)) throw new Error(`fabric population label missing (${shot.name})`);
+    const movingControl = page.locator('[data-fabric-flow-motion="true"][stroke-dasharray="3 7"]');
+    if (await movingControl.count()) throw new Error(`control relationship animates (${shot.name})`);
+    const inspector = page.locator("[data-fabric-inspector]");
+    if (await inspector.count()) {
+      if ((await inspector.locator("dl > div").count()) > 3) throw new Error(`inspector exceeds three metrics (${shot.name})`);
+      if ((await inspector.locator('ul[aria-label="Relevant relationships"] > li').count()) > 5) throw new Error(`inspector exceeds five relationships (${shot.name})`);
+    }
+  } else {
+    // Truthful V2 container accounting: rendered bodies + overflow = population.
+    const expected = CONTAINER_EXPECTATIONS[shot.scenario] ?? CONTAINER_EXPECTATIONS.default;
   // The trailing period distinguishes per-container bodies ("<name> container
   // detail. <state>…") from the overflow body ("… Open all container details").
   const containerTargets = page.locator('button[aria-label*=" container detail."]');
@@ -302,8 +365,9 @@ async function validateShot(page, shot, beforeActionBox) {
       throw new Error(`attention/high-activity container "${name}" hidden by overflow (${shot.name})`);
     }
   }
-  if ((await page.locator('button[aria-label$=" detail"]').count()) < 6) {
-    throw new Error(`scene body focus targets are missing (${shot.name})`);
+    if ((await page.locator('button[aria-label$=" detail"]').count()) < 6) {
+      throw new Error(`scene body focus targets are missing (${shot.name})`);
+    }
   }
 
   if (shot.action === "data-flow" || shot.action === "control-flow") {
@@ -413,6 +477,8 @@ async function main() {
           scenario: shot.scenario,
           freeze: String(FREEZE_AT),
         });
+        if (shot.ui) params.set("ui", shot.ui);
+        if (shot.relationships) params.set("relationships", "1");
         if (shot.transport) params.set("transport", shot.transport);
         if (shot.debug) params.set("debug", "geometry");
         await page.goto(`${baseUrl}/?${params}`, { waitUntil: "networkidle" });
@@ -452,7 +518,7 @@ async function measurePerformanceProfile(browser, baseUrl, profile) {
     reducedMotion: profile.reducedMotion ? "reduce" : "no-preference",
   });
   const page = await context.newPage();
-  await page.goto(`${baseUrl}/?scenario=${profile.scenario}&switcher=off`, {
+  await page.goto(`${baseUrl}/?scenario=${profile.scenario}&switcher=off${FABRIC ? "&ui=fabric" : ""}`, {
     waitUntil: "domcontentloaded",
   });
   await page.waitForSelector("[data-app-shell]");
@@ -599,6 +665,10 @@ async function captureDeterminism(browser, baseUrl) {
       freeze: String(FREEZE_AT),
       panel: "notifications",
     });
+    if (FABRIC) {
+      params.set("ui", "fabric");
+      params.delete("panel");
+    }
     await page.goto(`${baseUrl}/?${params}`, { waitUntil: "networkidle" });
     await page.waitForTimeout(1_200);
     const png = await page.screenshot();
@@ -641,14 +711,22 @@ async function captureMotion(browser, baseUrl) {
   console.log("recording motion (same mounted scene): 7s idle → 13s active → 6s easing…");
   // NOT networkidle: the live page holds an SSE stream open, so the network
   // never idles. The fixture-hook wait below is the real readiness signal.
-  await page.goto(`${baseUrl}/?scenario=idle&switcher=off`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${baseUrl}/?scenario=idle&switcher=off${FABRIC ? "&ui=fabric" : ""}`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => typeof window.__homelabSetScenario === "function", {
     timeout: 15_000,
   });
   const url0 = page.url();
   await page.waitForTimeout(7_000);
   await page.evaluate(() => window.__homelabSetScenario("active"));
-  await page.waitForTimeout(13_000);
+  await page.waitForTimeout(7_000);
+  if (FABRIC) {
+    const node = page.locator('[data-fabric-node="service:qbittorrent"]');
+    await node.focus();
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(3_000);
+    await page.keyboard.press("Escape");
+  }
+  await page.waitForTimeout(3_000);
   await page.evaluate(() => window.__homelabSetScenario("idle"));
   await page.waitForTimeout(6_000);
   if (page.url() !== url0) {

@@ -368,8 +368,23 @@ export type ContainerState =
   | "created"
   | "unknown";
 
+export interface FabricDeclaredRelationship {
+  from: string;
+  to: string;
+  kind: "control" | "dependency";
+  label?: string;
+}
+
 export interface DockerContainerTelemetry {
   name: string;
+  /** Stable, sanitized container identity safe for client grouping/correlation. */
+  stableId?: string | null;
+  /** Docker Compose project label when safely available. */
+  composeProject?: string | null;
+  /** Docker Compose service label when safely available. */
+  composeService?: string | null;
+  /** Attached Docker network names from the list payload, after sanitization. */
+  networkNames?: string[];
   state: ContainerState;
   /** Docker health status when a healthcheck exists. */
   health: "healthy" | "unhealthy" | "starting" | null;
@@ -560,4 +575,6 @@ export interface DashboardSnapshot {
   jellyfinContainer?: string | null;
   /** Configured network link capacity in bytes/sec; null means unknown. */
   networkLinkBytesPerSecond?: number | null;
+  /** Operator-declared/control-plane fabric relationships, if any. */
+  fabricRelationships?: FabricDeclaredRelationship[];
 }

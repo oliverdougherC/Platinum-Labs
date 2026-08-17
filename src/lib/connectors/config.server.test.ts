@@ -6,6 +6,8 @@ import type { ServerEnv } from "@/lib/env.server";
 function env(overrides: Partial<ServerEnv>): ServerEnv {
   return {
     HOMELAB_DATA_MODE: "live",
+    HOMELAB_UI_MODE: "topology",
+    HOMELAB_FABRIC_RELATIONSHIPS: undefined,
     JELLYFIN_URL: undefined,
     JELLYFIN_API_KEY: undefined,
     SONARR_URL: undefined,

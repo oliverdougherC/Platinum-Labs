@@ -127,6 +127,32 @@ describe("required scenario characteristics", () => {
     expect(isScenario(DEFAULT_SCENARIO)).toBe(true);
     expect(makeFakeSnapshot()).toBeTruthy();
   });
+
+  it("models V3 import variants without confusing organizing with a copy", () => {
+    const radarr = makeFakeSnapshot("radarr-import", NOW);
+    expect(radarr.acquisition.items).toEqual([
+      expect.objectContaining({ source: "radarr", state: "importing" }),
+    ]);
+
+    const samePool = makeFakeSnapshot("same-pool-import", NOW);
+    expect(samePool.downloadPool).toBe(samePool.mediaPool);
+    expect(samePool.telemetry.disk.value?.pools.map((pool) => pool.pool)).toEqual(["DataStore"]);
+
+    const crossPool = makeFakeSnapshot("cross-pool-import", NOW);
+    expect(crossPool.downloadPool).not.toBe(crossPool.mediaPool);
+    expect(crossPool.telemetry.disk.value?.pools.find((pool) => pool.pool === "NVME")?.readBps).toBeGreaterThan(0);
+    expect(crossPool.telemetry.disk.value?.pools.find((pool) => pool.pool === "DataStore")?.writeBps).toBeGreaterThan(0);
+  });
+
+  it("covers GPU, scan, Docker-unavailable, and declared relationship states", () => {
+    expect(makeFakeSnapshot("gpu-workload", NOW).telemetry.gpu.value?.utilizationFraction).toBeGreaterThan(0.7);
+    expect(makeFakeSnapshot("pool-scrub", NOW).zfs.pools.find((pool) => pool.name === "DataStore")?.scan).toBe("scrubbing");
+    expect(makeFakeSnapshot("docker-unavailable", NOW).telemetry.docker).toMatchObject({ status: "unavailable", value: null });
+    expect(makeFakeSnapshot("relationship-map", NOW).fabricRelationships).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: "service:sonarr", to: "service:jellyfin" }),
+      expect.objectContaining({ from: "host:control", to: "service:seerr" }),
+    ]));
+  });
 });
 
 describe("fake mode performs no network I/O", () => {

@@ -89,6 +89,10 @@ const rawContainerSchema = z.object({
   name: z.string(),
   state: z.string(),
   health: z.enum(["healthy", "unhealthy", "starting"]).nullish(),
+  stableId: z.string().nullish(),
+  composeProject: z.string().nullish(),
+  composeService: z.string().nullish(),
+  networkNames: z.array(z.string()).nullish(),
   restartCount: z.number().nullish(),
   cpuTotalNs: z.number().nullish(),
   systemCpuNs: z.number().nullish(),
@@ -192,6 +196,38 @@ function sectionSampledAt(
   return typeof section?.sampledAt === "number" && Number.isFinite(section.sampledAt)
     ? section.sampledAt
     : fallback;
+}
+
+const SAFE_DOCKER_STABLE_ID = /^[a-z0-9-]{8,64}$/;
+const SAFE_DOCKER_LABEL = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+const MAX_DOCKER_NETWORKS = 16;
+
+function sanitizeDockerStableId(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().toLowerCase();
+  if (!SAFE_DOCKER_STABLE_ID.test(trimmed)) return null;
+  return trimmed;
+}
+
+function sanitizeDockerLabel(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!SAFE_DOCKER_LABEL.test(trimmed)) return null;
+  return trimmed;
+}
+
+function sanitizeDockerNetworks(values: string[] | null | undefined): string[] | undefined {
+  if (!Array.isArray(values) || values.length === 0) return undefined;
+  const sanitized: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of values) {
+    const value = sanitizeDockerLabel(raw);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    sanitized.push(value);
+    if (sanitized.length >= MAX_DOCKER_NETWORKS) break;
+  }
+  return sanitized.length > 0 ? sanitized : undefined;
 }
 
 // --- normalization -----------------------------------------------------------
@@ -445,6 +481,10 @@ function normalizeDocker(
     }
     return {
       name: c.name,
+      stableId: sanitizeDockerStableId(c.stableId),
+      composeProject: sanitizeDockerLabel(c.composeProject),
+      composeService: sanitizeDockerLabel(c.composeService),
+      networkNames: sanitizeDockerNetworks(c.networkNames),
       state,
       health: c.health ?? null,
       // `/containers/json` does not know restart counts; unknown is null (PLA-273).

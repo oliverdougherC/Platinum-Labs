@@ -28,6 +28,35 @@ const optionalSecret = z
   .optional()
   .or(z.literal("").transform(() => undefined));
 
+const fabricNodeId = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9][a-z0-9:_-]*$/);
+
+const fabricRelationshipSchema = z.object({
+  from: fabricNodeId,
+  to: fabricNodeId,
+  kind: z.enum(["control", "dependency"]),
+  label: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .optional(),
+}).strict();
+
+const optionalFabricRelationships = z.preprocess((value) => {
+  if (typeof value !== "string") return value;
+  if (value.trim() === "") return undefined;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}, z.array(fabricRelationshipSchema).max(64).optional());
+
 const boolFlag = z
   .enum(["0", "1", "true", "false"])
   .optional()
@@ -51,6 +80,10 @@ const optionalBoundedInt = (min: number, max: number) =>
 const envSchema = z.object({
   /** Master switch between deterministic fake data and live connectors. */
   HOMELAB_DATA_MODE: z.enum(["fake", "live"]).default("fake"),
+  /** Front-end surface selector while V3 fabric ships behind a server flag. */
+  HOMELAB_UI_MODE: z.enum(["topology", "fabric"]).default("topology"),
+  /** Optional operator-declared fabric links for the V3 renderer seam. */
+  HOMELAB_FABRIC_RELATIONSHIPS: optionalFabricRelationships,
   /** Deliberate browser-facing host label; never derived from DNS or interfaces. */
   HOMELAB_HOST_LABEL: z
     .string()
@@ -147,6 +180,7 @@ const envSchema = z.object({
 });
 
 export type ServerEnv = z.infer<typeof envSchema>;
+export type FabricRelationship = z.infer<typeof fabricRelationshipSchema>;
 
 let cached: ServerEnv | null = null;
 
@@ -174,4 +208,14 @@ export function resetServerEnvCache(): void {
 /** Resolve the effective data mode. Defaults to fake for safety. */
 export function getDataMode(): ServerEnv["HOMELAB_DATA_MODE"] {
   return getServerEnv().HOMELAB_DATA_MODE;
+}
+
+/** Resolve the active front-end shell mode. Defaults to topology for safety. */
+export function getUiMode(): ServerEnv["HOMELAB_UI_MODE"] {
+  return getServerEnv().HOMELAB_UI_MODE;
+}
+
+/** Optional server-only V3 fabric relationship overlay from operator config. */
+export function getFabricRelationships(): FabricRelationship[] {
+  return getServerEnv().HOMELAB_FABRIC_RELATIONSHIPS ?? [];
 }
