@@ -116,6 +116,7 @@ const FABRIC_SHOTS = [
   { name: "18-docker-unavailable", scenario: "docker-unavailable", ui: "fabric", w: 1920, h: 1080 },
   { name: "19-reduced-motion", scenario: "active", ui: "fabric", w: 1920, h: 1080, reducedMotion: true },
   { name: "20-compact-inspector", scenario: "active", ui: "fabric", w: 1280, h: 720, action: "fabric-jellyfin" },
+  { name: "20b-desktop-inspector", scenario: "active", ui: "fabric", w: 1920, h: 1080, action: "fabric-jellyfin" },
   { name: "21-technical-details", scenario: "container-field-real", ui: "fabric", w: 1920, h: 1080, action: "fabric-technical" },
 ];
 
@@ -331,6 +332,34 @@ async function validateShot(page, shot, beforeActionBox) {
     if (await inspector.count()) {
       if ((await inspector.locator("dl > div").count()) > 3) throw new Error(`inspector exceeds three metrics (${shot.name})`);
       if ((await inspector.locator('ul[aria-label="Relevant relationships"] > li').count()) > 5) throw new Error(`inspector exceeds five relationships (${shot.name})`);
+      if (shot.w >= 1100) {
+        const inspectorBox = await inspector.boundingBox();
+        const nodes = page.locator("[data-fabric-node]");
+        if (!inspectorBox) throw new Error(`inspector has no bounds (${shot.name})`);
+        for (let index = 0; index < await nodes.count(); index++) {
+          const nodeBox = await nodes.nth(index).boundingBox();
+          if (!nodeBox) continue;
+          const overlaps = nodeBox.x < inspectorBox.x + inspectorBox.width &&
+            nodeBox.x + nodeBox.width > inspectorBox.x &&
+            nodeBox.y < inspectorBox.y + inspectorBox.height &&
+            nodeBox.y + nodeBox.height > inspectorBox.y;
+          if (overlaps) throw new Error(`desktop inspector covers fabric node ${index} (${shot.name})`);
+        }
+      }
+    }
+    const longAttachment = await page.locator('[data-fabric-attachment-mode="stub"]').evaluateAll((paths) =>
+      paths.findIndex((path) => path.getTotalLength() > 16),
+    );
+    if (longAttachment !== -1) throw new Error(`quiet attachment is not a local stub (${shot.name}, ${longAttachment})`);
+    if (await page.locator('.fabric-member[width], .fabric-member-unknown[width], .fabric-member-attention[width]').count()) {
+      throw new Error(`dense unlabeled workload microcell wall returned (${shot.name})`);
+    }
+    const unreadableEssentialText = await page.locator(".fabric-title, .fabric-service-title, .fabric-group-title").evaluateAll((nodes) =>
+      nodes.findIndex((node) => Number.parseFloat(getComputedStyle(node).fontSize) < 8),
+    );
+    if (unreadableEssentialText !== -1) throw new Error(`essential fabric type is below 8px (${shot.name}, ${unreadableEssentialText})`);
+    if (shot.scenario === "idle" && await page.locator("[data-fabric-route]").count()) {
+      throw new Error(`quiet overview contains an end-to-end relationship trace (${shot.name})`);
     }
   } else {
     // Truthful V2 container accounting: rendered bodies + overflow = population.
@@ -742,7 +771,7 @@ async function captureMotion(browser, baseUrl) {
   // GIF for direct GitHub embedding (best-effort; needs ffmpeg).
   try {
     execFileSync("ffmpeg", [
-      "-y", "-i", target,
+      "-y", "-ss", "0.5", "-i", target,
       "-vf", "fps=10,scale=960:-1:flags=lanczos",
       "-loop", "0",
       `${OUT_DIR}/motion-idle-to-active.gif`,

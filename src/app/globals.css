@@ -168,15 +168,32 @@
 
 .fabric-ground {
   background:
-    radial-gradient(100% 82% at 56% 42%, rgb(var(--color-surface) / 0.5), transparent 66%),
+    radial-gradient(90% 78% at 42% 40%, rgb(var(--color-surface) / 0.28), transparent 70%),
     linear-gradient(180deg, rgb(var(--color-bg)), rgb(7 9 13));
 }
 
-.fabric-region {
-  fill: rgb(var(--color-surface) / 0.08);
-  stroke: rgb(var(--color-hairline) / 0.52);
-  stroke-width: 0.8;
-  stroke-dasharray: 2 7;
+.fabric-board {
+  padding-right: 0;
+}
+
+.fabric-inspector-dock {
+  position: absolute;
+  z-index: 20;
+  top: 3rem;
+  right: 0.75rem;
+  width: clamp(12rem, 18.5vw, 19rem);
+  max-height: calc(100% - 4rem);
+  overflow: auto;
+  border: 1px solid rgb(var(--color-hairline) / 0.62);
+  border-radius: 0.75rem;
+  background: rgb(var(--color-bg) / 0.72);
+  padding: 1rem;
+}
+
+.fabric-inspector-active {
+  border-color: rgb(var(--color-border) / 0.82);
+  background: rgb(var(--color-bg) / 0.96);
+  box-shadow: 0 20px 60px rgb(0 0 0 / 0.28);
 }
 
 .fabric-region-label,
@@ -195,7 +212,7 @@
 }
 
 .fabric-region-label {
-  fill: rgb(var(--color-faint) / 0.72);
+  fill: rgb(var(--color-faint) / 0.52);
   font-size: 8px;
   font-weight: 600;
   letter-spacing: 0.18em;
@@ -203,14 +220,25 @@
 }
 
 .fabric-node {
-  fill: rgb(var(--color-surface) / 0.42);
+  fill: rgb(var(--color-surface) / 0.34);
   stroke-width: 0.9;
   vector-effect: non-scaling-stroke;
 }
 
 .fabric-node-fabric {
-  fill: rgb(var(--color-surface-2) / 0.48);
-  stroke: rgb(var(--color-border) / 0.72);
+  fill: rgb(var(--color-surface-2) / 0.34);
+  stroke: rgb(var(--color-border) / 0.54);
+}
+
+.fabric-trunk {
+  fill: rgb(var(--color-surface-2) / 0.24);
+  stroke: rgb(var(--color-border) / 0.42);
+  stroke-width: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.fabric-trunk-control {
+  stroke-dasharray: 2 6;
 }
 
 .fabric-node-resource {
@@ -226,7 +254,7 @@
 }
 
 .fabric-node-group {
-  fill: rgb(var(--color-surface) / 0.27);
+  fill: rgb(var(--color-surface) / 0.18);
 }
 
 .fabric-node-selected {
@@ -303,6 +331,26 @@
   fill: rgb(var(--color-accent) / 0.82);
 }
 
+.fabric-contribution-fill {
+  fill: rgb(var(--color-warn));
+}
+
+.fabric-contribution-label {
+  fill: rgb(var(--color-warn));
+  font-family: var(--font-sans);
+  font-size: 7px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+}
+
+.fabric-topology-label {
+  fill: rgb(var(--color-faint));
+  font-family: var(--font-sans);
+  font-size: 6.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
 .fabric-storage-fill {
   fill: rgb(var(--color-flow-out) / 0.7);
 }
@@ -340,7 +388,8 @@
 
 .fabric-attachment {
   stroke-width: 0.75;
-  opacity: 0.32;
+  opacity: 0.22;
+  stroke-linecap: round;
 }
 
 .fabric-attachment-network {
@@ -377,7 +426,7 @@
 }
 
 .fabric-flow-halo {
-  stroke: rgb(var(--color-bg) / 0.82);
+  stroke: rgb(var(--color-bg) / 0.58);
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -385,6 +434,7 @@
 .fabric-port {
   fill: rgb(var(--color-bg));
   stroke-width: 1;
+  opacity: 0.58;
   vector-effect: non-scaling-stroke;
 }
 

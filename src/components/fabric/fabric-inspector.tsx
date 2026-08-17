@@ -3,7 +3,7 @@
 import { DrawerShell } from "@/components/ui/overlay-shell";
 import type { FabricModel, FabricRelationship } from "@/lib/fabric/model";
 import type { FabricSelection } from "@/components/fabric/fabric-stage";
-import { formatRate } from "@/lib/format/bytes";
+import { formatBytes, formatRate } from "@/lib/format/bytes";
 
 function RelationshipLine({ relationship }: { relationship: FabricRelationship }) {
   return (
@@ -30,7 +30,14 @@ export function FabricInspector({
   onDetailsOpen: () => void;
   onDetailsClose: () => void;
 }) {
-  if (!selection) return null;
+  if (!selection) {
+    return (
+      <aside data-fabric-inspector-dock className="fabric-inspector-dock" aria-label="Inspector dock">
+        <p className="text-[10px] uppercase tracking-[0.16em] text-faint">Inspector</p>
+        <p className="mt-2 max-w-[18ch] text-xs leading-5 text-muted">Select a workload, subsystem, pool, or active relationship.</p>
+      </aside>
+    );
+  }
   const node = selection.kind === "node" ? model.nodes.find((item) => item.id === selection.id) : undefined;
   const selectedRelationship = selection.kind === "relationship" ? model.relationships.find((item) => item.id === selection.id) : undefined;
   const relationships = selectedRelationship
@@ -47,7 +54,7 @@ export function FabricInspector({
 
   return (
     <>
-      <aside data-fabric-inspector className="absolute right-3 top-3 z-20 w-[min(19rem,calc(100%-1.5rem))] rounded-xl border border-border/80 bg-bg/95 p-4 shadow-2xl backdrop-blur-md" aria-label={`${title} inspector`}>
+      <aside data-fabric-inspector data-fabric-inspector-dock className="fabric-inspector-dock fabric-inspector-active" aria-label={`${title} inspector`}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-[0.16em] text-faint">Inspector</p>
@@ -88,7 +95,10 @@ export function FabricInspector({
                 {group.members.map((member) => (
                   <li key={member.id} className="flex items-center justify-between gap-3 py-2 text-xs">
                     <span className="truncate text-muted">{member.name}</span>
-                    <span className={member.attention ? "text-warn" : "text-faint"}>{member.attention ? "attention" : member.metricCoverage}</span>
+                    <span className={`tnum shrink-0 ${member.attention ? "text-warn" : "text-faint"}`}>
+                      {member.attention ? "attention · " : ""}
+                      {member.cpuFraction === null ? "CPU —" : `${member.cpuFraction.toFixed(2)}c`} · {member.memoryBytes === null ? "MEM —" : formatBytes(member.memoryBytes)}
+                    </span>
                   </li>
                 ))}
               </ul>

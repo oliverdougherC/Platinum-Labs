@@ -91,6 +91,7 @@ describe("TopologyApp — frozen/reduced-motion and composition", () => {
     expect(cluster).not.toHaveTextContent("⌕");
     expect(screen.getByRole("group", { name: /Server fabric/ })).toBeInTheDocument();
     expect(screen.getByText("DataStore")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Live telemetry")).not.toBeInTheDocument();
   });
 
   it("keeps notifications, drawers, and media search mutually exclusive", () => {

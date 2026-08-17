@@ -48,13 +48,15 @@ export function FabricApp({
         <span className="tnum">{model.population.represented}/{model.population.total ?? "—"} workloads</span>
         {relationshipsVisible ? <span className="text-muted">relationship map</span> : null}
       </div>
-      <FabricStage
-        model={model}
-        selection={selection}
-        onSelect={(next) => setSelection((current) => current?.kind === next.kind && current.id === next.id ? null : next)}
-        relationshipsVisible={relationshipsVisible}
-        motionEnabled={!frozen && !reducedMotion}
-      />
+      <div className="fabric-board h-full w-full">
+        <FabricStage
+          model={model}
+          selection={selection}
+          onSelect={(next) => setSelection((current) => current?.kind === next.kind && current.id === next.id ? null : next)}
+          relationshipsVisible={relationshipsVisible}
+          motionEnabled={!frozen && !reducedMotion}
+        />
+      </div>
       <FabricInspector
         model={model}
         selection={selection}

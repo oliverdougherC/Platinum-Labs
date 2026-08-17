@@ -312,7 +312,7 @@ export function TopologyApp({
         )}
       </main>
 
-      <MetricsRail snapshot={snapshot} />
+      {uiMode === "topology" ? <MetricsRail snapshot={snapshot} /> : null}
 
       <NotificationDrawer
         open={notifOpen}

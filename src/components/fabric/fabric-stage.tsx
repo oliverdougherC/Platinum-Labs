@@ -68,12 +68,28 @@ function useFlowScheduler(root: React.RefObject<SVGSVGElement | null>, enabled: 
   }, [enabled, root]);
 }
 
-function ResourceNode({ node, view }: { node: FabricNode; view: FabricResourceView | undefined }) {
+function aggregateSegments(segments: number[], limit = 64): { values: number[]; sourceCount: number; aggregated: boolean } {
+  if (segments.length <= limit) return { values: segments, sourceCount: segments.length, aggregated: false };
+  const bucketSize = Math.ceil(segments.length / limit);
+  const values: number[] = [];
+  for (let index = 0; index < segments.length; index += bucketSize) {
+    const bucket = segments.slice(index, index + bucketSize);
+    values.push(bucket.reduce((sum, value) => sum + value, 0) / bucket.length);
+  }
+  return { values, sourceCount: segments.length, aggregated: true };
+}
+
+function ResourceNode({ node, view, selectedNodeId }: { node: FabricNode; view: FabricResourceView | undefined; selectedNodeId: string | null }) {
   const { bounds } = node;
   const segments = view?.segments ?? [];
-  const maxSegments = node.id === "resource:cpu" ? 32 : 2;
-  const shown = segments.slice(0, maxSegments);
-  const columns = node.id === "resource:cpu" ? 16 : 1;
+  const contribution = selectedNodeId ? view?.contributors?.find((item) => item.nodeId === selectedNodeId) : undefined;
+  const topology = aggregateSegments(segments);
+  const shown = topology.values;
+  const columns = node.id === "resource:cpu" ? Math.min(32, Math.max(1, shown.length)) : 1;
+  const rows = Math.max(1, Math.ceil(shown.length / columns));
+  const cellGap = 2;
+  const cellWidth = (bounds.width - 28 - cellGap * (columns - 1)) / columns;
+  const cellHeight = (18 - cellGap * (rows - 1)) / rows;
   return (
     <g>
       <text x={bounds.x + 14} y={bounds.y + 20} className="fabric-eyebrow">{node.eyebrow}</text>
@@ -84,22 +100,68 @@ function ResourceNode({ node, view }: { node: FabricNode; view: FabricResourceVi
           <tspan className="fabric-metric-label" dx="5">{metric.label}</tspan>
         </text>
       ))}
-      {node.id === "resource:cpu" ? shown.map((value, index) => {
+      {contribution ? (
+        <text
+          x={bounds.x + bounds.width - 12}
+          y={bounds.y + 64}
+          textAnchor="end"
+          className="fabric-contribution-label"
+          data-resource-contribution={contribution.nodeId}
+          data-resource-coverage={contribution.coverage}
+        >
+          {contribution.value === null
+            ? "SELECTED UNKNOWN"
+            : `${view?.id === "cpu" ? `${contribution.value.toFixed(2)}C` : formatCompactBytes(contribution.value)} SELECTED${contribution.coverage === "partial" ? " ≈" : ""}`}
+        </text>
+      ) : null}
+      {node.id === "resource:cpu" ? <g
+        data-cpu-topology={topology.aggregated ? "aggregated" : "complete"}
+        data-cpu-source-count={topology.sourceCount}
+        data-cpu-rendered-count={shown.length}
+        aria-label={topology.aggregated ? `${topology.sourceCount} logical CPUs aggregated into ${shown.length} labeled groups` : `${topology.sourceCount} logical CPUs shown individually`}
+      >
+        {topology.aggregated ? (
+          <text x={bounds.x + bounds.width - 12} y={bounds.y + 73} textAnchor="end" className="fabric-topology-label">
+            {topology.sourceCount} LOGICAL → {shown.length} GROUPS
+          </text>
+        ) : null}
+        {shown.map((value, index) => {
         const col = index % columns;
         const row = Math.floor(index / columns);
-        const x = bounds.x + 14 + col * 13.4;
-        const y = bounds.y + 82 + row * 24;
+        const x = bounds.x + 14 + col * (cellWidth + cellGap);
+        const y = bounds.y + 78 + row * (cellHeight + cellGap);
         return (
           <g key={index}>
-            <rect x={x} y={y} width="8" height="17" rx="1" className="fabric-gauge-track" />
-            <rect x={x} y={y + 17 * (1 - Math.min(1, value))} width="8" height={17 * Math.min(1, value)} rx="1" className="fabric-gauge-fill" />
+            <rect x={x} y={y} width={cellWidth} height={cellHeight} rx="1" className="fabric-gauge-track" />
+            <rect x={x} y={y + cellHeight * (1 - Math.min(1, value))} width={cellWidth} height={cellHeight * Math.min(1, value)} rx="1" className="fabric-gauge-fill" />
           </g>
         );
-      }) : (
+      })}
+        {contribution?.fraction !== null && contribution?.fraction !== undefined ? (
+          <rect
+            x={bounds.x + 14}
+            y={bounds.y + bounds.height - 4}
+            width={(bounds.width - 28) * Math.max(0, Math.min(1, contribution.fraction))}
+            height="2"
+            rx="1"
+            className="fabric-contribution-fill"
+          />
+        ) : null}
+      </g> : (
         <>
           <rect x={bounds.x + 14} y={bounds.y + bounds.height - 20} width={bounds.width - 28} height="6" rx="3" className="fabric-gauge-track" />
           {view?.fraction !== null && view?.fraction !== undefined ? (
             <rect x={bounds.x + 14} y={bounds.y + bounds.height - 20} width={(bounds.width - 28) * Math.max(0, Math.min(1, view.fraction))} height="6" rx="3" className="fabric-gauge-fill" />
+          ) : null}
+          {contribution?.fraction !== null && contribution?.fraction !== undefined ? (
+            <rect
+              x={bounds.x + 14}
+              y={bounds.y + bounds.height - 20}
+              width={(bounds.width - 28) * Math.max(0, Math.min(1, contribution.fraction))}
+              height="6"
+              rx="3"
+              className="fabric-contribution-fill"
+            />
           ) : null}
         </>
       )}
@@ -111,10 +173,10 @@ function WorkloadNode({ node }: { node: FabricNode }) {
   const { bounds } = node;
   return (
     <g>
-      <text x={bounds.x + 13} y={bounds.y + 19} className="fabric-eyebrow">{node.eyebrow}</text>
-      <text x={bounds.x + 13} y={bounds.y + 45} className="fabric-service-title">{node.label}</text>
+      <text x={bounds.x + 13} y={bounds.y + 16} className="fabric-eyebrow">{node.eyebrow}</text>
+      <text x={bounds.x + 13} y={bounds.y + 36} className="fabric-service-title">{node.label}</text>
       {node.metrics.slice(0, 2).map((metric, index) => (
-        <text key={metric.label} x={bounds.x + 13 + index * 74} y={bounds.y + 65} className="fabric-metric">
+        <text key={metric.label} x={bounds.x + 13 + index * 82} y={bounds.y + 53} className="fabric-metric">
           {metric.value}<tspan className="fabric-metric-label" dx="4">{metric.label}</tspan>
         </text>
       ))}
@@ -129,10 +191,10 @@ function StorageNode({ node }: { node: FabricNode }) {
   return (
     <g>
       <text x={bounds.x + 14} y={bounds.y + 20} className="fabric-eyebrow">{node.eyebrow}</text>
-      <text x={bounds.x + 14} y={bounds.y + 45} className="fabric-service-title">{node.label}</text>
-      <text x={bounds.x + 14} y={bounds.y + 66} className="fabric-metric">{node.metrics[0]?.value ?? "—"}</text>
-      <rect x={bounds.x + 14} y={bounds.y + 81} width={bounds.width - 28} height="6" rx="3" className="fabric-gauge-track" />
-      <rect x={bounds.x + 14} y={bounds.y + 81} width={(bounds.width - 28) * Math.max(0, Math.min(1, fraction))} height="6" rx="3" className="fabric-storage-fill" />
+      <text x={bounds.x + 14} y={bounds.y + 40} className="fabric-service-title">{node.label}</text>
+      <text x={bounds.x + 14} y={bounds.y + 57} className="fabric-metric">{node.metrics[0]?.value ?? "—"}</text>
+      <rect x={bounds.x + 14} y={bounds.y + bounds.height - 11} width={bounds.width - 28} height="5" rx="2.5" className="fabric-gauge-track" />
+      <rect x={bounds.x + 14} y={bounds.y + bounds.height - 11} width={(bounds.width - 28) * Math.max(0, Math.min(1, fraction))} height="5" rx="2.5" className="fabric-storage-fill" />
     </g>
   );
 }
@@ -141,43 +203,45 @@ function GroupNode({ node, model }: { node: FabricNode; model: FabricModel }) {
   const group = model.population.groups.find((item) => item.id === node.id);
   if (!group) return null;
   const { bounds } = node;
-  const columns = 10;
-  const maxVisible = 140;
+  const promoted = group.members.filter((member) =>
+    member.attention ||
+    (member.cpuFraction !== null && member.cpuFraction >= 0.25) ||
+    (member.netRxBps !== null && member.netRxBps >= 1_000_000) ||
+    (member.netTxBps !== null && member.netTxBps >= 1_000_000) ||
+    (member.blockReadBps !== null && member.blockReadBps >= 1_000_000) ||
+    (member.blockWriteBps !== null && member.blockWriteBps >= 1_000_000),
+  ).slice(0, 1);
   return (
     <g>
       <text x={bounds.x + 10} y={bounds.y + 18} className="fabric-eyebrow">{node.eyebrow}</text>
       <text x={bounds.x + 10} y={bounds.y + 39} className="fabric-group-title">{node.label}</text>
-      {group.members.length <= 8 ? group.members.map((member, index) => (
+      {node.metrics.slice(0, 2).map((metric, index) => (
+        <text key={metric.label} x={bounds.x + 10 + index * 76} y={bounds.y + 58} className="fabric-metric">
+          {metric.value}<tspan className="fabric-metric-label" dx="4">{metric.label}</tspan>
+        </text>
+      ))}
+      {promoted.map((member, index) => (
         <g key={member.id}>
           <circle
             cx={bounds.x + 13}
-            cy={bounds.y + 57 + index * 17}
+            cy={bounds.y + 72 + index * 17}
             r="2.7"
             className={member.attention ? "fabric-member-attention" : member.metricCoverage === "unknown" ? "fabric-member-unknown" : "fabric-member"}
           />
-          <text x={bounds.x + 22} y={bounds.y + 60 + index * 17} className="fabric-member-label">{member.name}</text>
+          <text x={bounds.x + 22} y={bounds.y + 75 + index * 17} className="fabric-member-label">{member.name}</text>
         </g>
-      )) : group.members.slice(0, maxVisible).map((member, index) => {
-        const col = index % columns;
-        const row = Math.floor(index / columns);
-        return (
-          <g key={member.id}>
-            <rect
-              x={bounds.x + 10 + col * 10.2}
-              y={bounds.y + 53 + row * 9.5}
-              width="6.5"
-              height="6.5"
-              rx="1.5"
-              className={member.attention ? "fabric-member-attention" : member.metricCoverage === "unknown" ? "fabric-member-unknown" : "fabric-member"}
-            />
-          </g>
-        );
-      })}
-      {group.members.length > maxVisible ? (
-        <text x={bounds.x + 10} y={bounds.y + bounds.height - 10} className="fabric-eyebrow">+{group.members.length - maxVisible} represented in details</text>
-      ) : null}
+      ))}
     </g>
   );
+}
+
+function localStubPath(port: { center: { x: number; y: number }; side: "top" | "right" | "bottom" | "left" }, length = 13): string {
+  const { x, y } = port.center;
+  const end = port.side === "left" ? { x: x - length, y }
+    : port.side === "right" ? { x: x + length, y }
+      : port.side === "top" ? { x, y: y - length }
+        : { x, y: y + length };
+  return `M${x} ${y}L${end.x} ${end.y}`;
 }
 
 function relationshipAria(relationship: FabricRelationship): string {
@@ -189,6 +253,13 @@ function formatCompactRate(rate: number): string {
   if (rate >= 1_000_000) return `${(rate / 1_000_000).toFixed(1)} megabytes per second`;
   if (rate >= 1_000) return `${(rate / 1_000).toFixed(1)} kilobytes per second`;
   return `${Math.round(rate)} bytes per second`;
+}
+
+function formatCompactBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)}G`;
+  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)}M`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)}K`;
+  return `${Math.round(bytes)}B`;
 }
 
 export function FabricStage({
@@ -207,7 +278,7 @@ export function FabricStage({
   const svgRef = useRef<SVGSVGElement>(null);
   useFlowScheduler(svgRef, motionEnabled);
   const visibleRelationships = useMemo(() => model.relationships.filter((relationship) =>
-    relationship.visibility === "active" ||
+    (relationship.plane === "data" && relationship.visibility === "active") ||
     relationshipsVisible ||
     (selection?.kind === "node" && (relationship.fromNodeId === selection.id || relationship.toNodeId === selection.id)) ||
     (selection?.kind === "relationship" && relationship.id === selection.id),
@@ -223,6 +294,9 @@ export function FabricStage({
     return result;
   }, [model.relationships, selectedNode]);
   const uniquePorts = useMemo(() => [...new Map(model.ports.map((port) => [port.id, port])).values()], [model.ports]);
+  const portsById = useMemo(() => new Map(uniquePorts.map((port) => [port.id, port])), [uniquePorts]);
+  const visibleRelationshipPorts = useMemo(() => new Set(visibleRelationships.flatMap((relationship) => [relationship.fromPortId, relationship.toPortId])), [visibleRelationships]);
+  const selectedNodePorts = useMemo(() => new Set(selectedNode ? uniquePorts.filter((port) => port.nodeId === selectedNode).map((port) => port.id) : []), [selectedNode, uniquePorts]);
 
   return (
     <svg
@@ -235,9 +309,6 @@ export function FabricStage({
       aria-label={`Server fabric; ${model.population.represented} workloads represented`}
     >
       <defs>
-        <pattern id="fabric-grid" width="16" height="16" patternUnits="userSpaceOnUse">
-          <path d="M16 0H0V16" fill="none" stroke="rgb(var(--color-hairline))" strokeOpacity="0.16" strokeWidth="0.5" />
-        </pattern>
         <marker id="fabric-arrow-in" markerWidth="7" markerHeight="7" refX="5.5" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
           <path d="M0 0L7 3.5L0 7Z" fill="rgb(var(--color-flow-in))" />
         </marker>
@@ -248,26 +319,38 @@ export function FabricStage({
           <path d="M0 0L7 3.5L0 7Z" fill="rgb(var(--color-flow-ctl))" />
         </marker>
       </defs>
-      <rect width="1200" height="640" fill="url(#fabric-grid)" opacity="0.72" />
-
       <g aria-hidden="true">
         {model.regions.map((region) => (
-          <g key={region.id}>
-            <rect {...region.bounds} rx="15" className="fabric-region" />
+          <g key={region.id} data-fabric-region={region.id}>
             <text x={region.bounds.x + 11} y={region.bounds.y + 15} className="fabric-region-label">{region.label}</text>
           </g>
         ))}
       </g>
 
-      <g aria-label="Stable fabric attachments">
-        {model.attachments.map((attachment) => (
-          <path
+      <g aria-label="Reserved shared trunks">
+        {model.trunks.map((trunk) => (
+          <g key={trunk.id} data-fabric-trunk={trunk.id}>
+            <rect {...trunk.bounds} rx="7" className={`fabric-trunk fabric-trunk-${trunk.kind}`} />
+            <text x={trunk.bounds.x + 10} y={trunk.bounds.y + trunk.bounds.height / 2 + 3} className="fabric-bus-title">{trunk.label}</text>
+            <text x={trunk.bounds.x + trunk.bounds.width - 10} y={trunk.bounds.y + trunk.bounds.height / 2 + 3} textAnchor="end" className="fabric-eyebrow">{trunk.eyebrow}</text>
+          </g>
+        ))}
+      </g>
+
+      <g aria-label="Local fabric attachment stubs">
+        {model.attachments.flatMap((attachment) => {
+          const fromPort = portsById.get(attachment.route.fromPortId);
+          const toPort = portsById.get(attachment.route.toPortId);
+          const nodePort = fromPort?.nodeId === attachment.nodeId ? fromPort : toPort?.nodeId === attachment.nodeId ? toPort : null;
+          if (!nodePort || visibleRelationshipPorts.has(nodePort.id)) return [];
+          return [<path
             key={attachment.id}
-            d={attachment.route.path}
+            d={localStubPath(nodePort)}
             className={`fabric-attachment fabric-attachment-${attachment.kind}`}
             data-known={attachment.known}
-          />
-        ))}
+            data-fabric-attachment-mode="stub"
+          />];
+        })}
       </g>
 
       <g aria-label="Observed and declared relationships">
@@ -284,7 +367,7 @@ export function FabricStage({
           const marker = relationship.plane === "control" ? "url(#fabric-arrow-control)" : relationship.tone === "out" ? "url(#fabric-arrow-out)" : "url(#fabric-arrow-in)";
           return (
             <g key={relationship.id} opacity={focused ? 1 : 0.16}>
-              <path d={relationship.route.path} className="fabric-flow-halo" strokeWidth={relationship.width + 7} />
+              <path d={relationship.route.path} className="fabric-flow-halo" strokeWidth={relationship.width + 3} />
               <path
                 d={relationship.route.path}
                 fill="none"
@@ -294,6 +377,9 @@ export function FabricStage({
                 markerEnd={relationship.direction !== "reverse" ? marker : undefined}
                 markerStart={relationship.direction === "reverse" || relationship.direction === "bidirectional" ? marker : undefined}
                 data-fabric-flow-motion={relationship.animated && motionEnabled}
+                data-fabric-route={relationship.id}
+                data-fabric-route-from-port={relationship.fromPortId}
+                data-fabric-route-to-port={relationship.toPortId}
                 data-direction={relationship.direction}
                 className="fabric-flow"
                 role="button"
@@ -322,6 +408,7 @@ export function FabricStage({
             <g
               key={node.id}
               data-fabric-node={node.id}
+              data-fabric-node-kind={node.kind}
               role={node.kind === "fabric" ? undefined : "button"}
               tabIndex={node.kind === "fabric" ? undefined : 0}
               aria-label={`${node.label}; ${node.status}; ${node.metrics.map((metric) => `${metric.label} ${metric.value}`).join(", ") || "no active values"}`}
@@ -343,25 +430,24 @@ export function FabricStage({
               />
               {node.kind === "fabric" ? (
                 <>
-                  {node.bounds.width > 100 ? (
+                  {node.bounds.width > 300 ? (
                     <>
                       <text x={node.bounds.x + 11} y={node.bounds.y + node.bounds.height / 2 + 4} className="fabric-bus-title">{node.label}</text>
                       <text x={node.bounds.x + node.bounds.width - 11} y={node.bounds.y + node.bounds.height / 2 + 4} textAnchor="end" className="fabric-eyebrow">{node.eyebrow}</text>
                     </>
+                  ) : node.bounds.height >= 48 ? (
+                    <>
+                      <text x={node.bounds.x + 10} y={node.bounds.y + 18} className="fabric-eyebrow">{node.eyebrow}</text>
+                      <text x={node.bounds.x + 10} y={node.bounds.y + 39} className="fabric-bus-title">{node.label}</text>
+                    </>
                   ) : (
-                    <text
-                      x={node.bounds.x + node.bounds.width / 2}
-                      y={node.bounds.y + node.bounds.height / 2}
-                      textAnchor="middle"
-                      className="fabric-bus-title"
-                      transform={`rotate(-90 ${node.bounds.x + node.bounds.width / 2} ${node.bounds.y + node.bounds.height / 2})`}
-                    >
-                      STORAGE · {node.label}
+                    <text x={node.bounds.x + 10} y={node.bounds.y + node.bounds.height / 2 + 3} className="fabric-bus-title">
+                      {node.label}
                     </text>
                   )}
                 </>
               ) : node.kind === "resource" ? (
-                <ResourceNode node={node} view={view} />
+                <ResourceNode node={node} view={view} selectedNodeId={selectedNode} />
               ) : node.kind === "workload" ? (
                 <WorkloadNode node={node} />
               ) : node.kind === "storage" ? (
@@ -381,9 +467,17 @@ export function FabricStage({
       </g>
 
       <g aria-hidden="true">
-        {uniquePorts.map((port) => (
+        {uniquePorts.filter((port) => relationshipsVisible || visibleRelationshipPorts.has(port.id) || selectedNodePorts.has(port.id)).map((port) => (
           <g key={port.id}>
-            <circle cx={port.center.x} cy={port.center.y} r="5.4" className={`fabric-port fabric-port-${port.kind}`} />
+            <circle
+              cx={port.center.x}
+              cy={port.center.y}
+              r="5.4"
+              className={`fabric-port fabric-port-${port.kind}`}
+              data-fabric-port={port.id}
+              data-fabric-port-node={port.nodeId}
+              data-fabric-port-kind={port.kind}
+            />
             <circle cx={port.center.x} cy={port.center.y} r="1.6" className="fabric-port-core" />
           </g>
         ))}

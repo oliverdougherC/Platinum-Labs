@@ -1,9 +1,25 @@
 import type { DockerContainerTelemetry } from "@/lib/types";
 
+export type FabricAccountingCoverage = "complete" | "partial" | "unknown";
+
+export interface FabricAccountingAggregate {
+  value: number | null;
+  coverage: FabricAccountingCoverage;
+  completeContributors: number;
+  partialContributors: number;
+  unknownContributors: number;
+}
+
+export interface FabricAccountingRollup {
+  cpuCores: FabricAccountingAggregate;
+  memoryBytes: FabricAccountingAggregate;
+  ioBytesPerSecond: FabricAccountingAggregate;
+}
+
 export interface FabricGroupMember extends DockerContainerTelemetry {
   id: string;
   attention: boolean;
-  metricCoverage: "complete" | "partial" | "unknown";
+  metricCoverage: FabricAccountingCoverage;
 }
 
 export interface FabricWorkloadGroup {
@@ -11,6 +27,7 @@ export interface FabricWorkloadGroup {
   label: string;
   members: FabricGroupMember[];
   attentionCount: number;
+  accounting: FabricAccountingRollup;
 }
 
 const FIRST_CLASS = new Set([
@@ -47,6 +64,64 @@ function coverage(container: DockerContainerTelemetry): FabricGroupMember["metri
   return known === 0 ? "unknown" : known === values.length ? "complete" : "partial";
 }
 
+interface FabricMetricContribution {
+  value: number | null;
+  coverage: FabricAccountingCoverage;
+}
+
+function completeContribution(value: number | null): FabricMetricContribution {
+  return value === null ? { value: null, coverage: "unknown" } : { value, coverage: "complete" };
+}
+
+function ioContribution(container: DockerContainerTelemetry): FabricMetricContribution {
+  const values = [container.blockReadBps, container.blockWriteBps].filter(
+    (value): value is number => typeof value === "number",
+  );
+  if (values.length === 0) return { value: null, coverage: "unknown" };
+  return {
+    value: values.reduce((sum, value) => sum + value, 0),
+    coverage: values.length === 2 ? "complete" : "partial",
+  };
+}
+
+function aggregateContributions(contributions: FabricMetricContribution[]): FabricAccountingAggregate {
+  let value = 0;
+  let completeContributors = 0;
+  let partialContributors = 0;
+  let unknownContributors = 0;
+
+  for (const contribution of contributions) {
+    if (contribution.coverage === "unknown" || contribution.value === null) {
+      unknownContributors += 1;
+      continue;
+    }
+    value += contribution.value;
+    if (contribution.coverage === "complete") completeContributors += 1;
+    else partialContributors += 1;
+  }
+
+  const knownContributors = completeContributors + partialContributors;
+  return {
+    value: knownContributors > 0 ? value : null,
+    coverage: knownContributors === 0
+      ? "unknown"
+      : unknownContributors === 0 && partialContributors === 0
+      ? "complete"
+      : "partial",
+    completeContributors,
+    partialContributors,
+    unknownContributors,
+  };
+}
+
+export function accountingForContainers(containers: DockerContainerTelemetry[]): FabricAccountingRollup {
+  return {
+    cpuCores: aggregateContributions(containers.map((container) => completeContribution(container.cpuFraction))),
+    memoryBytes: aggregateContributions(containers.map((container) => completeContribution(container.memoryBytes))),
+    ioBytesPerSecond: aggregateContributions(containers.map(ioContribution)),
+  };
+}
+
 function member(container: DockerContainerTelemetry): FabricGroupMember {
   const attention =
     container.health === "unhealthy" ||
@@ -61,7 +136,7 @@ function member(container: DockerContainerTelemetry): FabricGroupMember {
 }
 
 function groupKey(container: DockerContainerTelemetry): string {
-  return container.composeProject?.trim() || fallbackGroup(container.name);
+  return fallbackGroup(`${container.name} ${container.composeService ?? ""}`);
 }
 
 const compareText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -83,8 +158,8 @@ export function groupWorkloads(containers: DockerContainerTelemetry[]): FabricWo
   const ordered = [...buckets.entries()]
     .map(([label, members]) => ({ label, members }))
     .sort((a, b) => b.members.length - a.members.length || compareText(a.label, b.label));
-  const kept = ordered.slice(0, 3);
-  const merged = ordered.slice(3).flatMap((group) => group.members);
+  const kept = ordered.slice(0, 4);
+  const merged = ordered.slice(4).flatMap((group) => group.members);
   if (merged.length) kept.push({ label: "Other workloads", members: merged });
 
   return kept.map(({ label, members }) => {
@@ -98,6 +173,7 @@ export function groupWorkloads(containers: DockerContainerTelemetry[]): FabricWo
       label,
       members,
       attentionCount: members.filter((item) => item.attention).length,
+      accounting: accountingForContainers(members),
     };
   });
 }

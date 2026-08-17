@@ -85,4 +85,51 @@ describe("FabricStage", () => {
     expect(controlPath).toHaveAttribute("stroke-dasharray", "3 7");
     expect(controlPath).not.toHaveAttribute("data-fabric-flow-motion", "true");
   });
+
+  it("keeps declared control relationships out of overview until focus", () => {
+    const snapshot = makeFakeSnapshot("idle", NOW);
+    snapshot.fabricRelationships = [
+      { from: "service:sonarr", to: "service:jellyfin", kind: "control", label: "library refresh" },
+    ];
+    const model = buildFabricModel(snapshot, { now: NOW, seerrConfigured: true });
+    const { container } = render(
+      <FabricStage model={model} selection={null} onSelect={() => {}} relationshipsVisible={false} motionEnabled={false} />,
+    );
+    expect(container.querySelector('path[aria-label^="library refresh;"]')).toBeNull();
+  });
+
+  it("renders quiet membership as short local stubs without a microcell wall", () => {
+    const { container } = render(<StageHarness scenario="container-field-real" />);
+    const stubs = [...container.querySelectorAll('[data-fabric-attachment-mode="stub"]')];
+    expect(stubs.length).toBeGreaterThan(0);
+    expect(stubs.every((stub) => /^M[-.\d]+ [-.\d]+L[-.\d]+ [-.\d]+$/.test(stub.getAttribute("d") ?? ""))).toBe(true);
+    expect(container.querySelector('.fabric-member[width], .fabric-member-unknown[width], .fabric-member-attention[width]')).toBeNull();
+  });
+
+  it("explicitly aggregates large CPU topologies instead of silently truncating them", () => {
+    const snapshot = makeFakeSnapshot("active", NOW);
+    snapshot.telemetry.cpu.value!.perCore = Array.from({ length: 96 }, (_, index) => (index % 10) / 10);
+    const model = buildFabricModel(snapshot, { now: NOW, seerrConfigured: true });
+    const { container } = render(
+      <FabricStage model={model} selection={null} onSelect={() => {}} relationshipsVisible={false} motionEnabled={false} />,
+    );
+    const topology = container.querySelector('[data-cpu-topology="aggregated"]');
+    expect(topology).toHaveAttribute("data-cpu-source-count", "96");
+    expect(Number(topology?.getAttribute("data-cpu-rendered-count"))).toBeLessThan(96);
+    expect(topology).toHaveAccessibleName(/96 logical CPUs aggregated into \d+ labeled groups/);
+  });
+
+  it("highlights selected workload CPU and memory contribution inside the hardware strip", () => {
+    const model = buildFabricModel(makeFakeSnapshot("container-field-real", NOW), { now: NOW, seerrConfigured: true });
+    const { container } = render(
+      <FabricStage
+        model={model}
+        selection={{ kind: "node", id: "service:jellyfin" }}
+        onSelect={() => {}}
+        relationshipsVisible={false}
+        motionEnabled={false}
+      />,
+    );
+    expect(container.querySelectorAll('[data-resource-contribution="service:jellyfin"]')).toHaveLength(2);
+  });
 });
