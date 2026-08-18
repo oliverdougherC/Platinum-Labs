@@ -120,6 +120,16 @@ const FABRIC_SHOTS = [
   { name: "21-technical-details", scenario: "container-field-real", ui: "fabric", w: 1920, h: 1080, action: "fabric-technical" },
 ];
 
+const FABRIC_STUDY_SHOTS = ["A", "B", "C"].flatMap((study) => [
+  { study, name: "01-quiet-1280x720", scenario: "idle", w: 1280, h: 720 },
+  { study, name: "02-mixed-1280x720", scenario: "container-mixed", w: 1280, h: 720 },
+  { study, name: "03-mixed-1920x1080", scenario: "container-mixed", w: 1920, h: 1080 },
+  { study, name: "04-real-scale-44-1920x1080", scenario: "container-field-real", w: 1920, h: 1080 },
+  { study, name: "05-jellyfin-focus-1920x1080", scenario: "transcode", focus: "jellyfin", w: 1920, h: 1080 },
+  { study, name: "06-sonarr-focus-1920x1080", scenario: "relationship-map", focus: "sonarr", w: 1920, h: 1080 },
+  { study, name: "07-inspector-open-1920x1080", scenario: "container-field-real", inspector: true, w: 1920, h: 1080 },
+]);
+
 /**
  * Truthful container accounting per scenario — the harness fails loudly if a
  * fixture is silently truncated or an expectation drifts from the fixtures.
@@ -148,9 +158,10 @@ function arg(flag, fallback = null) {
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
-const FABRIC = process.argv.includes("--fabric");
-const SHOTS = FABRIC ? FABRIC_SHOTS : TOPOLOGY_SHOTS;
-const OUT_DIR = arg("--out", FABRIC ? "docs/review/v3-server-fabric" : "docs/review/v21-living-topology");
+const FABRIC_STUDIES = process.argv.includes("--fabric-studies");
+const FABRIC = !FABRIC_STUDIES && process.argv.includes("--fabric");
+const SHOTS = FABRIC_STUDIES ? FABRIC_STUDY_SHOTS : FABRIC ? FABRIC_SHOTS : TOPOLOGY_SHOTS;
+const OUT_DIR = arg("--out", FABRIC_STUDIES ? "docs/review/v3-server-fabric-compositions" : FABRIC ? "docs/review/v3-server-fabric" : "docs/review/v21-living-topology");
 const ONLY = arg("--only");
 const MOTION = process.argv.includes("--motion");
 const PERFORMANCE = process.argv.includes("--performance");
@@ -422,6 +433,178 @@ async function validateShot(page, shot, beforeActionBox) {
   }
 }
 
+async function validateFabricStudyShot(page, shot) {
+  const result = await page.locator("[data-study-stage]").evaluate((stage) => {
+    const parsePoints = (value) => value.split(";").filter(Boolean).map((pair) => {
+      const [x, y] = pair.split(",").map(Number);
+      return { x, y };
+    });
+    const parseBounds = (value) => {
+      const [x, y, width, height] = value.split(",").map(Number);
+      return { x, y, width, height };
+    };
+    const lines = (points) => points.slice(1).map((to, index) => [points[index], to]);
+    const lineIntersectsRect = (a, b, box) => {
+      if (a.x === b.x) {
+        return a.x > box.x && a.x < box.x + box.width && Math.max(a.y, b.y) > box.y && Math.min(a.y, b.y) < box.y + box.height;
+      }
+      if (a.y === b.y) {
+        return a.y > box.y && a.y < box.y + box.height && Math.max(a.x, b.x) > box.x && Math.min(a.x, b.x) < box.x + box.width;
+      }
+      return false;
+    };
+    const strictCrossing = (a1, a2, b1, b2) => {
+      const ah = a1.y === a2.y;
+      const bh = b1.y === b2.y;
+      if (ah === bh) return false;
+      const h1 = ah ? a1 : b1;
+      const h2 = ah ? a2 : b2;
+      const v1 = ah ? b1 : a1;
+      const v2 = ah ? b2 : a2;
+      return v1.x > Math.min(h1.x, h2.x) && v1.x < Math.max(h1.x, h2.x) && h1.y > Math.min(v1.y, v2.y) && h1.y < Math.max(v1.y, v2.y);
+    };
+    const segmentElements = [...stage.querySelectorAll("[data-study-segment]")];
+    const segments = segmentElements.map((element) => ({
+      id: element.getAttribute("data-study-segment"),
+      points: parsePoints(element.getAttribute("data-study-points") ?? ""),
+      endpointA: element.getAttribute("data-study-endpoint-a") ?? "",
+      endpointB: element.getAttribute("data-study-endpoint-b") ?? "",
+    }));
+    const geometryKeys = segments.map((segment) => {
+      const forward = segment.points.map((point) => `${point.x},${point.y}`).join(";");
+      const reverse = [...segment.points].reverse().map((point) => `${point.x},${point.y}`).join(";");
+      return forward < reverse ? forward : reverse;
+    });
+    const duplicateGeometry = geometryKeys.filter((key, index) => geometryKeys.indexOf(key) !== index);
+    const labels = [...stage.querySelectorAll("[data-study-segment-label]")].map((element) => ({
+      id: element.getAttribute("data-study-segment-label"),
+      bounds: parseBounds(element.getAttribute("data-study-label-bounds") ?? "0,0,0,0"),
+      text: element.querySelector("text")?.textContent ?? "",
+    }));
+    const labelIntersections = segments.flatMap((segment) => lines(segment.points).flatMap(([a, b]) =>
+      labels.filter((label) => lineIntersectsRect(a, b, label.bounds)).map((label) => `${segment.id}:${label.id}`),
+    ));
+    const essentialText = [...stage.querySelectorAll("[data-study-essential-text]")].map((element) => ({
+      owner: element.getAttribute("data-owner-node"),
+      bounds: element.getBBox(),
+      text: element.textContent ?? "",
+    }));
+    const boxesOverlap = (left, right, padding = 0) => left.x < right.x + right.width + padding && left.x + left.width + padding > right.x &&
+      left.y < right.y + right.height + padding && left.y + left.height + padding > right.y;
+    const textCollisions = [];
+    for (let i = 0; i < essentialText.length; i++) {
+      for (let j = i + 1; j < essentialText.length; j++) {
+        if (essentialText[i].owner === essentialText[j].owner && boxesOverlap(essentialText[i].bounds, essentialText[j].bounds, 0.5)) {
+          textCollisions.push(`${essentialText[i].owner}:${essentialText[i].text}|${essentialText[j].text}`);
+        }
+      }
+    }
+    const statusCollisions = [...stage.querySelectorAll(".fabric-study-status")].flatMap((status) => {
+      const owner = status.closest("[data-study-node]")?.getAttribute("data-study-node") ?? "unknown";
+      const bounds = status.getBBox();
+      return essentialText.filter((text) => text.owner === owner && boxesOverlap(bounds, text.bounds, 1)).map((text) => `${owner}:${text.text}`);
+    });
+    const textIntersections = segments.flatMap((segment) => lines(segment.points).flatMap(([a, b]) =>
+      essentialText.filter((text) => lineIntersectsRect(a, b, text.bounds)).map((text) => `${segment.id}:${text.owner}:${text.text}`),
+    ));
+    const nodeBounds = new Map([...stage.querySelectorAll("[data-study-node]")].map((element) => [
+      element.getAttribute("data-study-node"),
+      parseBounds(element.getAttribute("data-study-node-bounds") ?? "0,0,0,0"),
+    ]));
+    const textOverflow = essentialText.filter((text) => {
+      const owner = nodeBounds.get(text.owner);
+      if (!owner) return true;
+      const epsilon = 0.75;
+      return text.bounds.x < owner.x - epsilon || text.bounds.y < owner.y - epsilon ||
+        text.bounds.x + text.bounds.width > owner.x + owner.width + epsilon ||
+        text.bounds.y + text.bounds.height > owner.y + owner.height + epsilon;
+    }).map((text) => `${text.owner}:${text.text}`);
+    const crossings = [];
+    for (let i = 0; i < segments.length; i++) {
+      for (let j = i + 1; j < segments.length; j++) {
+        for (const [a1, a2] of lines(segments[i].points)) {
+          for (const [b1, b2] of lines(segments[j].points)) {
+            if (strictCrossing(a1, a2, b1, b2)) crossings.push(`${segments[i].id}:${segments[j].id}`);
+          }
+        }
+      }
+    }
+    const occupied = parseBounds(stage.getAttribute("data-study-occupied-bounds") ?? "0,0,0,0");
+    const viewBox = stage.viewBox.baseVal;
+    const occupiedRatio = (occupied.width * occupied.height) / (viewBox.width * viewBox.height);
+    const occupiedCenter = occupied.x + occupied.width / 2;
+    const balanced = Math.abs(occupiedCenter - viewBox.width / 2) <= viewBox.width * 0.08;
+    const longNetworkLabels = labels.filter((label) => {
+      const group = stage.querySelector(`[data-study-segment-group="${label.id}"]`);
+      return group?.getAttribute("data-study-segment-plane") === "network" && label.text.length > 36;
+    }).map((label) => label.text);
+    const dangling = segments.filter((segment) => !segment.endpointA || !segment.endpointB || segment.endpointA.startsWith("empty:") || segment.endpointB.startsWith("empty:")).map((segment) => segment.id);
+    const populationIds = (stage.getAttribute("data-study-population-ids") ?? "").split(",").filter(Boolean);
+    const summaryIds = new Set((stage.getAttribute("data-study-summary-ids") ?? "").split(",").filter(Boolean));
+    const missingPopulation = populationIds.filter((id) => !summaryIds.has(id));
+    const subsystemProblems = [...stage.querySelectorAll('[data-study-node-role="subsystem"]')].flatMap((element) => {
+      const id = element.getAttribute("data-study-node") ?? "unknown";
+      const memberIds = (element.getAttribute("data-study-member-ids") ?? "").split(",").filter(Boolean);
+      const title = element.querySelector(".fabric-study-title")?.textContent?.trim() ?? "";
+      const promoted = element.querySelector("[data-study-promoted]")?.textContent?.trim() ?? "";
+      return !title || memberIds.length === 0 || !promoted ? [id] : [];
+    });
+    return {
+      segmentCount: segments.length,
+      duplicateGeometry,
+      labelIntersections,
+      textIntersections,
+      textOverflow,
+      textCollisions,
+      statusCollisions,
+      crossings,
+      occupiedRatio,
+      balanced,
+      longNetworkLabels,
+      dangling,
+      populationCount: populationIds.length,
+      missingPopulation,
+      subsystemProblems,
+    };
+  });
+
+  const failures = [];
+  if (result.segmentCount < 5) failures.push(`physical segment graph incomplete (${result.segmentCount})`);
+  if (result.duplicateGeometry.length) failures.push(`duplicate physical geometry: ${result.duplicateGeometry.join(", ")}`);
+  if (result.labelIntersections.length) failures.push(`segment/label intersections: ${result.labelIntersections.join(", ")}`);
+  if (result.textIntersections.length) failures.push(`segment/essential-text intersections: ${result.textIntersections.join(", ")}`);
+  if (result.textOverflow.length) failures.push(`text overflow: ${result.textOverflow.join(", ")}`);
+  if (result.textCollisions.length) failures.push(`essential text collisions: ${result.textCollisions.join(", ")}`);
+  if (result.statusCollisions.length) failures.push(`text/status collisions: ${result.statusCollisions.join(", ")}`);
+  if (result.crossings.length) failures.push(`unapproved crossings: ${result.crossings.join(", ")}`);
+  if (result.occupiedRatio < 0.72 || !result.balanced) failures.push(`unbalanced occupied board: ratio=${result.occupiedRatio.toFixed(3)} balanced=${result.balanced}`);
+  if (result.longNetworkLabels.length) failures.push(`raw long network labels: ${result.longNetworkLabels.join(", ")}`);
+  if (result.dangling.length) failures.push(`dangling dormant segments: ${result.dangling.join(", ")}`);
+  if (result.populationCount !== 44 || result.missingPopulation.length) failures.push(`population accounting: count=${result.populationCount}, missing=${result.missingPopulation.join(",")}`);
+  if (result.subsystemProblems.length) failures.push(`unnamed/unpromoted subsystem summaries: ${result.subsystemProblems.join(",")}`);
+
+  const stage = page.locator("[data-study-stage]");
+  const inspector = page.locator("[data-study-inspector]");
+  if (shot.focus || shot.inspector) {
+    if ((await inspector.count()) !== 1) failures.push("selected study did not render an inspector sibling");
+    else {
+      const insideSvg = await stage.evaluate((svg) => Boolean(svg.querySelector("[data-study-inspector]")));
+      if (insideSvg) failures.push("inspector is inside SVG geometry");
+      const stageBox = await stage.boundingBox();
+      const inspectorBox = await inspector.boundingBox();
+      if (!stageBox || !inspectorBox) failures.push("inspector or stage has no CSS box");
+      else {
+        const overlaps = stageBox.x < inspectorBox.x + inspectorBox.width && stageBox.x + stageBox.width > inspectorBox.x &&
+          stageBox.y < inspectorBox.y + inspectorBox.height && stageBox.y + stageBox.height > inspectorBox.y;
+        if (overlaps) failures.push("inspector overlaps the SVG stage");
+      }
+    }
+  } else if (await inspector.count()) {
+    failures.push("empty inspector rendered with no selection");
+  }
+  if (failures.length) throw new Error(`fabric composition evidence failed (${shot.study}/${shot.name}):\n- ${failures.join("\n- ")}`);
+}
+
 /** "production" (next build+start), "development" (next dev) or "external". */
 function buildMode() {
   if (arg("--base-url")) return "external";
@@ -502,23 +685,32 @@ async function main() {
           viewport: { width: shot.w, height: shot.h },
           reducedMotion: shot.reducedMotion ? "reduce" : "no-preference",
         });
-        const params = new URLSearchParams({
-          scenario: shot.scenario,
-          freeze: String(FREEZE_AT),
-        });
-        if (shot.ui) params.set("ui", shot.ui);
-        if (shot.relationships) params.set("relationships", "1");
-        if (shot.transport) params.set("transport", shot.transport);
-        if (shot.debug) params.set("debug", "geometry");
-        await page.goto(`${baseUrl}/?${params}`, { waitUntil: "networkidle" });
+        const params = new URLSearchParams({ scenario: shot.scenario, freeze: String(FREEZE_AT) });
+        if (FABRIC_STUDIES) {
+          params.set("study", shot.study);
+          if (shot.focus) params.set("focus", shot.focus);
+          if (shot.inspector) params.set("inspector", "1");
+        } else {
+          if (shot.ui) params.set("ui", shot.ui);
+          if (shot.relationships) params.set("relationships", "1");
+          if (shot.transport) params.set("transport", shot.transport);
+          if (shot.debug) params.set("debug", "geometry");
+        }
+        const route = FABRIC_STUDIES ? "/dev/fabric-compositions" : "/";
+        await page.goto(`${baseUrl}${route}?${params}`, { waitUntil: "networkidle" });
         // Fonts + SSR hydration settle; frozen mode has no further changes.
         await page.waitForTimeout(1_200);
         const beforeActionBox = await pageBox(page);
         assertNoPageScroll(beforeActionBox, shot);
-        await performShotAction(page, shot.action);
-        await page.waitForTimeout(250);
-        await validateShot(page, shot, beforeActionBox);
-        const path = `${OUT_DIR}/${shot.name}.png`;
+        if (FABRIC_STUDIES) {
+          await validateFabricStudyShot(page, shot);
+        } else {
+          await performShotAction(page, shot.action);
+          await page.waitForTimeout(250);
+          await validateShot(page, shot, beforeActionBox);
+        }
+        if (FABRIC_STUDIES) mkdirSync(`${OUT_DIR}/${shot.study}`, { recursive: true });
+        const path = FABRIC_STUDIES ? `${OUT_DIR}/${shot.study}/${shot.name}.png` : `${OUT_DIR}/${shot.name}.png`;
         await page.screenshot({ path });
         console.log(`captured ${path}`);
         if (await page.locator("[data-overlay-panel]").count()) {
