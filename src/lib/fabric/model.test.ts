@@ -292,4 +292,242 @@ describe("FabricModel", () => {
     const crossPool = buildFabricModel(makeFakeSnapshot("cross-pool-import", NOW), { now: NOW, seerrConfigured: true });
     expect(crossPool.relationships.some((item) => item.id.includes("import-copy"))).toBe(true);
   });
+
+  it("keeps stable capability defaults explicit for services pools and grouped workloads", () => {
+    const model = buildFabricModel(makeFakeSnapshot("container-field-real", NOW), {
+      now: NOW,
+      seerrConfigured: true,
+      networkBoundaries: ["wan", "lan", "overlay"],
+    });
+
+    expect(model.stableCapabilities).toMatchInlineSnapshot(`
+      [
+        {
+          "control": true,
+          "coverage": {
+            "control": "complete",
+            "network": "complete",
+            "read": "complete",
+            "write": "complete",
+          },
+          "network": true,
+          "networkSegmentIds": [
+            "network:internal_default",
+            "network:other-docker-segments",
+          ],
+          "nodeId": "service:jellyfin",
+          "read": true,
+          "write": false,
+        },
+        {
+          "control": true,
+          "coverage": {
+            "control": "complete",
+            "network": "complete",
+            "read": "complete",
+            "write": "complete",
+          },
+          "network": true,
+          "networkSegmentIds": [
+            "network:internal_default",
+            "network:other-docker-segments",
+          ],
+          "nodeId": "service:qbittorrent",
+          "read": true,
+          "write": true,
+        },
+        {
+          "control": true,
+          "coverage": {
+            "control": "complete",
+            "network": "complete",
+            "read": "complete",
+            "write": "complete",
+          },
+          "network": true,
+          "networkSegmentIds": [
+            "network:internal_default",
+            "network:other-docker-segments",
+          ],
+          "nodeId": "service:sonarr",
+          "read": true,
+          "write": true,
+        },
+        {
+          "control": true,
+          "coverage": {
+            "control": "complete",
+            "network": "complete",
+            "read": "complete",
+            "write": "complete",
+          },
+          "network": true,
+          "networkSegmentIds": [
+            "network:internal_default",
+            "network:other-docker-segments",
+          ],
+          "nodeId": "service:radarr",
+          "read": true,
+          "write": true,
+        },
+        {
+          "control": true,
+          "coverage": {
+            "control": "complete",
+            "network": "complete",
+            "read": "complete",
+            "write": "complete",
+          },
+          "network": true,
+          "networkSegmentIds": [
+            "network:internal_default",
+            "network:other-docker-segments",
+          ],
+          "nodeId": "service:seerr",
+          "read": false,
+          "write": false,
+        },
+        {
+          "control": false,
+          "coverage": {
+            "control": "complete",
+            "network": "complete",
+            "read": "complete",
+            "write": "complete",
+          },
+          "network": false,
+          "networkSegmentIds": [],
+          "nodeId": "pool:DataStore",
+          "read": true,
+          "write": true,
+        },
+        {
+          "control": false,
+          "coverage": {
+            "control": "complete",
+            "network": "complete",
+            "read": "complete",
+            "write": "complete",
+          },
+          "network": false,
+          "networkSegmentIds": [],
+          "nodeId": "pool:NVME",
+          "read": true,
+          "write": true,
+        },
+        {
+          "control": false,
+          "coverage": {
+            "control": "complete",
+            "network": "complete",
+            "read": "complete",
+            "write": "complete",
+          },
+          "network": false,
+          "networkSegmentIds": [],
+          "nodeId": "pool:eSATA",
+          "read": true,
+          "write": true,
+        },
+        {
+          "control": false,
+          "coverage": {
+            "control": "unknown",
+            "network": "complete",
+            "read": "unknown",
+            "write": "unknown",
+          },
+          "network": true,
+          "networkSegmentIds": [
+            "network:internal_default",
+            "network:other-docker-segments",
+          ],
+          "nodeId": "group:platform",
+          "read": false,
+          "write": false,
+        },
+        {
+          "control": false,
+          "coverage": {
+            "control": "unknown",
+            "network": "complete",
+            "read": "unknown",
+            "write": "unknown",
+          },
+          "network": true,
+          "networkSegmentIds": [
+            "network:bridge",
+            "network:internal_default",
+            "network:other-docker-segments",
+          ],
+          "nodeId": "group:media-support",
+          "read": false,
+          "write": false,
+        },
+        {
+          "control": false,
+          "coverage": {
+            "control": "unknown",
+            "network": "complete",
+            "read": "unknown",
+            "write": "unknown",
+          },
+          "network": true,
+          "networkSegmentIds": [
+            "network:internal_default",
+            "network:other-docker-segments",
+          ],
+          "nodeId": "group:observability",
+          "read": false,
+          "write": false,
+        },
+        {
+          "control": false,
+          "coverage": {
+            "control": "unknown",
+            "network": "complete",
+            "read": "unknown",
+            "write": "unknown",
+          },
+          "network": true,
+          "networkSegmentIds": [
+            "network:internal_default",
+          ],
+          "nodeId": "group:network-edge",
+          "read": false,
+          "write": false,
+        },
+      ]
+    `);
+  });
+
+  it("refines optional control capability from stable configuration without treating missing proof as false coverage", () => {
+    const unconfigured = makeFakeSnapshot("idle", NOW);
+    unconfigured.health = unconfigured.health.map((connector) =>
+      connector.id === "jellyfin" || connector.id === "qbittorrent"
+        ? { ...connector, configured: false }
+        : connector,
+    );
+    const unconfiguredModel = buildFabricModel(unconfigured, { now: NOW, seerrConfigured: true });
+
+    for (const nodeId of ["service:jellyfin", "service:qbittorrent"]) {
+      expect(unconfiguredModel.stableCapabilities.find((capability) => capability.nodeId === nodeId)).toMatchObject({
+        control: false,
+        coverage: { control: "unknown" },
+      });
+    }
+
+    const declared = structuredClone(unconfigured);
+    declared.fabricRelationships = [
+      { from: "service:jellyfin", to: "service:qbittorrent", kind: "control" },
+      { from: "pool:DataStore", to: "service:jellyfin", kind: "control" },
+    ];
+    const declaredModel = buildFabricModel(declared, { now: NOW, seerrConfigured: true });
+    for (const nodeId of ["service:jellyfin", "service:qbittorrent", "pool:DataStore"]) {
+      expect(declaredModel.stableCapabilities.find((capability) => capability.nodeId === nodeId)).toMatchObject({
+        control: true,
+        coverage: { control: "complete" },
+      });
+    }
+  });
 });

@@ -62,6 +62,24 @@ export interface FabricAttachment {
   route: FabricRoute;
 }
 
+export type FabricNetworkBoundary =
+  | "wan"
+  | "lan"
+  | "overlay"
+  | "docker-internal"
+  | "host-local"
+  | "unknown";
+
+export interface FabricStableCapability {
+  nodeId: string;
+  network: boolean;
+  control: boolean;
+  read: boolean;
+  write: boolean;
+  networkSegmentIds: string[];
+  coverage: Record<"network" | "control" | "read" | "write", FabricCoverage>;
+}
+
 export interface FabricRelationship {
   id: string;
   label: string;
@@ -82,6 +100,7 @@ export interface FabricRelationship {
   provenance: string;
   basis: string | null;
   attribution: string | null;
+  networkBoundary: FabricNetworkBoundary;
   route: FabricRoute;
 }
 
@@ -145,6 +164,7 @@ export interface FabricModel {
   attachments: FabricAttachment[];
   relationships: FabricRelationship[];
   resourceViews: FabricResourceView[];
+  stableCapabilities: FabricStableCapability[];
   population: FabricPopulation;
   routing: { obstacles: FabricObstacle[]; lanes: FabricLane[] };
 }
@@ -152,9 +172,51 @@ export interface FabricModel {
 export interface FabricModelOptions {
   now: number;
   seerrConfigured: boolean;
+  /** Configured/declared external modules. Unknown activity never adds one. */
+  networkBoundaries?: readonly Extract<FabricNetworkBoundary, "wan" | "lan" | "overlay">[];
+  /** Presentation-only normalization for observations whose boundary is known upstream. */
+  networkBoundaryByFlowId?: Readonly<Record<string, FabricNetworkBoundary>>;
 }
 
 const SERVICE_ORDER: ServiceId[] = ["jellyfin", "qbittorrent", "sonarr", "radarr", "seerr"];
+
+const STABLE_SERVICE_CAPABILITIES: Record<ServiceId, Omit<FabricStableCapability, "nodeId" | "networkSegmentIds">> = {
+  jellyfin: {
+    network: true,
+    control: false,
+    read: true,
+    write: false,
+    coverage: { network: "complete", control: "unknown", read: "complete", write: "complete" },
+  },
+  qbittorrent: {
+    network: true,
+    control: false,
+    read: true,
+    write: true,
+    coverage: { network: "complete", control: "unknown", read: "complete", write: "complete" },
+  },
+  sonarr: {
+    network: true,
+    control: true,
+    read: true,
+    write: true,
+    coverage: { network: "complete", control: "complete", read: "complete", write: "complete" },
+  },
+  radarr: {
+    network: true,
+    control: true,
+    read: true,
+    write: true,
+    coverage: { network: "complete", control: "complete", read: "complete", write: "complete" },
+  },
+  seerr: {
+    network: true,
+    control: true,
+    read: false,
+    write: false,
+    coverage: { network: "complete", control: "complete", read: "complete", write: "complete" },
+  },
+};
 
 const statusFromBody = (status: BodyStatus): FabricNodeStatus => {
   if (status === "ok") return "healthy";
@@ -227,6 +289,20 @@ function toneOf(flow: FlowObservation): FabricRelationship["tone"] {
   if (flow.channels.some((channel) => channel.direction === "forward") && flow.channels.some((channel) => channel.direction === "reverse")) return "mixed";
   if (flow.kind === "egress" || flow.channels.every((channel) => channel.direction === "reverse")) return "out";
   return "in";
+}
+
+function networkBoundaryOf(
+  flow: FlowObservation,
+  overrides: FabricModelOptions["networkBoundaryByFlowId"],
+): FabricNetworkBoundary {
+  const declared = overrides?.[flow.id];
+  if (declared) return declared;
+  if (flow.kind === "wan-transfer") return "wan";
+  if (flow.from.kind === "network" || flow.to.kind === "network") return "unknown";
+  if (flow.plane === "control" && flow.from.kind === "service" && flow.to.kind === "service") {
+    return "docker-internal";
+  }
+  return "host-local";
 }
 
 interface FabricRouteContext {
@@ -336,6 +412,7 @@ function relationshipFromFlow(
   flow: FlowObservation,
   ports: Map<string, FabricPort>,
   context: FabricRouteContext,
+  networkBoundary: FabricNetworkBoundary,
 ): FabricRelationship | null {
   const fromNodeId = endpointNode(flow.from, flow.to);
   const toNodeId = endpointNode(flow.to, flow.from);
@@ -368,6 +445,7 @@ function relationshipFromFlow(
     provenance: flow.provenance,
     basis,
     attribution: flow.evidence === "derived" ? "Path or rate includes declared or correlated attribution." : null,
+    networkBoundary,
     route: routeInContext(fromPort, toPort, context, `relationship:${flowPortKind(flow, "from")}`, [fromNodeId, toNodeId]),
   };
 }
@@ -376,20 +454,22 @@ function gatewayBoundaryRelationship(
   flow: FlowObservation,
   ports: Map<string, FabricPort>,
   context: FabricRouteContext,
+  networkBoundary: FabricNetworkBoundary,
 ): FabricRelationship | null {
   if (flow.from.kind !== "network" && flow.to.kind !== "network") return null;
-  const fromPort = ports.get("external:wan:network");
-  const toPort = ports.get("fabric:gateway:external-network");
+  if (networkBoundary !== "wan" && networkBoundary !== "lan" && networkBoundary !== "overlay") return null;
+  const fromPort = ports.get(`external:${networkBoundary}:network`);
+  const toPort = ports.get(`fabric:gateway:${networkBoundary}-network`);
   if (!fromPort || !toPort) return null;
   const rate = primaryRate(flow);
   return {
-    id: `${flow.id}:gateway-boundary`,
-    label: "WAN ↔ host gateway",
+    id: `${flow.id}:gateway-boundary:${networkBoundary}`,
+    label: `${networkBoundary === "overlay" ? "Overlay" : networkBoundary.toUpperCase()} ↔ host gateway`,
     plane: "data",
     evidence: flow.evidence,
     freshness: flow.freshness,
     coverage: flow.rate?.coverage ?? (flow.channels.some((channel) => channel.bytesPerSecond === null) ? "unknown" : "complete"),
-    fromNodeId: "external:wan",
+    fromNodeId: `external:${networkBoundary}`,
     toNodeId: "fabric:gateway",
     fromPortId: fromPort.id,
     toPortId: toPort.id,
@@ -402,7 +482,8 @@ function gatewayBoundaryRelationship(
     provenance: flow.provenance,
     basis: flow.rate?.basis ?? null,
     attribution: "Observed external traffic terminates at the host gateway; Docker membership is modeled separately.",
-    route: routeInContext(fromPort, toPort, context, "relationship:network", ["external:wan", "fabric:gateway"]),
+    networkBoundary,
+    route: routeInContext(fromPort, toPort, context, "relationship:network", [`external:${networkBoundary}`, "fabric:gateway"]),
   };
 }
 
@@ -440,6 +521,9 @@ function relationshipFromDeclaration(
     provenance: "operator-declared topology configuration",
     basis: declaration.kind === "control" ? "declared control" : "declared dependency",
     attribution: "Declared relationship; not observed byte throughput.",
+    networkBoundary: fromNodeId.startsWith("service:") && toNodeId.startsWith("service:")
+      ? "docker-internal"
+      : "host-local",
     route: routeInContext(fromPort, toPort, context, "relationship:control", [fromNodeId, toNodeId]),
   };
 }
@@ -494,9 +578,27 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
   const readBounds = boundsFor("storage-read-fabric");
   const writeBounds = boundsFor("storage-write-fabric");
 
-  addNode({ id: "external:wan", kind: "fabric", label: "WAN", eyebrow: "EXTERNAL BOUNDARY", status: snapshot.telemetry.network.status === "available" ? "healthy" : snapshot.telemetry.network.status, bounds: wanBounds, metrics: [] });
-  addNode({ id: "external:lan", kind: "fabric", label: "LAN", eyebrow: "EXTERNAL BOUNDARY", status: "unknown", bounds: lanBounds, metrics: [] });
-  addNode({ id: "external:overlay", kind: "fabric", label: "TAILSCALE", eyebrow: "EXTERNAL BOUNDARY", status: "unknown", bounds: overlayBounds, metrics: [] });
+  const configuredNetworkBoundaries = new Set<Extract<FabricNetworkBoundary, "wan" | "lan" | "overlay">>(
+    options.networkBoundaries ?? ["wan"],
+  );
+  for (const boundary of Object.values(options.networkBoundaryByFlowId ?? {})) {
+    if (boundary === "wan" || boundary === "lan" || boundary === "overlay") configuredNetworkBoundaries.add(boundary);
+  }
+
+  const boundaryBounds = { wan: wanBounds, lan: lanBounds, overlay: overlayBounds } as const;
+  const boundaryLabels = { wan: "WAN", lan: "LAN", overlay: "TAILSCALE" } as const;
+  for (const boundary of ["wan", "lan", "overlay"] as const) {
+    if (!configuredNetworkBoundaries.has(boundary)) continue;
+    addNode({
+      id: `external:${boundary}`,
+      kind: "fabric",
+      label: boundaryLabels[boundary],
+      eyebrow: "EXTERNAL BOUNDARY",
+      status: boundary === "wan" && snapshot.telemetry.network.status === "available" ? "healthy" : "unknown",
+      bounds: boundaryBounds[boundary],
+      metrics: [],
+    });
+  }
   addNode({ id: "fabric:gateway", kind: "fabric", label: "HOST GATEWAY", eyebrow: "OBSERVED PATHS ONLY", status: snapshot.telemetry.network.status === "available" ? "healthy" : snapshot.telemetry.network.status, bounds: gatewayBounds, metrics: [] });
   trunks.push(
     { id: "fabric:service", label: "CONTROL RELATIONSHIPS", eyebrow: "FOCUS / MAP ONLY", bounds: controlBounds, kind: "control" },
@@ -504,8 +606,11 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
     { id: "fabric:storage-write", label: "WRITE SUBSTRATE", eyebrow: "OBSERVED / DECLARED", bounds: writeBounds, kind: "write" },
   );
 
-  addCustomPort("external:wan:network", "external:wan", wanBounds, "network", "right", 0.5, "Observed WAN boundary");
-  addCustomPort("fabric:gateway:external-network", "fabric:gateway", gatewayBounds, "network", "right", 0.3, "External gateway path");
+  for (const boundary of ["wan", "lan", "overlay"] as const) {
+    if (!configuredNetworkBoundaries.has(boundary)) continue;
+    addCustomPort(`external:${boundary}:network`, `external:${boundary}`, boundaryBounds[boundary], "network", "right", 0.5, `${boundaryLabels[boundary]} boundary`);
+    addCustomPort(`fabric:gateway:${boundary}-network`, "fabric:gateway", gatewayBounds, "network", "left", boundary === "wan" ? 0.22 : boundary === "lan" ? 0.5 : 0.78, `${boundaryLabels[boundary]} gateway path`);
+  }
   addPort("fabric:gateway", gatewayBounds, "network", "right", 0.72, "Host network path");
   addCustomPort("fabric:service:control", "fabric:service", controlBounds, "control", "top", (566 - controlBounds.x) / controlBounds.width, "Host control");
 
@@ -675,8 +780,9 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
   const byPort = portMap(ports);
   const relationshipContext: FabricRouteContext = { obstacles, lanes, priorRoutes: [] };
   const relationships = scene.flows.flatMap((flow) => {
-    const relationship = relationshipFromFlow(flow, byPort, relationshipContext);
-    const boundary = gatewayBoundaryRelationship(flow, byPort, relationshipContext);
+    const networkBoundary = networkBoundaryOf(flow, options.networkBoundaryByFlowId);
+    const relationship = relationshipFromFlow(flow, byPort, relationshipContext, networkBoundary);
+    const boundary = gatewayBoundaryRelationship(flow, byPort, relationshipContext, networkBoundary);
     return [relationship, boundary].filter((item): item is FabricRelationship => item !== null);
   });
   for (const [index, declaration] of (snapshot.fabricRelationships ?? []).entries()) {
@@ -730,6 +836,102 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
     { id: "arc", nodeId: "resource:arc", status: freshness(snapshot.telemetry.arc.status), fraction: arc?.targetBytes && arc.targetBytes > 0 ? arc.sizeBytes / arc.targetBytes : null, segments: arc ? [arc.targetBytes && arc.targetBytes > 0 ? arc.sizeBytes / arc.targetBytes : 0] : [], primary: arc ? `${formatBytes(arc.sizeBytes)} resident` : "Unknown", secondary: arc?.hitRatio === null || arc?.hitRatio === undefined ? null : `${pct(arc.hitRatio)} hit ratio` },
   ];
 
+  const segmentIdsForContainers = (containers: DockerContainerTelemetry[]): string[] => [...new Set(
+    containers
+      .flatMap((container) => container.networkNames ?? [])
+      .map((name) => networkSegmentByName.get(name)?.id)
+      .filter((id): id is string => Boolean(id)),
+  )].sort();
+  const declaredControlNodeIds = new Set(
+    (snapshot.fabricRelationships ?? [])
+      .flatMap((declaration) => [declaredNode(declaration.from), declaredNode(declaration.to)])
+      .filter((nodeId): nodeId is string => nodeId !== null),
+  );
+  const configuredServiceIds = new Set(
+    scene.services
+      .filter((service) => service.status !== "not-configured")
+      .map((service) => service.id),
+  );
+  const stableCapabilities: FabricStableCapability[] = SERVICE_ORDER.map((id) => {
+    const container = serviceContainers.get(id);
+    const defaults = STABLE_SERVICE_CAPABILITIES[id];
+    const optionallyConfiguredControl = id === "jellyfin" || id === "qbittorrent";
+    const controlConfigured = defaults.control || declaredControlNodeIds.has(`service:${id}`) || (
+      optionallyConfiguredControl && configuredServiceIds.has(id)
+    );
+    return {
+      nodeId: `service:${id}`,
+      ...defaults,
+      control: controlConfigured,
+      coverage: {
+        ...defaults.coverage,
+        control: controlConfigured ? "complete" : defaults.coverage.control,
+      },
+      networkSegmentIds: segmentIdsForContainers(container ? [container] : []),
+    };
+  });
+  for (const node of nodes.filter((candidate) => candidate.kind === "storage")) {
+    const control = declaredControlNodeIds.has(node.id);
+    stableCapabilities.push({
+      nodeId: node.id,
+      network: false,
+      control,
+      read: true,
+      write: true,
+      networkSegmentIds: [],
+      coverage: { network: "complete", control: "complete", read: "complete", write: "complete" },
+    });
+  }
+  const aggregateCapability = (
+    values: Array<{ value: boolean; coverage: FabricCoverage }>,
+  ): { value: boolean; coverage: FabricCoverage } => {
+    if (values.some((item) => item.value)) {
+      return {
+        value: true,
+        coverage: values.every((item) => item.coverage === "complete") ? "complete" : "partial",
+      };
+    }
+    if (values.length === 0 || values.every((item) => item.coverage === "unknown")) {
+      return { value: false, coverage: "unknown" };
+    }
+    return {
+      value: false,
+      coverage: values.every((item) => item.coverage === "complete") ? "complete" : "partial",
+    };
+  };
+  for (const group of groups) {
+    const memberCapabilities = group.members.map((member) => ({
+      network: {
+        value: (member.networkNames?.length ?? 0) > 0,
+        coverage: member.networkNames === undefined ? "unknown" as const : "complete" as const,
+      },
+      // The list-level Docker payload exposes neither mounts nor stable
+      // application roles for grouped containers. Preserve that uncertainty
+      // instead of turning live I/O counters into physical capabilities.
+      control: { value: false, coverage: "unknown" as const },
+      read: { value: false, coverage: "unknown" as const },
+      write: { value: false, coverage: "unknown" as const },
+    }));
+    const network = aggregateCapability(memberCapabilities.map((member) => member.network));
+    const control = aggregateCapability(memberCapabilities.map((member) => member.control));
+    const read = aggregateCapability(memberCapabilities.map((member) => member.read));
+    const write = aggregateCapability(memberCapabilities.map((member) => member.write));
+    stableCapabilities.push({
+      nodeId: group.id,
+      network: network.value,
+      control: control.value,
+      read: read.value,
+      write: write.value,
+      networkSegmentIds: segmentIdsForContainers(group.members),
+      coverage: {
+        network: network.coverage,
+        control: control.coverage,
+        read: read.coverage,
+        write: write.coverage,
+      },
+    });
+  }
+
   return {
     regions: [
       { id: "region:resources", label: "Hardware accounting", bounds: { x: 18, y: 28, width: 914, height: 138 } },
@@ -744,6 +946,7 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
     attachments,
     relationships,
     resourceViews,
+    stableCapabilities,
     population: {
       total: snapshot.telemetry.docker.value?.total ?? null,
       represented: dockerContainers.length,

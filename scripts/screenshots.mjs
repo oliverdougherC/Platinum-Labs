@@ -37,7 +37,7 @@
 
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, readdirSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
 
 /** Fixed simulator clock: 2026-08-15 12:00:00 UTC. */
@@ -129,8 +129,10 @@ const FABRIC_STUDY_SHOTS = [
   { study: "A+", artifactDir: "A-plus", name: "06-sonarr-focus-1920x1080", scenario: "relationship-map", focus: "sonarr", w: 1920, h: 1080 },
   { study: "A+", artifactDir: "A-plus", name: "07-qbittorrent-focus-1920x1080", scenario: "downloads", focus: "qbittorrent", w: 1920, h: 1080 },
   { study: "A+", artifactDir: "A-plus", name: "08-subsystem-focus-1920x1080", scenario: "container-field-real", focus: "group:media-support", w: 1920, h: 1080 },
-  { study: "A+", artifactDir: "A-plus", name: "09-inspector-open-1920x1080", scenario: "container-field-real", inspector: true, w: 1920, h: 1080 },
-  { study: "A+", artifactDir: "A-plus", name: "10-reduced-motion-1920x1080", scenario: "container-mixed", reducedMotion: true, w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", name: "09-inspector-open-1280x720", scenario: "container-field-real", inspector: true, w: 1280, h: 720 },
+  { study: "A+", artifactDir: "A-plus", name: "10-inspector-open-1920x1080", scenario: "container-field-real", inspector: true, w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", name: "11-relationship-map-1920x1080", scenario: "relationship-map", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", name: "12-reduced-motion-1920x1080", scenario: "container-mixed", reducedMotion: true, w: 1920, h: 1080 },
 ];
 
 /**
@@ -469,6 +471,7 @@ async function validateFabricStudyShot(page, shot) {
     const segmentElements = [...stage.querySelectorAll("[data-study-segment]")];
     const segments = segmentElements.map((element) => ({
       id: element.getAttribute("data-study-segment"),
+      plane: element.closest("[data-study-segment-group]")?.getAttribute("data-study-segment-plane") ?? "",
       points: parsePoints(element.getAttribute("data-study-points") ?? ""),
       endpointA: element.getAttribute("data-study-endpoint-a") ?? "",
       endpointB: element.getAttribute("data-study-endpoint-b") ?? "",
@@ -477,6 +480,8 @@ async function validateFabricStudyShot(page, shot) {
     const junctions = [...stage.querySelectorAll("[data-study-junction]")].map((element) => ({
       id: element.getAttribute("data-study-junction"),
       kind: element.getAttribute("data-study-junction-kind"),
+      region: element.getAttribute("data-study-junction-region") ?? "",
+      crossingPairIds: (element.getAttribute("data-study-junction-crossing-pairs") ?? "").split("|").filter(Boolean),
       point: parsePoints(element.getAttribute("data-study-junction-point") ?? "")[0],
     }));
     const geometryKeys = segments.map((segment) => {
@@ -495,6 +500,7 @@ async function validateFabricStudyShot(page, shot) {
     ));
     const essentialText = [...stage.querySelectorAll("[data-study-essential-text]")].map((element) => ({
       owner: element.getAttribute("data-owner-node"),
+      role: element.getAttribute("data-study-text-role"),
       bounds: element.getBBox(),
       text: element.textContent ?? "",
     }));
@@ -511,16 +517,25 @@ async function validateFabricStudyShot(page, shot) {
     const statusCollisions = [...stage.querySelectorAll(".fabric-study-status")].flatMap((status) => {
       const owner = status.closest("[data-study-node]")?.getAttribute("data-study-node") ?? "unknown";
       const bounds = status.getBBox();
-      return essentialText.filter((text) => text.owner === owner && boxesOverlap(bounds, text.bounds, 1)).map((text) => `${owner}:${text.text}`);
+      return essentialText
+        .filter((text) => text.owner === owner && text.role !== "status" && boxesOverlap(bounds, text.bounds, 1))
+        .map((text) => `${owner}:${text.text}`);
     });
+    const ownerPortIds = new Map([...stage.querySelectorAll("[data-study-node]")].map((element) => [
+      element.getAttribute("data-study-node"),
+      [...element.querySelectorAll("[data-study-port-id]")].map((port) => port.getAttribute("data-study-port-id")),
+    ]));
     const textIntersections = segments.flatMap((segment) => lines(segment.points).flatMap(([a, b]) =>
-      essentialText.filter((text) => lineIntersectsRect(a, b, text.bounds)).map((text) => `${segment.id}:${text.owner}:${text.text}`),
+      essentialText
+        .filter((text) => text.owner && !(ownerPortIds.get(text.owner)?.some((portId) => segment.endpointA === portId || segment.endpointB === portId)) && lineIntersectsRect(a, b, text.bounds))
+        .map((text) => `${segment.id}:${text.owner}:${text.text}`),
     ));
     const nodeBounds = new Map([...stage.querySelectorAll("[data-study-node]")].map((element) => [
       element.getAttribute("data-study-node"),
       parseBounds(element.getAttribute("data-study-node-bounds") ?? "0,0,0,0"),
     ]));
     const textOverflow = essentialText.filter((text) => {
+      if (!text.owner) return false;
       const owner = nodeBounds.get(text.owner);
       if (!owner) return true;
       const epsilon = 0.75;
@@ -538,6 +553,7 @@ async function validateFabricStudyShot(page, shot) {
             const vertical = a1.y === a2.y ? [b1, b2] : [a1, a2];
             const crossing = { x: vertical[0].x, y: horizontal[0].y };
             const approved = junctions.some((junction) => junction.kind === "via" && junction.point?.x === crossing.x && junction.point?.y === crossing.y &&
+              junction.crossingPairIds.includes(segments[i].id) && junction.crossingPairIds.includes(segments[j].id) &&
               (segments[i].junctionIds.includes(junction.id) || segments[j].junctionIds.includes(junction.id)));
             if (!approved) crossings.push(`${segments[i].id}:${segments[j].id}`);
           }
@@ -571,21 +587,19 @@ async function validateFabricStudyShot(page, shot) {
       center: parsePoints(element.getAttribute("data-study-port-center") ?? "")[0],
     }));
     const unattachedPorts = ports.filter((port) => !segments.some((segment) => {
-      const group = stage.querySelector(`[data-study-segment-group="${segment.id}"]`);
-      const endpoint = segment.endpointA === port.nodeId ? segment.points[0] : segment.endpointB === port.nodeId ? segment.points.at(-1) : null;
-      return group?.getAttribute("data-study-segment-plane") === port.kind && endpoint?.x === port.center?.x && endpoint?.y === port.center?.y;
+      const endpoint = segment.endpointA === port.id ? segment.points[0] : segment.endpointB === port.id ? segment.points.at(-1) : null;
+      return segment.plane === port.kind && endpoint?.x === port.center?.x && endpoint?.y === port.center?.y;
     })).map((port) => port.id);
     const routes = [...stage.querySelectorAll("[data-study-logical-route]")].map((element) => ({
       id: element.getAttribute("data-study-logical-route"),
-      from: element.getAttribute("data-study-route-from"),
-      to: element.getAttribute("data-study-route-to"),
+      fromPort: element.getAttribute("data-study-route-from-port"),
+      toPort: element.getAttribute("data-study-route-to-port"),
       segmentIds: (element.getAttribute("data-study-route-segments") ?? "").split(",").filter(Boolean),
     }));
-    const visibleNodeIds = new Set([...stage.querySelectorAll("[data-study-node]")].map((element) => element.getAttribute("data-study-node")));
     const trunkOnlyRoutes = routes.filter((route) => {
       const routeSegments = route.segmentIds.map((id) => segments.find((segment) => segment.id === id)).filter(Boolean);
-      return (visibleNodeIds.has(route.from) && !routeSegments.some((segment) => segment.endpointA === route.from || segment.endpointB === route.from)) ||
-        (visibleNodeIds.has(route.to) && !routeSegments.some((segment) => segment.endpointA === route.to || segment.endpointB === route.to));
+      return !routeSegments.some((segment) => segment.endpointA === route.fromPort || segment.endpointB === route.fromPort) ||
+        !routeSegments.some((segment) => segment.endpointA === route.toPort || segment.endpointB === route.toPort);
     }).map((route) => route.id);
     const corridors = [...stage.querySelectorAll("[data-study-storage-corridor]")].map((element) => ({
       nodeId: element.getAttribute("data-study-storage-corridor"),
@@ -597,10 +611,47 @@ async function validateFabricStudyShot(page, shot) {
     const [densityRatio, largestVoid] = (stage.getAttribute("data-study-density") ?? "0,999").split(",").map(Number);
     const svgRect = stage.getBoundingClientRect();
     const scale = Math.min(svgRect.width / viewBox.width, svgRect.height / viewBox.height);
-    const undersizedText = [...stage.querySelectorAll("[data-study-essential-text]")].filter((element) => {
+    const typography = [...new Set([
+      ...stage.querySelectorAll("[data-study-essential-text]"),
+      ...stage.querySelectorAll(".fabric-study-metric-label"),
+    ])].map((element) => {
       const effectiveSize = Number.parseFloat(getComputedStyle(element).fontSize) * scale;
-      return effectiveSize < (element.classList.contains("fabric-study-title") ? 11.5 : 7.2);
-    }).map((element) => `${element.getAttribute("data-owner-node")}:${element.textContent}`);
+      const role = element.getAttribute("data-study-text-role") ??
+        (element.classList.contains("fabric-study-metric-label") ? "secondary" : "secondary");
+      const minimum = role === "title" ? 10 : role === "tertiary" ? 8 : 9;
+      return {
+        effectiveSize,
+        minimum,
+        role,
+        owner: element.getAttribute("data-owner-node") ?? element.parentElement?.getAttribute("data-owner-node"),
+        text: element.textContent ?? "",
+      };
+    });
+    const undersizedText = typography.filter((item) => item.effectiveSize + 0.001 < item.minimum)
+      .map((item) => `${item.owner}:${item.text}:${item.effectiveSize.toFixed(2)}px<${item.minimum}px`);
+    const minimumTypeByRole = typography.reduce((minimums, item) => {
+      minimums[item.role] = Math.min(minimums[item.role] ?? Number.POSITIVE_INFINITY, item.effectiveSize);
+      return minimums;
+    }, {});
+    const viaCountByRegion = junctions.filter((junction) => junction.kind === "via").reduce((counts, junction) => {
+      const region = junction.region || "undeclared";
+      counts[region] = (counts[region] ?? 0) + 1;
+      return counts;
+    }, {});
+    const insideBounds = (candidate, bounds) => candidate.x > bounds.x && candidate.x < bounds.x + bounds.width &&
+      candidate.y > bounds.y && candidate.y < bounds.y + bounds.height;
+    const prohibitedVias = junctions.filter((junction) => junction.kind === "via" && (
+      !junction.region || junction.crossingPairIds.length !== 2 ||
+      [...nodeBounds.values()].some((bounds) => insideBounds(junction.point, bounds)) ||
+      corridors.some((corridor) => insideBounds(junction.point, corridor.bounds))
+    )).map((junction) => junction.id);
+    const viaEvidence = junctions.filter((junction) => junction.kind === "via").map((junction) => ({
+      id: junction.id,
+      region: junction.region,
+      crossingPairIds: junction.crossingPairIds,
+    }));
+    const inspectorMetrics = [...document.querySelectorAll("[data-study-inspector-metrics] > div")].length;
+    const inspectorRelationships = [...document.querySelectorAll("[data-study-inspector-relationships] > li")].length;
     return {
       segmentCount: segments.length,
       duplicateGeometry,
@@ -623,6 +674,13 @@ async function validateFabricStudyShot(page, shot) {
       densityRatio,
       largestVoid,
       undersizedText,
+      minimumTypeByRole,
+      viaCount: junctions.filter((junction) => junction.kind === "via").length,
+      viaCountByRegion,
+      prohibitedVias,
+      viaEvidence,
+      inspectorMetrics,
+      inspectorRelationships,
     };
   });
 
@@ -641,6 +699,11 @@ async function validateFabricStudyShot(page, shot) {
     if (result.trunkOnlyRoutes.length) failures.push(`logical routes without endpoint branches: ${result.trunkOnlyRoutes.join(", ")}`);
     if (result.blockedCorridors.length) failures.push(`blocked primary storage corridors: ${result.blockedCorridors.join(", ")}`);
     if (result.undersizedText.length) failures.push(`persistent typography below effective minimum: ${result.undersizedText.join(", ")}`);
+    if (shot.inspector && result.inspectorMetrics > 3) failures.push(`inspector exposes ${result.inspectorMetrics} first-level metrics`);
+    if (shot.inspector && result.inspectorRelationships > 5) failures.push(`inspector exposes ${result.inspectorRelationships} first-level relationships`);
+    if (result.viaCount > 6) failures.push(`via budget exceeded: ${result.viaCount}`);
+    if (Object.values(result.viaCountByRegion).some((count) => count > 2)) failures.push(`via region budget exceeded: ${JSON.stringify(result.viaCountByRegion)}`);
+    if (result.prohibitedVias.length) failures.push(`undeclared or prohibited vias: ${result.prohibitedVias.join(", ")}`);
   } else if (result.occupiedRatio < 0.72 || !result.balanced) failures.push(`unbalanced occupied board: ratio=${result.occupiedRatio.toFixed(3)} balanced=${result.balanced}`);
   if (result.longNetworkLabels.length) failures.push(`raw long network labels: ${result.longNetworkLabels.join(", ")}`);
   if (result.dangling.length) failures.push(`dangling dormant segments: ${result.dangling.join(", ")}`);
@@ -667,6 +730,10 @@ async function validateFabricStudyShot(page, shot) {
     failures.push("empty inspector rendered with no selection");
   }
   if (failures.length) throw new Error(`fabric composition evidence failed (${shot.study}/${shot.name}):\n- ${failures.join("\n- ")}`);
+  if (shot.study === "A+") {
+    const typeSummary = Object.fromEntries(Object.entries(result.minimumTypeByRole).map(([role, value]) => [role, Number(value.toFixed(2))]));
+    console.log(`validated ${shot.name}: vias=${result.viaCount} regions=${JSON.stringify(result.viaCountByRegion)} pairs=${JSON.stringify(result.viaEvidence)} min-effective-type=${JSON.stringify(typeSummary)}px population=${result.populationCount} density=${result.densityRatio.toFixed(3)}/${result.largestVoid}`);
+  }
 }
 
 /** "production" (next build+start), "development" (next dev) or "external". */
@@ -677,6 +744,7 @@ function buildMode() {
 
 async function main() {
   mkdirSync(OUT_DIR, { recursive: true });
+  const capturedStudyStillNames = [];
 
   let baseUrl = arg("--base-url");
   let server = null;
@@ -776,6 +844,7 @@ async function main() {
         if (FABRIC_STUDIES) mkdirSync(`${OUT_DIR}/${shot.artifactDir ?? shot.study}`, { recursive: true });
         const path = FABRIC_STUDIES ? `${OUT_DIR}/${shot.artifactDir ?? shot.study}/${shot.name}.png` : `${OUT_DIR}/${shot.name}.png`;
         await page.screenshot({ path });
+        if (FABRIC_STUDIES) capturedStudyStillNames.push(shot.name);
         console.log(`captured ${path}`);
         if (await page.locator("[data-overlay-panel]").count()) {
           await page.keyboard.press("Escape");
@@ -785,6 +854,34 @@ async function main() {
           }
         }
         await page.close();
+      }
+      if (FABRIC_STUDIES && !ONLY) {
+        const expectedNames = FABRIC_STUDY_SHOTS.map((shot) => shot.name).sort();
+        const actualNames = [...capturedStudyStillNames].sort();
+        if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
+          throw new Error(`fabric-study evidence incomplete: expected ${expectedNames.join(", ")}, got ${actualNames.join(", ")}`);
+        }
+        const expectedAPlusPngs = FABRIC_STUDY_SHOTS
+          .filter((shot) => shot.study === "A+")
+          .map((shot) => `${shot.name}.png`)
+          .sort();
+        const allowedAPlusMotion = new Set([
+          "motion-quiet-to-mixed-to-jellyfin-focus-to-release.gif",
+          "motion-quiet-to-mixed-to-jellyfin-focus-to-release.webm",
+        ]);
+        const aPlusReviewFiles = readdirSync(`${OUT_DIR}/A-plus`)
+          .filter((name) => /\.(?:png|gif|webm)$/i.test(name))
+          .sort();
+        const actualAPlusPngs = aPlusReviewFiles.filter((name) => name.endsWith(".png"));
+        const unexpectedAPlusMedia = aPlusReviewFiles.filter((name) =>
+          !expectedAPlusPngs.includes(name) && !allowedAPlusMotion.has(name),
+        );
+        if (JSON.stringify(actualAPlusPngs) !== JSON.stringify(expectedAPlusPngs) || unexpectedAPlusMedia.length > 0) {
+          throw new Error(
+            `A+ review directory is not exact: expected PNGs ${expectedAPlusPngs.join(", ")}; ` +
+            `found ${actualAPlusPngs.join(", ")}; unexpected media ${unexpectedAPlusMedia.join(", ") || "none"}`,
+          );
+        }
       }
     }
   } finally {
@@ -993,35 +1090,62 @@ async function captureMotion(browser, baseUrl) {
     bypassCSP: true,
   });
   const page = await context.newPage();
-  console.log("recording motion (same mounted scene): 7s idle → 13s active → 6s easing…");
+  const targetRoute = FABRIC_STUDIES
+    ? `${baseUrl}/dev/fabric-compositions?study=A%2B&scenario=idle&freeze=${FREEZE_AT}`
+    : `${baseUrl}/?scenario=idle&switcher=off${FABRIC ? "&ui=fabric" : ""}`;
+  console.log(FABRIC_STUDIES
+    ? "recording motion (same mounted A+ study): quiet → mixed → Jellyfin focus → release → quiet…"
+    : "recording motion (same mounted scene): 7s idle → 13s active → 6s easing…");
   // NOT networkidle: the live page holds an SSE stream open, so the network
   // never idles. The fixture-hook wait below is the real readiness signal.
-  await page.goto(`${baseUrl}/?scenario=idle&switcher=off${FABRIC ? "&ui=fabric" : ""}`, { waitUntil: "domcontentloaded" });
+  await page.goto(targetRoute, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => typeof window.__homelabSetScenario === "function", {
     timeout: 15_000,
   });
   const url0 = page.url();
-  await page.waitForTimeout(7_000);
-  await page.evaluate(() => window.__homelabSetScenario("active"));
-  await page.waitForTimeout(7_000);
-  if (FABRIC) {
+  const mountedStudyStage = FABRIC_STUDIES ? await page.locator("[data-study-stage]").elementHandle() : null;
+  await page.waitForTimeout(3_000);
+  await page.evaluate((nextScenario) => window.__homelabSetScenario(nextScenario), FABRIC_STUDIES ? "container-mixed" : "active");
+  await page.waitForTimeout(4_000);
+  if (FABRIC_STUDIES) {
+    const node = page.locator('[data-study-node="service:jellyfin"]');
+    await node.focus();
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(3_000);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(2_000);
+    await page.evaluate(() => window.__homelabSetScenario("idle"));
+    await page.waitForTimeout(3_000);
+  } else if (FABRIC) {
     const node = page.locator('[data-fabric-node="service:qbittorrent"]');
     await node.focus();
     await page.keyboard.press("Enter");
     await page.waitForTimeout(3_000);
     await page.keyboard.press("Escape");
+    await page.waitForTimeout(3_000);
+    await page.evaluate(() => window.__homelabSetScenario("idle"));
+    await page.waitForTimeout(6_000);
+  } else {
+    await page.waitForTimeout(3_000);
+    await page.evaluate(() => window.__homelabSetScenario("idle"));
+    await page.waitForTimeout(6_000);
   }
-  await page.waitForTimeout(3_000);
-  await page.evaluate(() => window.__homelabSetScenario("idle"));
-  await page.waitForTimeout(6_000);
   if (page.url() !== url0) {
     throw new Error("motion capture navigated — the same-page contract is broken");
+  }
+  if (mountedStudyStage && !(await mountedStudyStage.evaluate((stage) => stage === document.querySelector("[data-study-stage]")))) {
+    throw new Error("motion capture remounted the A+ study — the same-mounted-component contract is broken");
   }
   const video = page.video();
   await page.close();
   await context.close();
   const webmPath = await video.path();
-  const target = `${OUT_DIR}/motion-idle-to-active.webm`;
+  const basename = FABRIC_STUDIES
+    ? "motion-quiet-to-mixed-to-jellyfin-focus-to-release"
+    : "motion-idle-to-active";
+  const motionDir = FABRIC_STUDIES ? `${OUT_DIR}/A-plus` : OUT_DIR;
+  mkdirSync(motionDir, { recursive: true });
+  const target = `${motionDir}/${basename}.webm`;
   execFileSync("mv", [webmPath, target]);
   console.log(`captured ${target}`);
   // GIF for direct GitHub embedding (best-effort; needs ffmpeg).
@@ -1030,9 +1154,9 @@ async function captureMotion(browser, baseUrl) {
       "-y", "-ss", "0.5", "-i", target,
       "-vf", "fps=10,scale=960:-1:flags=lanczos",
       "-loop", "0",
-      `${OUT_DIR}/motion-idle-to-active.gif`,
+      `${motionDir}/${basename}.gif`,
     ], { stdio: "ignore" });
-    console.log(`captured ${OUT_DIR}/motion-idle-to-active.gif`);
+    console.log(`captured ${motionDir}/${basename}.gif`);
   } catch {
     console.warn("ffmpeg unavailable — skipped GIF; the webm is authoritative");
   }

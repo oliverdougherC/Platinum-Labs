@@ -1,8 +1,7 @@
 import { notFound } from "next/navigation";
 import { FabricCompositionStudy } from "@/components/dev/fabric-composition-study";
-import { makeFakeSnapshot, isScenario, type FakeScenario } from "@/lib/fake/snapshot";
-import { buildFabricComposition, type FabricCompositionId } from "@/lib/fabric/composition-study";
-import { buildFabricModel } from "@/lib/fabric/model";
+import { isScenario, type FakeScenario } from "@/lib/fake/snapshot";
+import type { FabricCompositionId } from "@/lib/fabric/composition-study";
 import { shouldShowDevControls } from "@/lib/snapshot.server";
 
 export const dynamic = "force-dynamic";
@@ -32,25 +31,13 @@ export default async function FabricCompositionsPage({
   const scenario: FakeScenario = isScenario(scenarioRaw) ? scenarioRaw : "container-mixed";
   const freezeRaw = Number(one(params.freeze));
   const now = Number.isFinite(freezeRaw) && freezeRaw > 0 ? freezeRaw : DEFAULT_NOW;
-
-  const activitySnapshot = makeFakeSnapshot(scenario, now);
-  const realScaleSnapshot = makeFakeSnapshot("container-field-real", now);
-  const snapshot = {
-    ...activitySnapshot,
-    telemetry: {
-      ...activitySnapshot.telemetry,
-      docker: realScaleSnapshot.telemetry.docker,
-    },
-  };
-  const model = buildFabricModel(snapshot, { now, seerrConfigured: true });
-  const scene = buildFabricComposition(model, study);
-  const focus = one(params.focus) ?? (one(params.inspector) === "1" ? model.population.groups[0]?.id ?? "jellyfin" : null);
+  const focus = one(params.focus) ?? (one(params.inspector) === "1" ? "group:platform" : null);
 
   return (
     <FabricCompositionStudy
-      scene={scene}
-      model={model}
-      quiet={scenario === "idle"}
+      study={study}
+      initialScenario={scenario}
+      now={now}
       initialFocus={focus}
     />
   );

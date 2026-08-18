@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { FabricModel } from "@/lib/fabric/model";
+import { buildFabricComposition, type FabricCompositionId } from "@/lib/fabric/composition-study";
+import { makeFakeSnapshot, isScenario, type FakeScenario } from "@/lib/fake/snapshot";
+import { buildFabricModel, type FabricModel } from "@/lib/fabric/model";
 import type {
   FabricCompositionJunction,
   FabricCompositionNode,
@@ -33,6 +35,7 @@ function ResourceGraphic({ node, selectedContribution }: {
   const x = bounds.x + 12;
   const width = bounds.width - 24;
   const selectedFraction = Math.max(0, Math.min(1, selectedContribution?.fraction ?? 0));
+  const scaledWidth = (fraction: number) => Number((width * Math.max(0, Math.min(1, fraction))).toFixed(6));
   if (view.id === "cpu") {
     const count = Math.max(1, view.segments.length);
     const columns = Math.min(16, Math.ceil(Math.sqrt(count * 3.2)));
@@ -53,7 +56,7 @@ function ResourceGraphic({ node, selectedContribution }: {
             style={{ opacity: 0.18 + Math.max(0, Math.min(1, fraction)) * 0.82 }}
           />
         ))}
-        {selectedContribution ? <rect x={x} y={bounds.y + 72} width={width * selectedFraction} height="2.5" rx="1.25" className="fabric-study-resource-selected" /> : null}
+        {selectedContribution ? <rect x={x} y={bounds.y + 72} width={scaledWidth(selectedFraction)} height="2.5" rx="1.25" className="fabric-study-resource-selected" /> : null}
       </g>
     );
   }
@@ -63,10 +66,10 @@ function ResourceGraphic({ node, selectedContribution }: {
       {fractions.map((fraction, index) => (
         <g key={index}>
           <rect x={x} y={bounds.y + 50 + index * 13} width={width} height="5" rx="2.5" className="fabric-study-resource-track" />
-          <rect x={x} y={bounds.y + 50 + index * 13} width={width * Math.max(0, Math.min(1, fraction))} height="5" rx="2.5" />
+          <rect x={x} y={bounds.y + 50 + index * 13} width={scaledWidth(fraction)} height="5" rx="2.5" />
         </g>
       ))}
-      {selectedContribution && (view.id === "memory") ? <rect x={x} y={bounds.y + 70} width={width * selectedFraction} height="3" rx="1.5" className="fabric-study-resource-selected" /> : null}
+      {selectedContribution && (view.id === "memory") ? <rect x={x} y={bounds.y + 70} width={scaledWidth(selectedFraction)} height="3" rx="1.5" className="fabric-study-resource-selected" /> : null}
     </g>
   );
 }
@@ -105,13 +108,14 @@ function NodeCard({ node, selected, related, selectedContribution, onSelect }: {
       }}
     >
       <rect data-study-node-box {...bounds} rx={resource ? 7 : node.role === "data-plane" ? 14 : 9} className="fabric-study-card" />
-      {!micro ? <text data-study-essential-text data-owner-node={node.sourceNodeId} x={bounds.x + 12} y={bounds.y + (subsystem ? 14 : 18)} className="fabric-study-eyebrow">{node.eyebrow}</text> : null}
-      <text data-study-essential-text data-owner-node={node.sourceNodeId} x={bounds.x + 12} y={bounds.y + (micro ? bounds.height / 2 + 5 : subsystem ? 34 : storage ? 37 : 39)} className="fabric-study-title">{node.label}</text>
+      {!micro ? <text data-study-essential-text data-study-text-role="tertiary" data-owner-node={node.sourceNodeId} x={bounds.x + 12} y={bounds.y + (subsystem ? 14 : 18)} className="fabric-study-eyebrow">{node.eyebrow}</text> : null}
+      <text data-study-essential-text data-study-text-role="title" data-owner-node={node.sourceNodeId} x={bounds.x + 12} y={bounds.y + (micro ? bounds.height / 2 + 5 : subsystem ? 34 : storage ? 37 : 39)} className="fabric-study-title">{node.label}</text>
       {resource ? <ResourceGraphic node={node} selectedContribution={selectedContribution} /> : null}
-      {!micro && !resource ? node.metrics.slice(0, 2).map((metric, index) => (
+      {!micro && !resource && (!subsystem || bounds.height >= 55) ? node.metrics.slice(0, 2).map((metric, index) => (
         <text
           key={`${metric.label}-${index}`}
           data-study-essential-text
+          data-study-text-role="secondary"
           data-owner-node={node.sourceNodeId}
           x={bounds.x + 12 + index * metricWidth}
           y={metricY}
@@ -121,7 +125,7 @@ function NodeCard({ node, selected, related, selectedContribution, onSelect }: {
         </text>
       )) : null}
       {resource && node.resourceView ? (
-        <text data-study-essential-text data-owner-node={node.sourceNodeId} x={bounds.x + bounds.width - 12} y={bounds.y + 37} textAnchor="end" className="fabric-study-metric">
+        <text data-study-essential-text data-study-text-role="secondary" data-owner-node={node.sourceNodeId} x={bounds.x + bounds.width - 12} y={bounds.y + 37} textAnchor="end" className="fabric-study-metric">
           {selectedContribution ? `${selectedContribution.coverage === "partial" ? "≈" : ""}${selectedContribution.value === null ? "—" : node.resourceView.id === "cpu" ? `${selectedContribution.value.toFixed(2)}c` : `${(selectedFraction(selectedContribution) * 100).toFixed(1)}%`} selected` : node.resourceView.primary}
         </text>
       ) : null}
@@ -129,6 +133,7 @@ function NodeCard({ node, selected, related, selectedContribution, onSelect }: {
         <text
           key={name}
           data-study-essential-text
+          data-study-text-role="secondary"
           data-study-promoted
           data-owner-node={node.sourceNodeId}
           x={bounds.x + bounds.width - 12}
@@ -141,8 +146,8 @@ function NodeCard({ node, selected, related, selectedContribution, onSelect }: {
       ))}
       {status && !micro ? (
         <g aria-hidden="true">
-          <circle cx={bounds.x + bounds.width - 13} cy={bounds.y + 14} r="7" className="fabric-study-status" />
-          <text x={bounds.x + bounds.width - 13} y={bounds.y + 17} textAnchor="middle" className="fabric-study-status-text">{status}</text>
+          <circle cx={bounds.x + bounds.width - 12} cy={bounds.y + 14} r="7" className="fabric-study-status" />
+          <text data-study-essential-text data-study-text-role="status" data-owner-node={node.sourceNodeId} x={bounds.x + bounds.width - 12} y={bounds.y + 17} textAnchor="middle" className="fabric-study-status-text">{status}</text>
         </g>
       ) : null}
       {node.ports.map((port) => (
@@ -196,7 +201,7 @@ function Segment({ segment, active, focused }: { segment: FabricPhysicalSegment;
           data-study-label-bounds={`${segment.labelBounds.x},${segment.labelBounds.y},${segment.labelBounds.width},${segment.labelBounds.height}`}
         >
           <rect {...segment.labelBounds} rx="4" className="fabric-study-label-backdrop" />
-          <text x={segment.labelBounds.x + 6} y={segment.labelBounds.y + 11} className="fabric-study-segment-label">{segment.label}</text>
+          <text data-study-essential-text data-study-text-role="substrate" x={segment.labelBounds.x + 6} y={segment.labelBounds.y + 11} className="fabric-study-segment-label">{segment.label}</text>
         </g>
       ) : null}
     </g>
@@ -209,6 +214,8 @@ function Junction({ junction }: { junction: FabricCompositionJunction }) {
       data-study-junction={junction.id}
       data-study-junction-kind={junction.kind}
       data-study-junction-plane={junction.plane}
+      data-study-junction-region={junction.region ?? ""}
+      data-study-junction-crossing-pairs={junction.crossingPairIds?.join("|") ?? ""}
       data-study-junction-point={`${junction.point.x},${junction.point.y}`}
       className={`fabric-study-junction fabric-study-junction-${junction.plane} fabric-study-junction-${junction.kind}`}
       aria-hidden="true"
@@ -241,8 +248,8 @@ function Inspector({ scene, model, selectedId, onClose }: {
         <button type="button" onClick={onClose} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-hairline text-muted hover:border-border hover:text-fg" aria-label="Close composition inspector">×</button>
       </div>
       {node.metrics.length ? (
-        <dl className="mt-4 grid grid-cols-2 gap-2">
-          {node.metrics.slice(0, 4).map((metric) => (
+        <dl data-study-inspector-metrics className="mt-4 grid grid-cols-2 gap-2">
+          {node.metrics.slice(0, 3).map((metric) => (
             <div key={metric.label} className="min-w-0 rounded-lg border border-hairline/70 bg-surface/35 px-2 py-2">
               <dt className="truncate text-[9px] uppercase tracking-[0.1em] text-faint">{metric.label}</dt>
               <dd className="tnum mt-1 truncate text-[11px] text-fg">{metric.value}</dd>
@@ -253,8 +260,8 @@ function Inspector({ scene, model, selectedId, onClose }: {
       {relationships.length ? (
         <section className="mt-4">
           <h3 className="text-[9px] uppercase tracking-[0.14em] text-faint">Logical contributors · {relationships.length}</h3>
-          <ul className="mt-2 divide-y divide-hairline/60">
-            {relationships.slice(0, 6).map((relationship) => (
+          <ul data-study-inspector-relationships className="mt-2 divide-y divide-hairline/60">
+            {relationships.slice(0, 5).map((relationship) => (
               <li key={relationship.id} className="py-2 text-[11px] text-muted">
                 <span className="block truncate">{relationship.label}</span>
                 <span className="mt-1 block text-[9px] uppercase tracking-[0.1em] text-faint">{relationship.evidence} · {relationship.plane}</span>
@@ -281,16 +288,39 @@ function Inspector({ scene, model, selectedId, onClose }: {
 }
 
 export function FabricCompositionStudy({
-  scene,
-  model,
-  quiet,
+  study,
+  initialScenario,
+  now,
   initialFocus,
 }: {
-  scene: FabricCompositionScene;
-  model: FabricModel;
-  quiet: boolean;
+  study: FabricCompositionId;
+  initialScenario: FakeScenario;
+  now: number;
   initialFocus: string | null;
 }) {
+  const [scenario, setScenario] = useState(initialScenario);
+  useEffect(() => setScenario(initialScenario), [initialScenario]);
+  const quiet = scenario === "idle";
+  const { model, scene } = useMemo(() => {
+    const activitySnapshot = makeFakeSnapshot(scenario, now);
+    const realScaleSnapshot = makeFakeSnapshot("container-field-real", now);
+    const snapshot = {
+      ...activitySnapshot,
+      telemetry: {
+        ...activitySnapshot.telemetry,
+        docker: realScaleSnapshot.telemetry.docker,
+      },
+    };
+    const nextModel = buildFabricModel(snapshot, {
+      now,
+      seerrConfigured: true,
+      networkBoundaries: ["wan", "lan", "overlay"],
+    });
+    return {
+      model: nextModel,
+      scene: buildFabricComposition(nextModel, study),
+    };
+  }, [now, scenario, study]);
   const normalizedFocus = initialFocus ? (initialFocus.startsWith("service:") || initialFocus.startsWith("group:") || initialFocus.startsWith("pool:") ? initialFocus : `service:${initialFocus}`) : null;
   const [selectedId, setSelectedId] = useState(normalizedFocus);
   useEffect(() => setSelectedId(normalizedFocus), [normalizedFocus]);
@@ -300,6 +330,16 @@ export function FabricCompositionStudy({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+  useEffect(() => {
+    const devWindow = window as Window & { __homelabSetScenario?: (next: string) => void };
+    devWindow.__homelabSetScenario = (next) => {
+      if (!isScenario(next)) return;
+      setScenario(next);
+    };
+    return () => {
+      delete devWindow.__homelabSetScenario;
+    };
   }, []);
 
   const focusedRelationshipIds = useMemo(() => new Set(
@@ -363,6 +403,9 @@ export function FabricCompositionStudy({
                 data-study-logical-route={route.relationshipId}
                 data-study-route-from={route.fromNodeId}
                 data-study-route-to={route.toNodeId}
+                data-study-route-from-port={route.fromPortId}
+                data-study-route-to-port={route.toPortId}
+                data-study-route-contributor={route.contributorRelationshipId}
                 data-study-route-segments={route.segmentIds.join(",")}
               />
             ))}

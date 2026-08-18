@@ -37,6 +37,7 @@
     "screenshots:fabric:determinism": "node scripts/screenshots.mjs --fabric --determinism --prod",
     "screenshots:fabric-studies": "node scripts/screenshots.mjs --fabric-studies",
     "screenshots:fabric-studies:prod": "node scripts/screenshots.mjs --fabric-studies --prod",
+    "screenshots:fabric-studies:motion:prod": "node scripts/screenshots.mjs --fabric-studies --motion --prod",
     "dev:fake": "HOMELAB_DATA_MODE=fake HOMELAB_ENABLE_DEV_CONTROLS=1 next dev -p 3911"
   },
   "dependencies": {

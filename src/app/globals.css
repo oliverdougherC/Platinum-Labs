@@ -620,7 +620,7 @@
 
 .fabric-study-eyebrow {
   fill: rgb(var(--color-faint));
-  font-size: 8.5px;
+  font-size: 11px;
   font-weight: 650;
   letter-spacing: 0.1em;
 }
@@ -633,18 +633,18 @@
 
 .fabric-study-metric {
   fill: rgb(var(--color-muted));
-  font-size: 9.5px;
+  font-size: 12px;
 }
 
 .fabric-study-metric-label {
   fill: rgb(var(--color-faint));
-  font-size: 7.75px;
+  font-size: 12px;
   text-transform: uppercase;
 }
 
 .fabric-study-promoted {
   fill: rgb(var(--color-warn));
-  font-size: 8.25px;
+  font-size: 12px;
 }
 
 .fabric-study-status {
@@ -655,7 +655,7 @@
 
 .fabric-study-status-text {
   fill: rgb(var(--color-warn));
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -715,7 +715,7 @@
 
 .fabric-study-segment-label {
   fill: rgb(var(--color-muted));
-  font-size: 8.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.11em;
 }
