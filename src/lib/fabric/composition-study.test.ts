@@ -37,7 +37,6 @@ describe("fabric composition studies", () => {
         longNetworkLabels: [],
         danglingSegments: [],
         missingPopulationIds: [],
-        horizontallyBalanced: true,
         valid: true,
       });
     });
@@ -65,5 +64,32 @@ describe("fabric composition studies", () => {
     expect(scene.segments.filter((segment) => segment.id === "segment:read")).toHaveLength(1);
     expect(scene.segments.filter((segment) => segment.id === "segment:write")).toHaveLength(1);
     expect(scene.logicalRoutes.flatMap((route) => route.segmentIds).every((id) => physicalIds.has(id))).toBe(true);
+  });
+
+  it("builds an A+ synthesis with attached visible ports and endpoint-specific logical branches", () => {
+    const scene = buildFabricComposition(modelFor("container-mixed"), "A+");
+    const validation = validateFabricComposition(scene);
+
+    expect(scene.id).toBe("A+");
+    expect(scene.logicalRoutes.every((route) => route.segmentIds.length > 0)).toBe(true);
+    expect(validation.unattachedPortIds).toEqual([]);
+    expect(validation.trunkOnlyRouteIds).toEqual([]);
+    expect(validation.duplicateGeometry).toEqual([]);
+    expect(validation.segmentNodeIntersections).toEqual([]);
+    expect(validation.segmentLabelIntersections).toEqual([]);
+  });
+
+  it("keeps the A+ storage corridors clear and rejects large internal voids with coarse-grid density", () => {
+    const scene = buildFabricComposition(modelFor("container-field-real"), "A+");
+    const validation = validateFabricComposition(scene);
+
+    expect(validation.blockedStorageCorridors).toEqual([]);
+    expect(validation.density.occupiedCellRatio).toBeGreaterThanOrEqual(0.34);
+    expect(validation.density.largestInternalVoid).toBeLessThanOrEqual(8);
+    expect(validation.density.columns.slice(0, 4).some((count) => count > 0)).toBe(true);
+    expect(validation.density.columns.slice(4, 8).some((count) => count > 0)).toBe(true);
+    expect(validation.density.columns.slice(8).some((count) => count > 0)).toBe(true);
+    expect(validation.missingPopulationIds).toEqual([]);
+    expect(validation.valid).toBe(true);
   });
 });

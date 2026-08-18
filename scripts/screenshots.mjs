@@ -120,15 +120,18 @@ const FABRIC_SHOTS = [
   { name: "21-technical-details", scenario: "container-field-real", ui: "fabric", w: 1920, h: 1080, action: "fabric-technical" },
 ];
 
-const FABRIC_STUDY_SHOTS = ["A", "B", "C"].flatMap((study) => [
-  { study, name: "01-quiet-1280x720", scenario: "idle", w: 1280, h: 720 },
-  { study, name: "02-mixed-1280x720", scenario: "container-mixed", w: 1280, h: 720 },
-  { study, name: "03-mixed-1920x1080", scenario: "container-mixed", w: 1920, h: 1080 },
-  { study, name: "04-real-scale-44-1920x1080", scenario: "container-field-real", w: 1920, h: 1080 },
-  { study, name: "05-jellyfin-focus-1920x1080", scenario: "transcode", focus: "jellyfin", w: 1920, h: 1080 },
-  { study, name: "06-sonarr-focus-1920x1080", scenario: "relationship-map", focus: "sonarr", w: 1920, h: 1080 },
-  { study, name: "07-inspector-open-1920x1080", scenario: "container-field-real", inspector: true, w: 1920, h: 1080 },
-]);
+const FABRIC_STUDY_SHOTS = [
+  { study: "A+", artifactDir: "A-plus", name: "01-quiet-1280x720", scenario: "idle", w: 1280, h: 720 },
+  { study: "A+", artifactDir: "A-plus", name: "02-mixed-1280x720", scenario: "container-mixed", w: 1280, h: 720 },
+  { study: "A+", artifactDir: "A-plus", name: "03-mixed-1920x1080", scenario: "container-mixed", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", name: "04-real-scale-44-1920x1080", scenario: "container-field-real", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", name: "05-jellyfin-focus-1920x1080", scenario: "transcode", focus: "jellyfin", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", name: "06-sonarr-focus-1920x1080", scenario: "relationship-map", focus: "sonarr", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", name: "07-qbittorrent-focus-1920x1080", scenario: "downloads", focus: "qbittorrent", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", name: "08-subsystem-focus-1920x1080", scenario: "container-field-real", focus: "group:media-support", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", name: "09-inspector-open-1920x1080", scenario: "container-field-real", inspector: true, w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", name: "10-reduced-motion-1920x1080", scenario: "container-mixed", reducedMotion: true, w: 1920, h: 1080 },
+];
 
 /**
  * Truthful container accounting per scenario — the harness fails loudly if a
@@ -469,6 +472,12 @@ async function validateFabricStudyShot(page, shot) {
       points: parsePoints(element.getAttribute("data-study-points") ?? ""),
       endpointA: element.getAttribute("data-study-endpoint-a") ?? "",
       endpointB: element.getAttribute("data-study-endpoint-b") ?? "",
+      junctionIds: (element.getAttribute("data-study-junction-ids") ?? "").split(",").filter(Boolean),
+    }));
+    const junctions = [...stage.querySelectorAll("[data-study-junction]")].map((element) => ({
+      id: element.getAttribute("data-study-junction"),
+      kind: element.getAttribute("data-study-junction-kind"),
+      point: parsePoints(element.getAttribute("data-study-junction-point") ?? "")[0],
     }));
     const geometryKeys = segments.map((segment) => {
       const forward = segment.points.map((point) => `${point.x},${point.y}`).join(";");
@@ -524,7 +533,13 @@ async function validateFabricStudyShot(page, shot) {
       for (let j = i + 1; j < segments.length; j++) {
         for (const [a1, a2] of lines(segments[i].points)) {
           for (const [b1, b2] of lines(segments[j].points)) {
-            if (strictCrossing(a1, a2, b1, b2)) crossings.push(`${segments[i].id}:${segments[j].id}`);
+            if (!strictCrossing(a1, a2, b1, b2)) continue;
+            const horizontal = a1.y === a2.y ? [a1, a2] : [b1, b2];
+            const vertical = a1.y === a2.y ? [b1, b2] : [a1, a2];
+            const crossing = { x: vertical[0].x, y: horizontal[0].y };
+            const approved = junctions.some((junction) => junction.kind === "via" && junction.point?.x === crossing.x && junction.point?.y === crossing.y &&
+              (segments[i].junctionIds.includes(junction.id) || segments[j].junctionIds.includes(junction.id)));
+            if (!approved) crossings.push(`${segments[i].id}:${segments[j].id}`);
           }
         }
       }
@@ -549,6 +564,43 @@ async function validateFabricStudyShot(page, shot) {
       const promoted = element.querySelector("[data-study-promoted]")?.textContent?.trim() ?? "";
       return !title || memberIds.length === 0 || !promoted ? [id] : [];
     });
+    const ports = [...stage.querySelectorAll("[data-study-port-id]")].map((element) => ({
+      id: element.getAttribute("data-study-port-id"),
+      kind: element.getAttribute("data-study-port-kind"),
+      nodeId: element.closest("[data-study-node]")?.getAttribute("data-study-node"),
+      center: parsePoints(element.getAttribute("data-study-port-center") ?? "")[0],
+    }));
+    const unattachedPorts = ports.filter((port) => !segments.some((segment) => {
+      const group = stage.querySelector(`[data-study-segment-group="${segment.id}"]`);
+      const endpoint = segment.endpointA === port.nodeId ? segment.points[0] : segment.endpointB === port.nodeId ? segment.points.at(-1) : null;
+      return group?.getAttribute("data-study-segment-plane") === port.kind && endpoint?.x === port.center?.x && endpoint?.y === port.center?.y;
+    })).map((port) => port.id);
+    const routes = [...stage.querySelectorAll("[data-study-logical-route]")].map((element) => ({
+      id: element.getAttribute("data-study-logical-route"),
+      from: element.getAttribute("data-study-route-from"),
+      to: element.getAttribute("data-study-route-to"),
+      segmentIds: (element.getAttribute("data-study-route-segments") ?? "").split(",").filter(Boolean),
+    }));
+    const visibleNodeIds = new Set([...stage.querySelectorAll("[data-study-node]")].map((element) => element.getAttribute("data-study-node")));
+    const trunkOnlyRoutes = routes.filter((route) => {
+      const routeSegments = route.segmentIds.map((id) => segments.find((segment) => segment.id === id)).filter(Boolean);
+      return (visibleNodeIds.has(route.from) && !routeSegments.some((segment) => segment.endpointA === route.from || segment.endpointB === route.from)) ||
+        (visibleNodeIds.has(route.to) && !routeSegments.some((segment) => segment.endpointA === route.to || segment.endpointB === route.to));
+    }).map((route) => route.id);
+    const corridors = [...stage.querySelectorAll("[data-study-storage-corridor]")].map((element) => ({
+      nodeId: element.getAttribute("data-study-storage-corridor"),
+      bounds: parseBounds(element.getAttribute("data-study-corridor-bounds") ?? "0,0,0,0"),
+    }));
+    const blockedCorridors = corridors.flatMap((corridor) => [...stage.querySelectorAll('[data-study-node-role="subsystem"]')]
+      .filter((element) => boxesOverlap(parseBounds(element.getAttribute("data-study-node-bounds") ?? "0,0,0,0"), corridor.bounds))
+      .map((element) => `${corridor.nodeId}:${element.getAttribute("data-study-node")}`));
+    const [densityRatio, largestVoid] = (stage.getAttribute("data-study-density") ?? "0,999").split(",").map(Number);
+    const svgRect = stage.getBoundingClientRect();
+    const scale = Math.min(svgRect.width / viewBox.width, svgRect.height / viewBox.height);
+    const undersizedText = [...stage.querySelectorAll("[data-study-essential-text]")].filter((element) => {
+      const effectiveSize = Number.parseFloat(getComputedStyle(element).fontSize) * scale;
+      return effectiveSize < (element.classList.contains("fabric-study-title") ? 11.5 : 7.2);
+    }).map((element) => `${element.getAttribute("data-owner-node")}:${element.textContent}`);
     return {
       segmentCount: segments.length,
       duplicateGeometry,
@@ -565,6 +617,12 @@ async function validateFabricStudyShot(page, shot) {
       populationCount: populationIds.length,
       missingPopulation,
       subsystemProblems,
+      unattachedPorts,
+      trunkOnlyRoutes,
+      blockedCorridors,
+      densityRatio,
+      largestVoid,
+      undersizedText,
     };
   });
 
@@ -577,7 +635,13 @@ async function validateFabricStudyShot(page, shot) {
   if (result.textCollisions.length) failures.push(`essential text collisions: ${result.textCollisions.join(", ")}`);
   if (result.statusCollisions.length) failures.push(`text/status collisions: ${result.statusCollisions.join(", ")}`);
   if (result.crossings.length) failures.push(`unapproved crossings: ${result.crossings.join(", ")}`);
-  if (result.occupiedRatio < 0.72 || !result.balanced) failures.push(`unbalanced occupied board: ratio=${result.occupiedRatio.toFixed(3)} balanced=${result.balanced}`);
+  if (shot.study === "A+") {
+    if (result.densityRatio < 0.34 || result.largestVoid > 8) failures.push(`composition density: ratio=${result.densityRatio.toFixed(3)} largestVoid=${result.largestVoid}`);
+    if (result.unattachedPorts.length) failures.push(`visible ports without exact physical attachment: ${result.unattachedPorts.join(", ")}`);
+    if (result.trunkOnlyRoutes.length) failures.push(`logical routes without endpoint branches: ${result.trunkOnlyRoutes.join(", ")}`);
+    if (result.blockedCorridors.length) failures.push(`blocked primary storage corridors: ${result.blockedCorridors.join(", ")}`);
+    if (result.undersizedText.length) failures.push(`persistent typography below effective minimum: ${result.undersizedText.join(", ")}`);
+  } else if (result.occupiedRatio < 0.72 || !result.balanced) failures.push(`unbalanced occupied board: ratio=${result.occupiedRatio.toFixed(3)} balanced=${result.balanced}`);
   if (result.longNetworkLabels.length) failures.push(`raw long network labels: ${result.longNetworkLabels.join(", ")}`);
   if (result.dangling.length) failures.push(`dangling dormant segments: ${result.dangling.join(", ")}`);
   if (result.populationCount !== 44 || result.missingPopulation.length) failures.push(`population accounting: count=${result.populationCount}, missing=${result.missingPopulation.join(",")}`);
@@ -709,8 +773,8 @@ async function main() {
           await page.waitForTimeout(250);
           await validateShot(page, shot, beforeActionBox);
         }
-        if (FABRIC_STUDIES) mkdirSync(`${OUT_DIR}/${shot.study}`, { recursive: true });
-        const path = FABRIC_STUDIES ? `${OUT_DIR}/${shot.study}/${shot.name}.png` : `${OUT_DIR}/${shot.name}.png`;
+        if (FABRIC_STUDIES) mkdirSync(`${OUT_DIR}/${shot.artifactDir ?? shot.study}`, { recursive: true });
+        const path = FABRIC_STUDIES ? `${OUT_DIR}/${shot.artifactDir ?? shot.study}/${shot.name}.png` : `${OUT_DIR}/${shot.name}.png`;
         await page.screenshot({ path });
         console.log(`captured ${path}`);
         if (await page.locator("[data-overlay-panel]").count()) {

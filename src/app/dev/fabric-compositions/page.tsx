@@ -16,8 +16,8 @@ function one(value: string | string[] | undefined): string | undefined {
 /**
  * Dev-only V3 composition study. This deliberately does not replace or mutate
  * the feature-flagged production FabricApp. It projects the existing
- * FabricModel into three fixed study geometries against the sanitized
- * 44-container Docker fixture.
+ * FabricModel into the three historical study geometries and the selected A+
+ * synthesis against the sanitized 44-container Docker fixture.
  */
 export default async function FabricCompositionsPage({
   searchParams,
@@ -27,7 +27,7 @@ export default async function FabricCompositionsPage({
   if (!shouldShowDevControls()) notFound();
   const params = await searchParams;
   const studyRaw = one(params.study)?.toUpperCase();
-  const study: FabricCompositionId = studyRaw === "B" || studyRaw === "C" ? studyRaw : "A";
+  const study: FabricCompositionId = studyRaw === "A+" || studyRaw === "B" || studyRaw === "C" ? studyRaw : "A";
   const scenarioRaw = one(params.scenario);
   const scenario: FakeScenario = isScenario(scenarioRaw) ? scenarioRaw : "container-mixed";
   const freezeRaw = Number(one(params.freeze));

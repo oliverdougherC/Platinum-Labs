@@ -3,10 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FabricModel } from "@/lib/fabric/model";
 import type {
+  FabricCompositionJunction,
   FabricCompositionNode,
   FabricCompositionScene,
   FabricPhysicalSegment,
 } from "@/lib/fabric/composition-study";
+import type { FabricResourceContribution } from "@/lib/fabric/model";
 
 const statusSymbol = {
   healthy: null,
@@ -21,17 +23,69 @@ function pathData(segment: FabricPhysicalSegment): string {
   return segment.points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x} ${point.y}`).join("");
 }
 
-function NodeCard({ node, selected, related, onSelect }: {
+function ResourceGraphic({ node, selectedContribution }: {
+  node: FabricCompositionNode;
+  selectedContribution: FabricResourceContribution | null;
+}) {
+  const view = node.resourceView;
+  if (!view) return null;
+  const { bounds } = node;
+  const x = bounds.x + 12;
+  const width = bounds.width - 24;
+  const selectedFraction = Math.max(0, Math.min(1, selectedContribution?.fraction ?? 0));
+  if (view.id === "cpu") {
+    const count = Math.max(1, view.segments.length);
+    const columns = Math.min(16, Math.ceil(Math.sqrt(count * 3.2)));
+    const rows = Math.ceil(count / columns);
+    const gap = 2;
+    const cellWidth = (width - gap * (columns - 1)) / columns;
+    const cellHeight = Math.max(2.5, (18 - gap * (rows - 1)) / rows);
+    return (
+      <g className="fabric-study-resource-graphic" aria-hidden="true">
+        {view.segments.map((fraction, index) => (
+          <rect
+            key={index}
+            x={x + (index % columns) * (cellWidth + gap)}
+            y={bounds.y + 49 + Math.floor(index / columns) * (cellHeight + gap)}
+            width={cellWidth}
+            height={cellHeight}
+            rx="1.2"
+            style={{ opacity: 0.18 + Math.max(0, Math.min(1, fraction)) * 0.82 }}
+          />
+        ))}
+        {selectedContribution ? <rect x={x} y={bounds.y + 72} width={width * selectedFraction} height="2.5" rx="1.25" className="fabric-study-resource-selected" /> : null}
+      </g>
+    );
+  }
+  const fractions = view.id === "gpu" ? view.segments.slice(0, 2) : [view.fraction ?? view.segments[0] ?? 0];
+  return (
+    <g className="fabric-study-resource-graphic" aria-hidden="true">
+      {fractions.map((fraction, index) => (
+        <g key={index}>
+          <rect x={x} y={bounds.y + 50 + index * 13} width={width} height="5" rx="2.5" className="fabric-study-resource-track" />
+          <rect x={x} y={bounds.y + 50 + index * 13} width={width * Math.max(0, Math.min(1, fraction))} height="5" rx="2.5" />
+        </g>
+      ))}
+      {selectedContribution && (view.id === "memory") ? <rect x={x} y={bounds.y + 70} width={width * selectedFraction} height="3" rx="1.5" className="fabric-study-resource-selected" /> : null}
+    </g>
+  );
+}
+
+function NodeCard({ node, selected, related, selectedContribution, onSelect }: {
   node: FabricCompositionNode;
   selected: boolean;
   related: boolean;
+  selectedContribution: FabricResourceContribution | null;
   onSelect: () => void;
 }) {
   const { bounds } = node;
   const status = statusSymbol[node.status];
-  const compact = bounds.height < 55;
-  const metricY = bounds.y + Math.min(60, bounds.height - 8);
-  const metricWidth = Math.max(70, (bounds.width - 24) / Math.max(1, Math.min(3, node.metrics.length)));
+  const micro = bounds.height < 42;
+  const subsystem = node.role === "subsystem";
+  const resource = node.role === "resource";
+  const storage = node.role === "storage";
+  const metricY = bounds.y + (subsystem ? 53 : storage ? bounds.height - 8 : Math.min(64, bounds.height - 9));
+  const metricWidth = Math.max(66, (bounds.width - 24) / Math.max(1, Math.min(2, node.metrics.length)));
   return (
     <g
       data-study-node={node.sourceNodeId}
@@ -50,10 +104,11 @@ function NodeCard({ node, selected, related, onSelect }: {
         }
       }}
     >
-      <rect data-study-node-box {...bounds} rx={node.role === "resource" ? 10 : 12} className="fabric-study-card" />
-      {!compact ? <text data-study-essential-text data-owner-node={node.sourceNodeId} x={bounds.x + 12} y={bounds.y + 18} className="fabric-study-eyebrow">{node.eyebrow}</text> : null}
-      <text data-study-essential-text data-owner-node={node.sourceNodeId} x={bounds.x + 12} y={bounds.y + (compact ? bounds.height / 2 + 5 : 39)} className="fabric-study-title">{node.label}</text>
-      {!compact ? node.metrics.slice(0, 3).map((metric, index) => (
+      <rect data-study-node-box {...bounds} rx={resource ? 7 : node.role === "data-plane" ? 14 : 9} className="fabric-study-card" />
+      {!micro ? <text data-study-essential-text data-owner-node={node.sourceNodeId} x={bounds.x + 12} y={bounds.y + (subsystem ? 14 : 18)} className="fabric-study-eyebrow">{node.eyebrow}</text> : null}
+      <text data-study-essential-text data-owner-node={node.sourceNodeId} x={bounds.x + 12} y={bounds.y + (micro ? bounds.height / 2 + 5 : subsystem ? 34 : storage ? 37 : 39)} className="fabric-study-title">{node.label}</text>
+      {resource ? <ResourceGraphic node={node} selectedContribution={selectedContribution} /> : null}
+      {!micro && !resource ? node.metrics.slice(0, 2).map((metric, index) => (
         <text
           key={`${metric.label}-${index}`}
           data-study-essential-text
@@ -65,6 +120,11 @@ function NodeCard({ node, selected, related, onSelect }: {
           {metric.value}<tspan dx="4" className="fabric-study-metric-label">{metric.label}</tspan>
         </text>
       )) : null}
+      {resource && node.resourceView ? (
+        <text data-study-essential-text data-owner-node={node.sourceNodeId} x={bounds.x + bounds.width - 12} y={bounds.y + 37} textAnchor="end" className="fabric-study-metric">
+          {selectedContribution ? `${selectedContribution.coverage === "partial" ? "≈" : ""}${selectedContribution.value === null ? "—" : node.resourceView.id === "cpu" ? `${selectedContribution.value.toFixed(2)}c` : `${(selectedFraction(selectedContribution) * 100).toFixed(1)}%`} selected` : node.resourceView.primary}
+        </text>
+      ) : null}
       {node.promoted.slice(0, 1).map((name) => (
         <text
           key={name}
@@ -72,36 +132,41 @@ function NodeCard({ node, selected, related, onSelect }: {
           data-study-promoted
           data-owner-node={node.sourceNodeId}
           x={bounds.x + bounds.width - 12}
-          y={bounds.y + 39}
+          y={bounds.y + (subsystem ? 34 : 39)}
           textAnchor="end"
           className="fabric-study-promoted"
         >
           {name}
         </text>
       ))}
-      {status ? (
+      {status && !micro ? (
         <g aria-hidden="true">
           <circle cx={bounds.x + bounds.width - 13} cy={bounds.y + 14} r="7" className="fabric-study-status" />
           <text x={bounds.x + bounds.width - 13} y={bounds.y + 17} textAnchor="middle" className="fabric-study-status-text">{status}</text>
         </g>
       ) : null}
-      {node.portKinds.map((kind, index) => (
-        <g key={kind} data-study-port-kind={kind} aria-hidden="true">
-          <circle cx={bounds.x + bounds.width - 12 - index * 13} cy={bounds.y + bounds.height} r="3.5" className={`fabric-study-port fabric-study-port-${kind}`} />
-          <circle cx={bounds.x + bounds.width - 12 - index * 13} cy={bounds.y + bounds.height} r="1.1" className="fabric-study-port-core" />
+      {node.ports.map((port) => (
+        <g key={port.id} data-study-port-id={port.id} data-study-port-kind={port.kind} data-study-port-center={`${port.center.x},${port.center.y}`} aria-hidden="true">
+          <circle cx={port.center.x} cy={port.center.y} r="3.8" className={`fabric-study-port fabric-study-port-${port.kind}`} />
+          <circle cx={port.center.x} cy={port.center.y} r="1.15" className="fabric-study-port-core" />
         </g>
       ))}
     </g>
   );
 }
 
+function selectedFraction(contribution: FabricResourceContribution): number {
+  return Math.max(0, Math.min(1, contribution.fraction ?? 0));
+}
+
 function Segment({ segment, active, focused }: { segment: FabricPhysicalSegment; active: boolean; focused: boolean }) {
   const d = pathData(segment);
+  const structural = segment.id.endsWith(":rail") || segment.id.endsWith(":substrate") || segment.id.includes(":trunk");
   return (
     <g
       data-study-segment-group={segment.id}
       data-study-segment-plane={segment.plane}
-      className={`fabric-study-segment-group${active ? " is-active" : ""}${focused ? " is-focused" : ""}`}
+      className={`fabric-study-segment-group ${structural ? "is-structural" : "is-branch"}${active ? " is-active" : ""}${focused ? " is-focused" : ""}`}
     >
       <path d={d} className={`fabric-study-substrate fabric-study-substrate-${segment.plane}`} />
       {active ? <path
@@ -110,6 +175,7 @@ function Segment({ segment, active, focused }: { segment: FabricPhysicalSegment;
         data-study-points={segment.points.map((point) => `${point.x},${point.y}`).join(";")}
         data-study-endpoint-a={segment.endpointIds[0]}
         data-study-endpoint-b={segment.endpointIds[1]}
+        data-study-junction-ids={segment.junctionIds.join(",")}
         data-study-logical-contributors={segment.logicalContributorIds.join(",")}
         data-study-directions={segment.directions.join(",")}
         className={`fabric-study-channel fabric-study-channel-${segment.plane}`}
@@ -119,17 +185,37 @@ function Segment({ segment, active, focused }: { segment: FabricPhysicalSegment;
         data-study-points={segment.points.map((point) => `${point.x},${point.y}`).join(";")}
         data-study-endpoint-a={segment.endpointIds[0]}
         data-study-endpoint-b={segment.endpointIds[1]}
+        data-study-junction-ids={segment.junctionIds.join(",")}
         data-study-logical-contributors={segment.logicalContributorIds.join(",")}
         data-study-directions=""
         className="fabric-study-channel fabric-study-channel-dormant"
       />}
-      <g
-        data-study-segment-label={segment.id}
-        data-study-label-bounds={`${segment.labelBounds.x},${segment.labelBounds.y},${segment.labelBounds.width},${segment.labelBounds.height}`}
-      >
-        <rect {...segment.labelBounds} rx="4" className="fabric-study-label-backdrop" />
-        <text x={segment.labelBounds.x + 6} y={segment.labelBounds.y + 11} className="fabric-study-segment-label">{segment.label}</text>
-      </g>
+      {segment.label ? (
+        <g
+          data-study-segment-label={segment.id}
+          data-study-label-bounds={`${segment.labelBounds.x},${segment.labelBounds.y},${segment.labelBounds.width},${segment.labelBounds.height}`}
+        >
+          <rect {...segment.labelBounds} rx="4" className="fabric-study-label-backdrop" />
+          <text x={segment.labelBounds.x + 6} y={segment.labelBounds.y + 11} className="fabric-study-segment-label">{segment.label}</text>
+        </g>
+      ) : null}
+    </g>
+  );
+}
+
+function Junction({ junction }: { junction: FabricCompositionJunction }) {
+  return (
+    <g
+      data-study-junction={junction.id}
+      data-study-junction-kind={junction.kind}
+      data-study-junction-plane={junction.plane}
+      data-study-junction-point={`${junction.point.x},${junction.point.y}`}
+      className={`fabric-study-junction fabric-study-junction-${junction.plane} fabric-study-junction-${junction.kind}`}
+      aria-hidden="true"
+    >
+      {junction.kind === "via" ? <circle cx={junction.point.x} cy={junction.point.y} r="5.2" className="fabric-study-via-cutout" /> : null}
+      <circle cx={junction.point.x} cy={junction.point.y} r={junction.kind === "via" ? 3.1 : 2.7} className="fabric-study-junction-ring" />
+      <circle cx={junction.point.x} cy={junction.point.y} r="1.15" className="fabric-study-junction-core" />
     </g>
   );
 }
@@ -219,6 +305,7 @@ export function FabricCompositionStudy({
   const focusedRelationshipIds = useMemo(() => new Set(
     selectedId ? model.relationships.filter((relationship) => relationship.fromNodeId === selectedId || relationship.toNodeId === selectedId).map((relationship) => relationship.id) : [],
   ), [model.relationships, selectedId]);
+  const relationshipById = useMemo(() => new Map(model.relationships.map((relationship) => [relationship.id, relationship])), [model.relationships]);
   const relatedNodeIds = useMemo(() => {
     const result = new Set<string>();
     if (!selectedId) return result;
@@ -253,6 +340,10 @@ export function FabricCompositionStudy({
           data-study-summary-ids={scene.summaryIds.join(",")}
           data-study-logical-route-count={scene.logicalRoutes.length}
           data-study-occupied-bounds={`${scene.occupiedBounds.x},${scene.occupiedBounds.y},${scene.occupiedBounds.width},${scene.occupiedBounds.height}`}
+          data-study-density={`${scene.density.occupiedCellRatio},${scene.density.largestInternalVoid}`}
+          data-study-density-columns={scene.density.columns.join(",")}
+          data-study-density-rows={scene.density.rows.join(",")}
+          data-study-storage-corridors={scene.primaryStorageCorridors.map((corridor) => `${corridor.nodeId}:${corridor.bounds.x},${corridor.bounds.y},${corridor.bounds.width},${corridor.bounds.height}`).join(";")}
           viewBox={`0 0 ${scene.viewBox.width} ${scene.viewBox.height}`}
           preserveAspectRatio="xMidYMid meet"
           role="group"
@@ -265,12 +356,33 @@ export function FabricCompositionStudy({
             </filter>
           </defs>
           <text x="24" y="20" className="fabric-study-region-label">HARDWARE ACCOUNTING · RESOURCE PLANE · NO ROUTES</text>
+          <g aria-hidden="true">
+            {scene.logicalRoutes.map((route) => (
+              <g
+                key={route.relationshipId}
+                data-study-logical-route={route.relationshipId}
+                data-study-route-from={route.fromNodeId}
+                data-study-route-to={route.toNodeId}
+                data-study-route-segments={route.segmentIds.join(",")}
+              />
+            ))}
+            {scene.primaryStorageCorridors.map((corridor) => (
+              <g
+                key={corridor.nodeId}
+                data-study-storage-corridor={corridor.nodeId}
+                data-study-corridor-bounds={`${corridor.bounds.x},${corridor.bounds.y},${corridor.bounds.width},${corridor.bounds.height}`}
+              />
+            ))}
+          </g>
           <g aria-label="Planar physical segment graph">
             {scene.segments.map((segment) => {
               const focused = segment.logicalContributorIds.some((id) => focusedRelationshipIds.has(id));
-              const active = !quiet && segment.logicalContributorIds.length > 0;
-              return <Segment key={segment.id} segment={segment} active={active} focused={focused} />;
+              const active = !quiet && segment.logicalContributorIds.some((id) => relationshipById.get(id)?.visibility === "active");
+              return <Segment key={segment.id} segment={segment} active={active || focused} focused={focused} />;
             })}
+          </g>
+          <g aria-label="Physical junction and via geometry">
+            {scene.junctions.map((junction) => <Junction key={junction.id} junction={junction} />)}
           </g>
           <g aria-label="Fabric composition nodes">
             {scene.nodes.map((node) => (
@@ -279,6 +391,7 @@ export function FabricCompositionStudy({
                 node={node}
                 selected={selectedId === node.sourceNodeId}
                 related={!selectedId || relatedNodeIds.has(node.sourceNodeId) || node.role === "resource"}
+                selectedContribution={node.resourceView?.contributors?.find((contribution) => contribution.nodeId === selectedId) ?? null}
                 onSelect={() => setSelectedId((current) => current === node.sourceNodeId ? null : node.sourceNodeId)}
               />
             ))}
