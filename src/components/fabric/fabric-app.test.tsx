@@ -1,7 +1,9 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { FabricApp } from "@/components/fabric/fabric-app";
 import { buildFabricModel } from "@/lib/fabric/model";
+import * as fabricModel from "@/lib/fabric/model";
+import * as compositionStudy from "@/lib/fabric/composition-study";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
 
 const NOW = Date.UTC(2026, 7, 15, 12);
@@ -29,10 +31,150 @@ beforeAll(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+  Object.defineProperty(document, "hidden", { configurable: true, value: false });
   window.history.pushState({}, "", "/");
 });
 
 describe("FabricApp", () => {
+  it("samples rate-only live updates at the ambient cadence", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const buildModel = vi.spyOn(fabricModel, "buildFabricModel");
+    const initial = makeFakeSnapshot("container-field-real", NOW);
+    const rateUpdate = structuredClone(initial);
+    rateUpdate.generatedAt += 2_000;
+    rateUpdate.telemetry.cpu.value!.totalFraction = 0.91;
+
+    const rendered = render(
+      <FabricApp snapshot={initial} now={NOW} seerrConfigured frozen={false} reducedMotion={false} devControls={false} />,
+    );
+    expect(buildModel).toHaveBeenCalledTimes(1);
+
+    rendered.rerender(
+      <FabricApp snapshot={rateUpdate} now={NOW + 2_000} seerrConfigured frozen={false} reducedMotion={false} devControls={false} />,
+    );
+    expect(buildModel).toHaveBeenCalledTimes(1);
+
+    act(() => vi.advanceTimersByTime(9_999));
+    expect(buildModel).toHaveBeenCalledTimes(1);
+    act(() => vi.advanceTimersByTime(1));
+    expect(buildModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("promotes operational-story and frozen updates immediately", () => {
+    const buildModel = vi.spyOn(fabricModel, "buildFabricModel");
+    const idle = makeFakeSnapshot("idle", NOW);
+    const active = makeFakeSnapshot("active", NOW + 2_000);
+    const rendered = render(
+      <FabricApp snapshot={idle} now={NOW} seerrConfigured frozen={false} reducedMotion={false} devControls={false} />,
+    );
+    expect(buildModel).toHaveBeenCalledTimes(1);
+
+    rendered.rerender(
+      <FabricApp snapshot={active} now={NOW + 2_000} seerrConfigured frozen={false} reducedMotion={false} devControls={false} />,
+    );
+    expect(buildModel).toHaveBeenCalledTimes(2);
+
+    const frozenRateUpdate = structuredClone(active);
+    frozenRateUpdate.telemetry.cpu.value!.totalFraction = 0.93;
+    rendered.rerender(
+      <FabricApp snapshot={frozenRateUpdate} now={NOW + 4_000} seerrConfigured frozen reducedMotion={false} devControls={false} />,
+    );
+    expect(buildModel).toHaveBeenCalledTimes(3);
+  });
+
+  it("suspends hidden promotion and resumes the latest snapshot on visibility", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const buildModel = vi.spyOn(fabricModel, "buildFabricModel");
+    const initial = makeFakeSnapshot("container-field-real", NOW);
+    const latest = structuredClone(initial);
+    latest.generatedAt += 2_000;
+    latest.telemetry.cpu.value!.totalFraction = 0.94;
+    const rendered = render(
+      <FabricApp snapshot={initial} now={NOW} seerrConfigured frozen={false} reducedMotion={false} devControls={false} />,
+    );
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(rendered.container.querySelector("[data-fabric-mount]")).toHaveAttribute("data-motion", "off");
+    rendered.rerender(
+      <FabricApp snapshot={latest} now={NOW + 2_000} seerrConfigured frozen={false} reducedMotion={false} devControls={false} />,
+    );
+    act(() => vi.advanceTimersByTime(20_000));
+    expect(buildModel).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(buildModel).toHaveBeenCalledTimes(2);
+    const expectedCpuPrimary = buildFabricModel(latest, {
+      now: NOW + 2_000,
+      seerrConfigured: true,
+    }).resourceViews.find((view) => view.id === "cpu")!.primary;
+    expect(rendered.container.querySelector('[data-fabric-node="resource:cpu"]')).toHaveTextContent(expectedCpuPrimary);
+  });
+
+  it("reuses A+ geometry for runtime-only updates and invalidates it for exact topology changes", () => {
+    const buildComposition = vi.spyOn(compositionStudy, "buildFabricComposition");
+    const initial = makeFakeSnapshot("container-field-real", NOW);
+    const runtimeUpdate = structuredClone(initial);
+    runtimeUpdate.generatedAt += 2_000;
+    runtimeUpdate.telemetry.cpu.value!.totalFraction = 0.91;
+    runtimeUpdate.telemetry.docker.value!.containers[0]!.cpuFraction = 0.73;
+
+    const rendered = render(
+      <FabricApp
+        snapshot={initial}
+        now={NOW}
+        seerrConfigured
+        frozen
+        reducedMotion={false}
+        devControls={false}
+      />,
+    );
+    expect(buildComposition).toHaveBeenCalledTimes(1);
+
+    rendered.rerender(
+      <FabricApp
+        snapshot={runtimeUpdate}
+        now={NOW + 2_000}
+        seerrConfigured
+        frozen
+        reducedMotion={false}
+        devControls={false}
+      />,
+    );
+    expect(buildComposition).toHaveBeenCalledTimes(1);
+    const expectedCpuPrimary = buildFabricModel(runtimeUpdate, {
+      now: NOW + 2_000,
+      seerrConfigured: true,
+    }).resourceViews.find((view) => view.id === "cpu")!.primary;
+    expect(rendered.container.querySelector('[data-fabric-node="resource:cpu"]')).toHaveTextContent(expectedCpuPrimary);
+
+    const topologyUpdate = structuredClone(runtimeUpdate);
+    topologyUpdate.telemetry.docker.value!.containers[0]!.networkNames = [
+      ...(topologyUpdate.telemetry.docker.value!.containers[0]!.networkNames ?? []),
+      "new-exact-segment",
+    ];
+    rendered.rerender(
+      <FabricApp
+        snapshot={topologyUpdate}
+        now={NOW + 4_000}
+        seerrConfigured
+        frozen
+        reducedMotion={false}
+        devControls={false}
+      />,
+    );
+    expect(buildComposition).toHaveBeenCalledTimes(2);
+    buildComposition.mockRestore();
+  });
+
   it("promotes the A+ composition and exposes both production and study diagnostics", () => {
     const { container } = render(
       <FabricApp
@@ -129,7 +271,7 @@ describe("FabricApp", () => {
     expect(container.querySelector("[data-fabric-route]")).toBeNull();
   });
 
-  it("disables animated relationship scheduler attributes in frozen and reduced-motion modes", () => {
+  it("keeps focused routes scheduler-free across runtime motion modes", () => {
     const snapshot = makeFakeSnapshot("active", NOW);
     const { container, rerender } = render(
       <FabricApp
@@ -142,7 +284,8 @@ describe("FabricApp", () => {
       />,
     );
 
-    expect(container.querySelectorAll('[data-fabric-flow-motion="true"]').length).toBeGreaterThan(0);
+    fireEvent.keyDown(container.querySelector('[data-fabric-node="service:jellyfin"]')!, { key: "Enter" });
+    expect(container.querySelectorAll('[data-fabric-flow-motion="true"]')).toHaveLength(0);
 
     rerender(
       <FabricApp

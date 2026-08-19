@@ -1503,11 +1503,11 @@ async function main() {
           );
         }
         const diagnosticsPath = `${OUT_DIR}/diagnostics.json`;
-        writeFileSync(diagnosticsPath, `${JSON.stringify({ capturedAt: new Date().toISOString(), diagnostics: FABRIC_STUDY_DIAGNOSTICS }, null, 2)}\n`);
+        writeFileSync(diagnosticsPath, `${JSON.stringify({ capturedAt: new Date(FREEZE_AT).toISOString(), diagnostics: FABRIC_STUDY_DIAGNOSTICS }, null, 2)}\n`);
         console.log(`captured ${diagnosticsPath}`);
       } else if (FABRIC && FABRIC_FRAME_DIAGNOSTICS.length > 0) {
         const diagnosticsPath = `${OUT_DIR}/diagnostics.json`;
-        writeFileSync(diagnosticsPath, `${JSON.stringify({ capturedAt: new Date().toISOString(), diagnostics: FABRIC_FRAME_DIAGNOSTICS }, null, 2)}\n`);
+        writeFileSync(diagnosticsPath, `${JSON.stringify({ capturedAt: new Date(FREEZE_AT).toISOString(), diagnostics: FABRIC_FRAME_DIAGNOSTICS }, null, 2)}\n`);
         console.log(`captured ${diagnosticsPath}`);
       }
     }
@@ -1614,7 +1614,7 @@ async function measurePerformanceProfile(browser, baseUrl, profile) {
  * benchmark score. Exceeding a budget prints a loud warning and is recorded
  * in the JSON for the reviewer; the raw numbers are the claim, not a grade.
  */
-const PERFORMANCE_BUDGET_MS_PER_S = {
+const FABRIC_PERFORMANCE_BUDGET_MS_PER_S = {
   idle: 40,
   active: 80,
   "44-container": 100,
@@ -1623,20 +1623,39 @@ const PERFORMANCE_BUDGET_MS_PER_S = {
   "hidden-tab": 15,
 };
 
+const TOPOLOGY_PERFORMANCE_BUDGET_MS_PER_S = {
+  idle: 40,
+  "representative-active": 80,
+  "container-field-real": 100,
+  "container-field-stress": 150,
+  "reduced-motion": 40,
+  "hidden-tab": 15,
+};
+
 async function capturePerformance(browser, baseUrl) {
-  const profiles = [
-    { name: "idle", scenario: "idle", reducedMotion: false, hidden: false },
-    { name: "active", scenario: "active", reducedMotion: false, hidden: false },
-    { name: "44-container", scenario: "container-field-real", reducedMotion: false, hidden: false },
-    { name: "focus", scenario: "transcode", reducedMotion: false, hidden: false, action: "fabric-jellyfin" },
-    { name: "reduced-motion", scenario: "active", reducedMotion: true, hidden: false },
-    { name: "hidden-tab", scenario: "active", reducedMotion: false, hidden: true },
-  ];
+  const profiles = FABRIC
+    ? [
+        { name: "idle", scenario: "idle", reducedMotion: false, hidden: false },
+        { name: "active", scenario: "active", reducedMotion: false, hidden: false },
+        { name: "44-container", scenario: "container-field-real", reducedMotion: false, hidden: false },
+        { name: "focus", scenario: "transcode", reducedMotion: false, hidden: false, action: "fabric-jellyfin" },
+        { name: "reduced-motion", scenario: "active", reducedMotion: true, hidden: false },
+        { name: "hidden-tab", scenario: "active", reducedMotion: false, hidden: true },
+      ]
+    : [
+        { name: "idle", scenario: "idle", reducedMotion: false, hidden: false },
+        { name: "representative-active", scenario: "active", reducedMotion: false, hidden: false },
+        { name: "container-field-real", scenario: "container-field-real", reducedMotion: false, hidden: false },
+        { name: "container-field-stress", scenario: "container-field-stress", reducedMotion: false, hidden: false },
+        { name: "reduced-motion", scenario: "active", reducedMotion: true, hidden: false },
+        { name: "hidden-tab", scenario: "active", reducedMotion: false, hidden: true },
+      ];
+  const budgets = FABRIC ? FABRIC_PERFORMANCE_BUDGET_MS_PER_S : TOPOLOGY_PERFORMANCE_BUDGET_MS_PER_S;
   const measurements = [];
   for (const profile of profiles) {
     console.log(`measuring browser cost: ${profile.name}…`);
     const result = await measurePerformanceProfile(browser, baseUrl, profile);
-    const budget = PERFORMANCE_BUDGET_MS_PER_S[profile.name] ?? null;
+    const budget = budgets[profile.name] ?? null;
     result.budgetMainThreadMsPerSecond = budget;
     result.withinBudget =
       budget === null ? null : result.mainThreadTaskMsPerSecond <= budget;
@@ -1659,7 +1678,7 @@ async function capturePerformance(browser, baseUrl) {
       description:
         "Review budget: main-thread ms per wall second at 1920×1080 on the capture machine. " +
         "A quiet ambient 24/7 surface, not a benchmark score — reviewers judge the raw numbers.",
-      values: PERFORMANCE_BUDGET_MS_PER_S,
+      values: budgets,
     },
     units: {
       mainThreadTaskMsPerSecond: "milliseconds of main-thread task time per wall second",

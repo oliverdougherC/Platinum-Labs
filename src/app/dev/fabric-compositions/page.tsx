@@ -32,11 +32,13 @@ export default async function FabricCompositionsPage({
   const mode = one(params.mode) === "relationship-map" ? "relationship-map" : "activity";
 
   return (
-    <FabricCompositionStudy
-      initialScenario={scenario}
-      initialViewMode={mode}
-      now={now}
-      initialFocus={focus}
-    />
+    <div className="h-screen overflow-hidden">
+      <FabricCompositionStudy
+        initialScenario={scenario}
+        initialViewMode={mode}
+        now={now}
+        initialFocus={focus}
+      />
+    </div>
   );
 }

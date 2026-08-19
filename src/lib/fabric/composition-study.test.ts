@@ -242,6 +242,7 @@ describe("fabric composition studies", () => {
     const model = modelFor("cross-pool-import", { networkBoundaries: ["wan", "lan", "overlay"] });
     const importRelationship = model.relationships.find((relationship) => relationship.id === "import-copy:pool:NVME->pool:DataStore")!;
     Object.assign(importRelationship, { controllerServiceId: "service:radarr" });
+    importRelationship.provenance = "arbitrary display wording with no service-name contract";
     const scene = buildFabricComposition(model, "A+");
     const readOperation = scene.logicalRoutes.find((route) => route.relationshipId === "import-copy:pool:NVME->pool:DataStore:read-operation");
     const writeOperation = scene.logicalRoutes.find((route) => route.relationshipId === "import-copy:pool:NVME->pool:DataStore:write-operation");

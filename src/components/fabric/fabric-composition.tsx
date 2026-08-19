@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { DrawerShell } from "@/components/ui/overlay-shell";
 import { buildFabricComposition, type FabricCompositionId } from "@/lib/fabric/composition-study";
 import {
@@ -174,7 +174,7 @@ function relationshipPresentation(relationship: FabricRelationship, motionEnable
     animated,
     width,
     motionSeconds,
-    direction: animated ? relationship.direction : "none",
+    direction: state === "live-transfer" ? relationship.direction : "none",
   };
 }
 
@@ -672,8 +672,104 @@ function normalizeFocus(initialFocus: string | null): string | null {
     : `service:${initialFocus}`;
 }
 
-export function FabricComposition({
+function compactCompositionMetric(value: string): string {
+  return value.replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").replace(/\bTB\b/g, "T").replace(/\bGB\b/g, "G").replace(/\bMB\b/g, "M");
+}
+
+function compactCompositionLabel(value: string, limit = 18): string {
+  const normalized = value.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  return normalized.length <= limit ? normalized : `${normalized.slice(0, Math.max(1, limit - 1)).trimEnd()}…`;
+}
+
+function refreshedPromotedMembers(model: FabricModel, nodeId: string): string[] {
+  const group = model.population.groups.find((candidate) => candidate.id === nodeId);
+  if (!group) return [];
+  const active = group.members.filter((member) =>
+    member.attention ||
+    (member.cpuFraction ?? 0) >= 0.25 ||
+    (member.netRxBps ?? 0) >= 1_000_000 ||
+    (member.netTxBps ?? 0) >= 1_000_000 ||
+    (member.blockReadBps ?? 0) >= 1_000_000 ||
+    (member.blockWriteBps ?? 0) >= 1_000_000,
+  );
+  return (active.length ? active : group.members.slice(0, 1))
+    .slice(0, 2)
+    .map((member) => compactCompositionLabel(member.name));
+}
+
+function refreshFabricComposition(scene: FabricCompositionScene, model: FabricModel): FabricCompositionScene {
+  const sourceNodeById = new Map(model.nodes.map((node) => [node.id, node]));
+  const resourceViewByNodeId = new Map(model.resourceViews.map((view) => [view.nodeId, view]));
+  const accountedNodeById = new Map(model.population.accountedNodes.map((node) => [node.nodeId, node]));
+  const relationshipById = new Map(model.relationships.map((relationship) => [relationship.id, relationship]));
+  const capabilityByNodeId = new Map(model.stableCapabilities.map((capability) => [capability.nodeId, capability]));
+
+  const nodes = scene.nodes.map((node) => {
+    const source = sourceNodeById.get(node.sourceNodeId);
+    if (!source) return node;
+    const metrics = node.role === "storage" && source.metrics.length >= 2
+      ? [{ label: "CAP · USED", value: `${compactCompositionMetric(source.metrics[0]!.value)} · ${source.metrics[1]!.value}` }]
+      : source.metrics
+        .slice(0, node.role === "subsystem" ? 3 : 2)
+        .map((metric) => ({ ...metric, value: compactCompositionMetric(metric.value) }));
+    return {
+      ...node,
+      status: source.status,
+      metrics,
+      promoted: refreshedPromotedMembers(model, node.sourceNodeId),
+      resourceView: resourceViewByNodeId.get(node.sourceNodeId) ?? null,
+    };
+  });
+
+  const logicalRoutes = scene.logicalRoutes.map((route) => {
+    const relationship = relationshipById.get(route.contributorRelationshipId) ?? relationshipById.get(route.relationshipId);
+    return relationship ? {
+      ...route,
+      label: relationship.label,
+      direction: relationship.direction,
+      evidence: relationship.evidence,
+      networkBoundary: relationship.networkBoundary,
+    } : route;
+  });
+  const segments = scene.segments.map((segment) => {
+    const directions = new Set<"forward" | "reverse">();
+    for (const contributorId of segment.logicalContributorIds) {
+      const relationship = relationshipById.get(contributorId);
+      if (!relationship) continue;
+      if (relationship.direction !== "reverse") directions.add("forward");
+      if (relationship.direction !== "forward") directions.add("reverse");
+    }
+    return { ...segment, directions: [...directions] };
+  });
+  const byNodeId = Object.fromEntries(Object.entries(scene.subsystemFocus.byNodeId).map(([nodeId, focus]) => {
+    const capability = capabilityByNodeId.get(nodeId);
+    if (!capability) return [nodeId, focus];
+    return [nodeId, {
+      ...focus,
+      memberIds: accountedNodeById.get(nodeId)?.containerIds ?? [],
+      networkSegmentIds: capability.networkSegmentIds,
+      coverage: {
+        network: capability.coverage.network,
+        read: capability.coverage.read,
+        write: capability.coverage.write,
+      },
+    }];
+  }));
+
+  return {
+    ...scene,
+    nodes,
+    segments,
+    logicalRoutes,
+    representedIds: [...model.population.ids].sort(),
+    summaryIds: [...new Set(model.population.accountedNodes.flatMap((node) => node.containerIds))].sort(),
+    subsystemFocus: { ...scene.subsystemFocus, byNodeId },
+  };
+}
+
+function FabricCompositionView({
   model,
+  geometryModel,
   study = "A+",
   viewMode,
   quiet,
@@ -683,6 +779,7 @@ export function FabricComposition({
   surfaceLabel = "Server fabric",
 }: {
   model: FabricModel;
+  geometryModel?: FabricModel;
   study?: FabricCompositionId;
   viewMode: FabricCompositionViewMode;
   quiet: boolean;
@@ -692,7 +789,9 @@ export function FabricComposition({
   surfaceLabel?: string;
 }) {
   const mapMode = viewMode === "relationship-map";
-  const scene = useMemo(() => buildFabricComposition(model, study), [model, study]);
+  const compositionModel = geometryModel ?? model;
+  const geometryScene = useMemo(() => buildFabricComposition(compositionModel, study), [compositionModel, study]);
+  const scene = useMemo(() => refreshFabricComposition(geometryScene, model), [geometryScene, model]);
   const normalizedFocus = normalizeFocus(initialFocus);
   const [selectedId, setSelectedId] = useState(normalizedFocus);
   useEffect(() => setSelectedId(normalizedFocus), [normalizedFocus]);
@@ -845,7 +944,10 @@ export function FabricComposition({
         focused,
         active,
         structural,
-        animated: Boolean(animatedPresentation?.animated),
+        // Continuous stroke-dashoffset on board-scale SVG paths forces a
+        // persistent repaint. Keep direction available as route metadata while
+        // the ambient surface remains scheduler-free.
+        animated: false,
         state,
         width,
         motionSeconds,
@@ -1003,3 +1105,6 @@ export function FabricComposition({
     </main>
   );
 }
+
+export const FabricComposition = memo(FabricCompositionView);
+FabricComposition.displayName = "FabricComposition";

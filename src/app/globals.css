@@ -436,7 +436,6 @@
 
 .fabric-study-channel-activity-live-transfer {
   stroke-dasharray: 9 9;
-  animation: flow-march linear infinite;
 }
 
 [data-motion="off"] .fabric-study-channel-activity-live-transfer {
