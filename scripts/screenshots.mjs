@@ -136,6 +136,25 @@ const FABRIC_STUDY_SHOTS = [
   { study: "A+", artifactDir: "A-plus", state: "reduced-motion", name: "15-reduced-motion-1920x1080", scenario: "container-mixed", reducedMotion: true, w: 1920, h: 1080 },
 ];
 
+// V4 Kinetic Flow Canvas prototype evidence (dev surface /dev/kinetic-flow).
+// The required design-review states from the V4 spec, all against the
+// deterministic fake simulator at the frozen clock.
+const KINETIC_SHOTS = [
+  { name: "01-v4-quiet-1920x1080", scenario: "idle", w: 1920, h: 1080 },
+  { name: "02-v4-quiet-1280x720", scenario: "idle", w: 1280, h: 720 },
+  { name: "03-v4-download-1920x1080", scenario: "downloads", w: 1920, h: 1080 },
+  { name: "04-v4-direct-play-1920x1080", scenario: "direct-play", w: 1920, h: 1080 },
+  { name: "05-v4-transcode-1920x1080", scenario: "transcode", w: 1920, h: 1080 },
+  { name: "06-v4-simultaneous-1920x1080", scenario: "active", w: 1920, h: 1080 },
+  { name: "07-v4-cross-pool-import-1920x1080", scenario: "cross-pool-import", w: 1920, h: 1080 },
+  { name: "08-v4-workload-field-44-1920x1080", scenario: "container-field-real", w: 1920, h: 1080 },
+  { name: "09-v4-attention-1920x1080", scenario: "attention", w: 1920, h: 1080 },
+  { name: "10-v4-cpu-gpu-load-1920x1080", scenario: "gpu-workload", w: 1920, h: 1080 },
+  { name: "11-v4-jellyfin-inspector-1920x1080", scenario: "active", w: 1920, h: 1080, action: "kinetic-anchor:jellyfin" },
+  { name: "12-v4-seeding-1920x1080", scenario: "seeding", w: 1920, h: 1080 },
+  { name: "13-v4-reduced-motion-1920x1080", scenario: "active", w: 1920, h: 1080, reducedMotion: true },
+];
+
 const A_PLUS_ACTIVITY_SIGNATURES = new Map();
 const FABRIC_FRAME_DIAGNOSTICS = [];
 const FABRIC_STUDY_DIAGNOSTICS = [];
@@ -168,10 +187,11 @@ function arg(flag, fallback = null) {
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
-const FABRIC_STUDIES = process.argv.includes("--fabric-studies");
-const FABRIC = !FABRIC_STUDIES && process.argv.includes("--fabric");
-const SHOTS = FABRIC_STUDIES ? FABRIC_STUDY_SHOTS : FABRIC ? FABRIC_SHOTS : TOPOLOGY_SHOTS;
-const OUT_DIR = arg("--out", FABRIC_STUDIES ? "docs/review/v3-server-fabric-compositions" : FABRIC ? "docs/review/v3-server-fabric" : "docs/review/v21-living-topology");
+const KINETIC = process.argv.includes("--kinetic");
+const FABRIC_STUDIES = !KINETIC && process.argv.includes("--fabric-studies");
+const FABRIC = !KINETIC && !FABRIC_STUDIES && process.argv.includes("--fabric");
+const SHOTS = KINETIC ? KINETIC_SHOTS : FABRIC_STUDIES ? FABRIC_STUDY_SHOTS : FABRIC ? FABRIC_SHOTS : TOPOLOGY_SHOTS;
+const OUT_DIR = arg("--out", KINETIC ? "docs/review/v4-kinetic-flow" : FABRIC_STUDIES ? "docs/review/v3-server-fabric-compositions" : FABRIC ? "docs/review/v3-server-fabric" : "docs/review/v21-living-topology");
 const ONLY = arg("--only");
 const MOTION = process.argv.includes("--motion");
 const PERFORMANCE = process.argv.includes("--performance");
@@ -235,7 +255,43 @@ async function focusFlow(page, needles) {
   throw new Error(`no flow focus target matched: ${needles.join(" + ")}`);
 }
 
+async function validateKineticShot(page, shot) {
+  const stage = page.locator("[data-kinetic-stage]");
+  if ((await stage.count()) !== 1) {
+    throw new Error(`kinetic stage missing (${shot.name})`);
+  }
+  // Frozen frames must not run an animation loop.
+  const motion = await stage.getAttribute("data-motion");
+  if (motion !== "off") {
+    throw new Error(`frozen kinetic frame reports data-motion=${motion} (${shot.name})`);
+  }
+  if ((await page.locator("[data-kinetic-stage] canvas").count()) !== 1) {
+    throw new Error(`kinetic canvas missing (${shot.name})`);
+  }
+  // The upgraded CPU topology must be visible on the instrument band.
+  const bandText = await page.locator("[data-kinetic-stage] header").innerText();
+  if (!bandText.includes("44C / 88T")) {
+    throw new Error(`instrument band lacks the detected CPU topology (${shot.name})`);
+  }
+  if (shot.action?.startsWith("kinetic-anchor:")) {
+    if ((await page.locator("[data-kinetic-inspector]").count()) !== 1) {
+      throw new Error(`kinetic inspector did not open (${shot.name})`);
+    }
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(80);
+    if (await page.locator("[data-kinetic-inspector]").count()) {
+      throw new Error(`Escape did not close the kinetic inspector (${shot.name})`);
+    }
+  }
+}
+
 async function performShotAction(page, action) {
+  if (action?.startsWith("kinetic-anchor:")) {
+    const anchorId = action.slice("kinetic-anchor:".length);
+    await page.locator(`[data-kinetic-anchor="${anchorId}"]`).click();
+    await page.waitForTimeout(200);
+    return;
+  }
   if (action?.startsWith("fabric-focus:")) {
     const targetId = action.slice("fabric-focus:".length);
     const target = page.locator(`[data-fabric-node="${targetId}"]`);
@@ -1438,8 +1494,8 @@ async function main() {
           if (shot.mode) params.set("mode", shot.mode);
           if (shot.inspector) params.set("inspector", "1");
         }
-        const route = FABRIC_STUDIES ? "/dev/fabric-compositions" : "/";
-        const url = FABRIC_STUDIES ? `${baseUrl}${route}?${params}` : `${homeShotUrl(baseUrl, shot)}&freeze=${FREEZE_AT}`;
+        const route = KINETIC ? "/dev/kinetic-flow" : FABRIC_STUDIES ? "/dev/fabric-compositions" : "/";
+        const url = KINETIC || FABRIC_STUDIES ? `${baseUrl}${route}?${params}` : `${homeShotUrl(baseUrl, shot)}&freeze=${FREEZE_AT}`;
         await page.goto(url, { waitUntil: "networkidle" });
         // Fonts + SSR hydration settle; frozen mode has no further changes.
         await page.waitForTimeout(1_200);
@@ -1447,7 +1503,14 @@ async function main() {
         assertNoPageScroll(beforeActionBox, shot);
         if (FABRIC_STUDIES) mkdirSync(`${OUT_DIR}/${shot.artifactDir ?? shot.study}`, { recursive: true });
         const path = FABRIC_STUDIES ? `${OUT_DIR}/${shot.artifactDir ?? shot.study}/${shot.name}.png` : `${OUT_DIR}/${shot.name}.png`;
-        if (FABRIC_STUDIES) {
+        if (KINETIC) {
+          await performShotAction(page, shot.action);
+          await page.waitForTimeout(250);
+          // Preserve the frame even when validation fails so visual review
+          // can drive the next iteration.
+          await page.screenshot({ path });
+          await validateKineticShot(page, shot);
+        } else if (FABRIC_STUDIES) {
           // Preserve the rendered frame even when a diagnostic fails so visual
           // review can drive the next geometry iteration.
           await page.screenshot({ path });
@@ -1758,14 +1821,18 @@ async function captureMotion(browser, baseUrl) {
     bypassCSP: true,
   });
   const page = await context.newPage();
-  const targetRoute = FABRIC_STUDIES
-    ? `${baseUrl}/dev/fabric-compositions?scenario=idle&freeze=${FREEZE_AT}`
-    : `${baseUrl}/?scenario=idle&switcher=off${FABRIC ? "&ui=fabric" : ""}`;
-  console.log(FABRIC_STUDIES
-    ? "recording motion (same mounted A+ study): quiet → mixed → Jellyfin focus → release → quiet…"
-    : FABRIC
-      ? "recording motion (same mounted fabric homepage): quiet → active → Jellyfin focus → release → quiet…"
-      : "recording motion (same mounted scene): 7s idle → 13s active → 6s easing…");
+  const targetRoute = KINETIC
+    ? `${baseUrl}/dev/kinetic-flow?scenario=idle`
+    : FABRIC_STUDIES
+      ? `${baseUrl}/dev/fabric-compositions?scenario=idle&freeze=${FREEZE_AT}`
+      : `${baseUrl}/?scenario=idle&switcher=off${FABRIC ? "&ui=fabric" : ""}`;
+  console.log(KINETIC
+    ? "recording motion (same mounted kinetic canvas): quiet → download → playback → simultaneous → quiet…"
+    : FABRIC_STUDIES
+      ? "recording motion (same mounted A+ study): quiet → mixed → Jellyfin focus → release → quiet…"
+      : FABRIC
+        ? "recording motion (same mounted fabric homepage): quiet → active → Jellyfin focus → release → quiet…"
+        : "recording motion (same mounted scene): 7s idle → 13s active → 6s easing…");
   // NOT networkidle: the live page holds an SSE stream open, so the network
   // never idles. The fixture-hook wait below is the real readiness signal.
   await page.goto(targetRoute, { waitUntil: "domcontentloaded" });
@@ -1774,6 +1841,47 @@ async function captureMotion(browser, baseUrl) {
   });
   const url0 = page.url();
   const mountedStudyStage = FABRIC_STUDIES ? await page.locator("[data-study-stage]").elementHandle() : null;
+  const mountedKineticStage = KINETIC ? await page.locator("[data-kinetic-stage]").elementHandle() : null;
+  if (KINETIC) {
+    // The required same-mounted V4 sequence, no reloads: quiet → qBittorrent
+    // download → Jellyfin playback → simultaneous activity → quiet.
+    await page.waitForTimeout(3_500);
+    await page.evaluate(() => window.__homelabSetScenario("downloads"));
+    await page.waitForTimeout(4_500);
+    await page.evaluate(() => window.__homelabSetScenario("direct-play"));
+    await page.waitForTimeout(4_500);
+    await page.evaluate(() => window.__homelabSetScenario("active"));
+    await page.waitForTimeout(4_500);
+    await page.evaluate(() => window.__homelabSetScenario("idle"));
+    await page.waitForTimeout(4_000);
+    if (page.url() !== url0) {
+      throw new Error("motion capture navigated — the same-page contract is broken");
+    }
+    if (mountedKineticStage && !(await mountedKineticStage.evaluate((stage) => stage === document.querySelector("[data-kinetic-stage]")))) {
+      throw new Error("motion capture remounted the kinetic stage — the same-mounted contract is broken");
+    }
+    const kineticVideo = page.video();
+    await page.close();
+    await context.close();
+    const kineticWebm = await kineticVideo.path();
+    mkdirSync(OUT_DIR, { recursive: true });
+    const kineticBasename = "motion-quiet-download-playback-simultaneous-quiet";
+    const kineticTarget = `${OUT_DIR}/${kineticBasename}.webm`;
+    execFileSync("mv", [kineticWebm, kineticTarget]);
+    console.log(`captured ${kineticTarget}`);
+    try {
+      execFileSync("ffmpeg", [
+        "-y", "-ss", "0.5", "-i", kineticTarget,
+        "-vf", "fps=10,scale=960:-1:flags=lanczos",
+        "-loop", "0",
+        `${OUT_DIR}/${kineticBasename}.gif`,
+      ], { stdio: "ignore" });
+      console.log(`captured ${OUT_DIR}/${kineticBasename}.gif`);
+    } catch {
+      console.warn("ffmpeg unavailable — skipped GIF; the webm is authoritative");
+    }
+    return;
+  }
   await page.waitForTimeout(3_000);
   await page.evaluate((nextScenario) => window.__homelabSetScenario(nextScenario), FABRIC_STUDIES ? "container-mixed" : "active");
   await page.waitForTimeout(4_000);
