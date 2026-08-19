@@ -31,6 +31,7 @@ import type {
   ArcTelemetry,
   ContainerState,
   CpuTelemetry,
+  CpuTopology,
   DiskIoTelemetry,
   DockerTelemetry,
   GpuTelemetry,
@@ -44,11 +45,20 @@ import type {
 
 const sectionStatus = z.enum(["ok", "unavailable", "not-configured"]);
 
+const rawCpuTopologySchema = z.object({
+  logicalCpus: z.number().nullish(),
+  sockets: z.number().nullish(),
+  physicalCores: z.number().nullish(),
+  coreSiblings: z.array(z.array(z.number())).nullish(),
+});
+
 const rawCpuSchema = z.object({
   status: sectionStatus,
   total: z.array(z.number()).nullish(),
   cores: z.array(z.array(z.number())).nullish(),
   load: z.array(z.number()).nullish(),
+  // Absent on older collectors; enrichment only, never gates the section.
+  topology: rawCpuTopologySchema.nullish(),
 });
 
 const rawMemorySchema = z.object({
@@ -232,6 +242,47 @@ function sanitizeDockerNetworks(values: string[] | null | undefined): string[] |
 
 // --- normalization -----------------------------------------------------------
 
+function positiveInt(v: number | null | undefined): number | null {
+  return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : null;
+}
+
+/**
+ * Validate collector-reported CPU topology. Physical fields survive only when
+ * internally consistent; they are never reconstructed from the logical count
+ * (dividing logical CPUs by an assumed SMT factor is exactly the guess this
+ * type exists to prevent).
+ */
+export function normalizeCpuTopology(
+  raw: z.infer<typeof rawCpuTopologySchema> | null | undefined,
+): CpuTopology | null {
+  if (!raw) return null;
+  const logicalCpus = positiveInt(raw.logicalCpus);
+  if (logicalCpus === null) return null;
+  let sockets = positiveInt(raw.sockets);
+  let physicalCores = positiveInt(raw.physicalCores);
+  let coreSiblings = Array.isArray(raw.coreSiblings) ? raw.coreSiblings : null;
+  if (
+    physicalCores === null ||
+    sockets === null ||
+    physicalCores > logicalCpus ||
+    sockets > physicalCores ||
+    (coreSiblings !== null &&
+      (coreSiblings.length !== physicalCores ||
+        coreSiblings.some(
+          (group) =>
+            group.length === 0 ||
+            group.some((id) => !Number.isInteger(id) || id < 0),
+        )))
+  ) {
+    // Partial or contradictory topology: keep the logical count (it stands on
+    // its own) and null the physical claims rather than repair them.
+    sockets = null;
+    physicalCores = null;
+    coreSiblings = null;
+  }
+  return { logicalCpus, sockets, physicalCores, coreSiblings };
+}
+
 function normalizeCpu(
   prevRaw: RawHostSample | null,
   curr: RawHostSample,
@@ -265,6 +316,7 @@ function normalizeCpu(
       load1: finiteOrNull(raw.load?.[0]),
       load5: finiteOrNull(raw.load?.[1]),
       load15: finiteOrNull(raw.load?.[2]),
+      topology: normalizeCpuTopology(raw.topology),
     },
     curr.sampledAt,
   );

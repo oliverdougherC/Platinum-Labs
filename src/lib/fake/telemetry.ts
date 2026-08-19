@@ -6,8 +6,9 @@
  * breathes when polled continuously, yet any fixed `now` renders an identical
  * frame — the property the screenshot harness (PLA-270) depends on.
  *
- * The simulated machine mirrors the real p910 host: 32 logical CPUs, 126 GiB
- * RAM, a GTX 1070, three pools (DataStore / NVME / eSATA).
+ * The simulated machine mirrors the real p910 host after the 2026 CPU upgrade:
+ * two sockets, 44 physical cores, SMT on (88 logical CPUs), 126 GiB RAM, a
+ * GTX 1070, three pools (DataStore / NVME / eSATA).
  */
 
 import { clamp } from "@/lib/utils";
@@ -21,13 +22,25 @@ import {
   notConfiguredTelemetry,
 } from "@/lib/telemetry/normalize";
 import type {
+  CpuTopology,
   DockerContainerTelemetry,
   HostTelemetrySnapshot,
   TelemetryDomain,
   TelemetryHistory,
 } from "@/lib/types";
 
-export const FAKE_CORE_COUNT = 32;
+/**
+ * Topology of the simulated host: 2 × 22-core Xeons with SMT, exactly what the
+ * sysfs detector reports for the upgraded p910. Sibling threads follow the
+ * common kernel enumeration (cpu N pairs with cpu N + physicalCores).
+ */
+export const FAKE_CPU_TOPOLOGY: CpuTopology = {
+  logicalCpus: 88,
+  sockets: 2,
+  physicalCores: 44,
+  coreSiblings: Array.from({ length: 44 }, (_, core) => [core, core + 44]),
+};
+export const FAKE_CORE_COUNT = FAKE_CPU_TOPOLOGY.logicalCpus;
 const GiB = 1024 ** 3;
 const MEM_TOTAL = 126 * GiB;
 const SWAP_TOTAL = 64 * GiB;
@@ -561,6 +574,7 @@ export function makeFakeTelemetry(
         load1: Number((totalFraction * FAKE_CORE_COUNT * 0.9).toFixed(2)),
         load5: Number((totalFraction * FAKE_CORE_COUNT * 0.8).toFixed(2)),
         load15: Number((totalFraction * FAKE_CORE_COUNT * 0.7).toFixed(2)),
+        topology: FAKE_CPU_TOPOLOGY,
       },
       now,
     ),

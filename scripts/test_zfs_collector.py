@@ -2,6 +2,7 @@ import importlib.util
 import os
 import pathlib
 import subprocess
+import tempfile
 import threading
 import time
 import unittest
@@ -217,6 +218,101 @@ class ZfsCollectorTests(unittest.TestCase):
 
         section = zfs_collector._section(boom)
         self.assertEqual(section, {"status": "unavailable"})
+
+
+class CpuTopologyTests(unittest.TestCase):
+    """CPU topology comes from sysfs pairs, never from logical/2 guesses."""
+
+    def _sysfs(self, cpus):
+        """Build a fake sysfs tree. `cpus` maps cpu id -> (package, core) or
+        None for a CPU directory with no topology files."""
+        root = tempfile.mkdtemp()
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", root], check=False))
+        base = pathlib.Path(root) / "devices" / "system" / "cpu"
+        for cpu, topo in cpus.items():
+            cpu_dir = base / f"cpu{cpu}"
+            if topo is None:
+                cpu_dir.mkdir(parents=True)
+                continue
+            pkg, core = topo
+            topo_dir = cpu_dir / "topology"
+            topo_dir.mkdir(parents=True)
+            (topo_dir / "physical_package_id").write_text(f"{pkg}\n")
+            (topo_dir / "core_id").write_text(f"{core}\n")
+        return root
+
+    def _read(self, root):
+        with patch.object(zfs_collector, "HOST_SYS", root):
+            return zfs_collector._read_cpu_topology()
+
+    def test_two_sockets_with_smt(self):
+        # 2 packages x 2 cores x 2 threads; sibling threads offset by 4.
+        root = self._sysfs(
+            {
+                0: (0, 0), 1: (0, 1), 2: (1, 0), 3: (1, 1),
+                4: (0, 0), 5: (0, 1), 6: (1, 0), 7: (1, 1),
+            }
+        )
+        self.assertEqual(
+            self._read(root),
+            {
+                "logicalCpus": 8,
+                "sockets": 2,
+                "physicalCores": 4,
+                "coreSiblings": [[0, 4], [1, 5], [2, 6], [3, 7]],
+            },
+        )
+
+    def test_single_socket_without_smt_is_not_halved(self):
+        # SMT off: physical MUST equal logical (a logical/2 guess would say 2).
+        root = self._sysfs({0: (0, 0), 1: (0, 1), 2: (0, 2), 3: (0, 3)})
+        self.assertEqual(
+            self._read(root),
+            {
+                "logicalCpus": 4,
+                "sockets": 1,
+                "physicalCores": 4,
+                "coreSiblings": [[0], [1], [2], [3]],
+            },
+        )
+
+    def test_missing_topology_files_keep_logical_count_only(self):
+        root = self._sysfs({0: (0, 0), 1: (0, 1), 2: None, 3: (0, 3)})
+        self.assertEqual(
+            self._read(root),
+            {
+                "logicalCpus": 4,
+                "sockets": None,
+                "physicalCores": None,
+                "coreSiblings": None,
+            },
+        )
+
+    def test_no_cpu_directories_is_none(self):
+        root = self._sysfs({})
+        pathlib.Path(root, "devices", "system", "cpu").mkdir(parents=True)
+        self.assertIsNone(self._read(root))
+
+    def test_unreadable_sysfs_is_none_not_a_crash(self):
+        root = self._sysfs({})
+        # `devices/system/cpu` as a FILE: exists (so no /sys fallback on Linux
+        # CI hosts) but listdir raises.
+        base = pathlib.Path(root) / "devices" / "system"
+        base.mkdir(parents=True)
+        (base / "cpu").write_text("not a directory")
+        self.assertIsNone(self._read(root))
+
+    def test_offline_gap_in_cpu_numbering_is_counted_as_seen(self):
+        root = self._sysfs({0: (0, 0), 2: (0, 1)})  # cpu1 offline / absent
+        self.assertEqual(
+            self._read(root),
+            {
+                "logicalCpus": 2,
+                "sockets": 1,
+                "physicalCores": 2,
+                "coreSiblings": [[0], [2]],
+            },
+        )
 
 
 FAKE_CPU = {"total": [1, 2, 3, 4, 5, 6, 7, 8], "cores": [[1, 2, 3, 4, 5, 6, 7, 8]], "load": [0.1, 0.2, 0.3]}
