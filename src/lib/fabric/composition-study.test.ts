@@ -177,7 +177,7 @@ describe("fabric composition studies", () => {
     const scene = buildFabricComposition(modelFor("idle", { networkBoundaries: ["wan", "lan", "overlay"] }), "A+");
 
     expect(aPlusGeometry(scene)).toEqual(aPlusGeometryFixture);
-    expect(aPlusGeometryFingerprint(scene)).toBe("68b72de6");
+    expect(aPlusGeometryFingerprint(scene)).toBe("48b8b99b");
     expect(scene.segments.some((segment) => segment.id === "segment:a-plus:host-network-trunk")).toBe(true);
   });
 
@@ -367,6 +367,7 @@ describe("fabric composition studies", () => {
       segmentIds: [
         "segment:a-plus:network:internal_default:service:sonarr:network-branch",
         "segment:a-plus:network:internal_default:rail",
+        "segment:a-plus:network:east-trunk",
         "segment:a-plus:network:internal_default:service:jellyfin:network-branch",
       ],
     });

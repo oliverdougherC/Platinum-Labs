@@ -513,6 +513,7 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
     .filter((capability) => capability.network && capability.networkSegmentIds.includes(id) && byId.has(capability.nodeId))
     .map((capability) => capability.nodeId)
     .sort((left, right) => (nodeOrder.get(left) ?? 0) - (nodeOrder.get(right) ?? 0))]));
+  const eastTrunkJunctions: FabricCompositionJunction[] = [];
   visibleNetworkIds.forEach((networkId, index) => {
     const networkNode = byId.get(networkId)!;
     const networkPort = portFor(networkNode, "network")!;
@@ -535,13 +536,14 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
         const bundleX = targetPort.center.x > railX
           ? Math.min(targetPort.center.x - 8, railX + 8 + index * 8)
           : Math.max(targetPort.center.x + 6, railX - 12 - index * 6);
-        points = [point(railX, bundleY), point(bundleX, bundleY), point(bundleX, targetPort.center.y), targetPort.center];
+        points = [point(railX, bundleY), point(bundleX, bundleY), targetPort.center];
       } else if (target.role === "data-plane") {
         railX = 1196;
         const bundleY = targetPort.center.y - index * 8;
         const bundleX = Math.max(targetPort.center.x + 48, 1180 - index * 12);
-        points = [point(railX, bundleY), point(bundleX, bundleY), point(bundleX, targetPort.center.y), targetPort.center];
+        points = [point(railX, bundleY), point(bundleX, bundleY), targetPort.center];
       } else {
+        railX = targetPort.center.x + (index - 1) * 8;
         points = [point(railX, railY), targetPort.center];
       }
       const branchY = target.role === "data-plane" || target.role === "subsystem"
@@ -569,10 +571,11 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
     }
     const eastFeedJunctions = railJunctions.filter((junction) => junction.point.x === 1196 && junction.point.y !== railY);
     const farPoint = eastFeedJunctions.length
-      ? point(1196, Math.max(...eastFeedJunctions.map((junction) => junction.point.y)))
+      ? point(1196, railY)
       : point(attachments.length ? 1194 : 356, railY);
     const far = addJunction(`junction:a-plus:${networkId}:rail-east`, "network", farPoint.x, farPoint.y);
-    const railPoints = eastFeedJunctions.length ? [root.point, point(1196, railY), far.point] : [root.point, far.point];
+    if (eastFeedJunctions.length) eastTrunkJunctions.push(far, ...eastFeedJunctions);
+    const railPoints = [root.point, far.point];
     const railAttachedJunctions = railJunctions.filter((junction) => {
       const nodeId = junction.id.slice(`junction:a-plus:${networkId}:`.length);
       return nodeId !== "service:qbittorrent" && !nodeId.startsWith("group:");
@@ -585,6 +588,16 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
       [root.id, ...railAttachedJunctions.map((junction) => junction.id), far.id],
     );
   });
+  if (eastTrunkJunctions.length) {
+    const ordered = [...eastTrunkJunctions].sort((left, right) => left.point.y - right.point.y);
+    addSegment(
+      "segment:a-plus:network:east-trunk",
+      "network",
+      [ordered[0]!.point, ordered.at(-1)!.point],
+      [ordered[0]!.id, ordered.at(-1)!.id],
+      ordered.map((junction) => junction.id),
+    );
+  }
 
   const addPlaneGraph = (plane: "control" | "read" | "write", y: number, label: string, labelBounds: FabricBounds) => {
     const west = addJunction(`junction:a-plus:${plane}:west`, plane, plane === "control" ? 300 : plane === "read" ? 272 : 260, y);
@@ -709,6 +722,7 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
     segments.find((item) => item.id === `segment:a-plus:${plane}:substrate`)?.junctionIds.push(substrateJoin.id);
     const approachId = `segment:a-plus:${plane}:orchestration-approach`;
     const approachJunctionIds = [...branchJunctions.map((junction) => junction.id), substrateJoin.id];
+    const approachStart = [...branchJunctions].sort((left, right) => left.point.y - right.point.y)[0]!;
     if (plane === "read") {
       const via = addJunction(
         "via:a-plus:read:orchestration:control-substrate",
@@ -721,7 +735,7 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
       );
       approachJunctionIds.push(via.id);
     }
-    addSegment(approachId, plane, [branchJunctions[0]!.point, point(laneX, substrateY)], [branchJunctions[0]!.id, substrateJoin.id], approachJunctionIds);
+    addSegment(approachId, plane, [approachStart.point, point(laneX, substrateY)], [approachStart.id, substrateJoin.id], approachJunctionIds);
   };
 
   const addStorageCollectorGraph = () => {
@@ -749,8 +763,24 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
   };
 
   addOrchestrationControlGraph();
-  addOrchestrationStorageGraph("write", 1196, [226, 226]);
-  addOrchestrationStorageGraph("read", 620, [222, 222]);
+  addOrchestrationStorageGraph("write", 1196, [242, 230]);
+  addOrchestrationStorageGraph("read", 620, [238, 250]);
+  const orchestrationStorageCrossingPairIds: [string, string] = [
+    "segment:a-plus:write:service:sonarr:branch",
+    "segment:a-plus:read:service:radarr:branch",
+  ];
+  const orchestrationStorageVia = addJunction(
+    "via:a-plus:write-sonarr:read-radarr",
+    "write",
+    966,
+    242,
+    "via",
+    "orchestration-storage-branches",
+    orchestrationStorageCrossingPairIds,
+  );
+  for (const segmentId of orchestrationStorageCrossingPairIds) {
+    segments.find((segment) => segment.id === segmentId)?.junctionIds.push(orchestrationStorageVia.id);
+  }
   addStorageCollectorGraph();
 
   return {
@@ -851,6 +881,7 @@ function aPlusSegmentIdsForRelationship(model: FabricModel, relationship: Fabric
       : portId.endsWith(":write") ? "write"
         : "network";
   const networkUsesHostTrunk = (nodeId: string) => nodeId === "service:qbittorrent" || nodeId.startsWith("group:");
+  const networkUsesEastTrunk = (nodeId: string) => nodeId === "service:jellyfin";
   const fromKind = portKind(relationship.fromPortId);
   const toKind = portKind(relationship.toPortId);
   if (fromKind === "network" || toKind === "network") {
@@ -868,10 +899,14 @@ function aPlusSegmentIdsForRelationship(model: FabricModel, relationship: Fabric
       const sharedNetworkId = resolvedNetwork.selectedSegmentId!;
       const fromToRail = networkUsesHostTrunk(fromNodeId!)
         ? [`segment:a-plus:${sharedNetworkId}:${fromNodeId}:network-branch`, "segment:a-plus:host-network-trunk"]
-        : [`segment:a-plus:${sharedNetworkId}:${fromNodeId}:network-branch`];
+        : networkUsesEastTrunk(fromNodeId!)
+          ? [`segment:a-plus:${sharedNetworkId}:${fromNodeId}:network-branch`, "segment:a-plus:network:east-trunk"]
+          : [`segment:a-plus:${sharedNetworkId}:${fromNodeId}:network-branch`];
       const railToDestination = networkUsesHostTrunk(toNodeId!)
         ? ["segment:a-plus:host-network-trunk", `segment:a-plus:${sharedNetworkId}:${toNodeId}:network-branch`]
-        : [`segment:a-plus:${sharedNetworkId}:${toNodeId}:network-branch`];
+        : networkUsesEastTrunk(toNodeId!)
+          ? ["segment:a-plus:network:east-trunk", `segment:a-plus:${sharedNetworkId}:${toNodeId}:network-branch`]
+          : [`segment:a-plus:${sharedNetworkId}:${toNodeId}:network-branch`];
       return {
         segmentIds: include([
           ...fromToRail,
@@ -896,6 +931,7 @@ function aPlusSegmentIdsForRelationship(model: FabricModel, relationship: Fabric
       "segment:a-plus:gateway-network-root",
       "segment:a-plus:host-network-trunk",
       `segment:a-plus:${networkId}:rail`,
+      ...(networkUsesEastTrunk(endpointNodeId) ? ["segment:a-plus:network:east-trunk"] : []),
       `segment:a-plus:${networkId}:${endpointNodeId}:network-branch`,
     ]);
     return {

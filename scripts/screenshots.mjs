@@ -620,20 +620,26 @@ async function validateFabricStudyShot(page, shot) {
     const crossings = [];
     const nearCrossings = [];
     const coincidentTraces = [];
-    const hasSharedEndpoint = (left, right) => [left.endpointA, left.endpointB].some((endpoint) => endpoint && (right.endpointA === endpoint || right.endpointB === endpoint));
+    const samePoint = (left, right) => Boolean(left && right && left.x === right.x && left.y === right.y);
+    const hasSharedEndpoint = (left, right) =>
+      [left.endpointA, left.endpointB].some((endpoint) => endpoint && (right.endpointA === endpoint || right.endpointB === endpoint)) ||
+      left.junctionIds.some((junctionId) => right.junctionIds.includes(junctionId)) ||
+      [left.points[0], left.points.at(-1)].some((point) =>
+        [right.points[0], right.points.at(-1)].some((candidate) => samePoint(point, candidate)),
+      );
     const hasProjectedOverlap = (a1, a2, b1, b2, axis) => {
       if (axis === "h") {
         const minA = Math.min(a1.x, a2.x);
         const maxA = Math.max(a1.x, a2.x);
         const minB = Math.min(b1.x, b2.x);
         const maxB = Math.max(b1.x, b2.x);
-        return maxA >= minB && maxB >= minA;
+        return Math.min(maxA, maxB) > Math.max(minA, minB);
       }
       const minA = Math.min(a1.y, a2.y);
       const maxA = Math.max(a1.y, a2.y);
       const minB = Math.min(b1.y, b2.y);
       const maxB = Math.max(b1.y, b2.y);
-      return maxA >= minB && maxB >= minA;
+      return Math.min(maxA, maxB) > Math.max(minA, minB);
     };
     for (let i = 0; i < segments.length; i++) {
       for (let j = i + 1; j < segments.length; j++) {
@@ -924,7 +930,7 @@ async function validateFabricStudyShot(page, shot) {
   if (result.statusCollisions.length) failures.push(`text/status collisions: ${result.statusCollisions.join(", ")}`);
   if (result.crossings.length) failures.push(`unapproved crossings: ${result.crossings.join(", ")}`);
   if (result.studyMode === "quiet" && result.nearCrossings.length) failures.push(`near crossings below min separation: ${result.nearCrossings.slice(0, 24).join(", ")}`);
-  if (result.studyMode === "quiet" && result.coincidentTraces.length) failures.push(`accidental coincident traces: ${result.coincidentTraces.join(", ")}`);
+  if (result.coincidentTraces.length) failures.push(`accidental coincident traces: ${result.coincidentTraces.join(", ")}`);
   if (result.maxBranchDensity > 7) failures.push(`max branch density per 100x100 too high: ${result.maxBranchDensity}`);
   if (shot.state === "confirmed-zero") {
     if (result.renderedActivity && result.renderedActivity !== "confirmed-zero") failures.push(`confirmed-zero shot not marked by renderer (${result.renderedActivity})`);
@@ -982,10 +988,13 @@ async function validateFabricStudyShot(page, shot) {
     failures.push("empty inspector rendered with no selection");
   }
 
-  console.log(`${shot.name}: mode=${result.activitySignature.activityMode}, active=${result.activeSegmentCount}, focus=${result.focusedSegmentCount}, totalSegments=${result.byModeSegmentCount?.total ?? result.segmentCount}, branches=${result.branchSegmentCount}, ports=${result.portCount}, vias=${result.viaEvidenceSummary}, occupancy=${JSON.stringify(result.occupancyRatios)}, branchDensity(max/100)=${result.maxBranchDensity}, largestVoid=${result.largestVoid}`);
+  console.log(`${shot.name}: mode=${result.activitySignature.activityMode}, active=${result.activeSegmentCount}, focus=${result.focusedSegmentCount}, totalSegments=${result.byModeSegmentCount?.total ?? result.segmentCount}, branches=${result.branchSegmentCount}, ports=${result.portCount}, vias=${result.viaEvidenceSummary}, crossings=${result.crossings.length}, nearCrossings=${result.nearCrossings.length}, textKeepOut=${result.traceTextKeepOut.length}, coincident=${result.coincidentTraces.length}, occupancy=${JSON.stringify(result.occupancyRatios)}, branchDensity(max/100)=${result.maxBranchDensity}, largestVoid=${result.largestVoid}`);
 
   if (result.nearCrossings.length) {
     console.log(`near-collision summary (${shot.name}): ${result.nearCrossings.slice(0, 10).join(", ")}`);
+  }
+  if (result.coincidentTraces.length) {
+    console.log(`coincident-trace summary (${shot.name}): ${result.coincidentTraces.slice(0, 10).join(", ")}`);
   }
   if (failures.length) throw new Error(`fabric composition evidence failed (${shot.study}/${shot.name}):\n- ${failures.join("\n- ")}`);
   if (shot.study === "A+") {
