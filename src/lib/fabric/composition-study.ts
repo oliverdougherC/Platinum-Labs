@@ -11,7 +11,7 @@ import type {
 } from "@/lib/fabric/model";
 import type { FabricPort, FabricPortKind } from "@/lib/fabric/ports";
 
-export type FabricCompositionId = "A" | "A+" | "B" | "C";
+export type FabricCompositionId = "A+";
 export type FabricSegmentPlane = "network" | "control" | "read" | "write";
 
 export interface CompositionPoint {
@@ -190,6 +190,18 @@ function capabilityFor(model: FabricModel, nodeId: string) {
   return model.stableCapabilities.find((item) => item.nodeId === nodeId) ?? null;
 }
 
+function networkDisplayGroupIdByExactId(model: FabricModel): Map<string, string> {
+  return new Map(model.networkSegments.map((segment) => [segment.id, segment.displayGroupId]));
+}
+
+function visibleNetworkIds(model: FabricModel): string[] {
+  const rank = (id: string) => id === "network:other-docker-segments" ? 0 : id === "network:bridge" ? 1 : id === "network:internal_default" ? 2 : 3;
+  return [...new Set(model.networkSegments.map((segment) => segment.displayGroupId))]
+    .filter((id) => model.nodes.some((node) => node.id === id))
+    .sort((left, right) => rank(left) - rank(right) || left.localeCompare(right))
+    .slice(0, 3);
+}
+
 function relationshipControllerServiceId(relationship: FabricRelationship): string | null {
   const controllerServiceId = (relationship as FabricRelationship & { controllerServiceId?: string }).controllerServiceId;
   if (!controllerServiceId) return null;
@@ -293,44 +305,12 @@ function segment(
   };
 }
 
-function resourceNodes(model: FabricModel): FabricCompositionNode[] {
-  const positions = [rect(24, 30, 342, 88), rect(378, 30, 242, 88), rect(632, 30, 326, 88), rect(970, 30, 206, 88)];
-  return ["resource:cpu", "resource:memory", "resource:gpu", "resource:arc"].map((id, index) =>
-    compositionNode(model, id, positions[index]!, "resource"),
-  );
-}
-
 function groupIds(model: FabricModel): string[] {
   return model.nodes.filter((node) => node.kind === "group").map((node) => node.id);
 }
 
 function poolIds(model: FabricModel): string[] {
   return model.nodes.filter((node) => node.kind === "storage").map((node) => node.id).slice(0, 3);
-}
-
-function layeredBus(model: FabricModel): Pick<FabricCompositionScene, "title" | "thesis" | "nodes" | "segments"> {
-  const groups = groupIds(model);
-  const pools = poolIds(model);
-  const nodes = [
-    ...resourceNodes(model),
-    compositionNode(model, "external:wan", rect(24, 137, 86, 38), "boundary"),
-    compositionNode(model, "fabric:gateway", rect(126, 132, 126, 48), "gateway"),
-    compositionNode(model, "service:seerr", rect(214, 192, 222, 72), "orchestration"),
-    compositionNode(model, "service:sonarr", rect(489, 192, 222, 72), "orchestration"),
-    compositionNode(model, "service:radarr", rect(764, 192, 222, 72), "orchestration"),
-    compositionNode(model, "service:qbittorrent", rect(272, 328, 278, 82), "data-plane"),
-    compositionNode(model, "service:jellyfin", rect(650, 328, 278, 82), "data-plane"),
-    ...groups.map((id, index) => compositionNode(model, id, rect(42 + index * 290, 440, 246, 72), "subsystem")),
-    ...pools.map((id, index) => compositionNode(model, id, rect(150 + index * 315, 594, 270, 62), "storage")),
-  ];
-  const segments = [
-    segment(model, "segment:wan-gateway", "network", [point(110, 156), point(126, 156)], "WAN DUPLEX", rect(28, 119, 96, 14), ["external:wan", "fabric:gateway"]),
-    segment(model, "segment:network", "network", [point(252, 156), point(1148, 156)], "SHARED DOCKER NETWORK SUBSTRATE", rect(790, 132, 348, 16), ["fabric:gateway", "boundary:network-east"]),
-    segment(model, "segment:control", "control", [point(174, 294), point(1026, 294)], "CONTROL SUBSTRATE", rect(180, 272, 172, 16), ["boundary:control-west", "boundary:control-east"]),
-    segment(model, "segment:read", "read", [point(148, 542), point(1052, 542)], "READ SUBSTRATE", rect(150, 520, 142, 16), ["boundary:read-west", "boundary:read-east"]),
-    segment(model, "segment:write", "write", [point(148, 570), point(1052, 570)], "WRITE SUBSTRATE", rect(906, 548, 146, 16), ["boundary:write-west", "boundary:write-east"]),
-  ];
-  return { title: "A · Layered bus", thesis: "Accounting above; network, control, workloads, subsystem summaries, and storage read top-to-bottom.", nodes, segments };
 }
 
 function aPlusPorts(model: FabricModel, node: FabricCompositionNode, indexByRole: number): FabricCompositionPort[] {
@@ -410,16 +390,8 @@ function portFor(node: FabricCompositionNode, kind: FabricPortKind): FabricCompo
 function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title" | "thesis" | "nodes" | "junctions" | "segments" | "primaryStorageCorridors"> {
   const groups = groupIds(model).slice(0, 4);
   const pools = poolIds(model);
-  const networkRailOrder = [
-    "network:other-docker-segments",
-    "network:bridge",
-    "network:internal_default",
-  ];
-  const availableNetworkIds = new Set(model.nodes.filter((node) => node.id.startsWith("network:")).map((node) => node.id));
-  const visibleNetworkIds = [
-    ...networkRailOrder.filter((id) => availableNetworkIds.has(id)),
-    ...[...availableNetworkIds].filter((id) => !networkRailOrder.includes(id)),
-  ].slice(0, 3);
+  const networkDisplayGroupByExactId = networkDisplayGroupIdByExactId(model);
+  const shownNetworkIds = visibleNetworkIds(model);
   const rawNodes = [
     ...[
       ["resource:cpu", rect(24, 26, 318, 88)],
@@ -429,15 +401,15 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
     ].map(([id, bounds]) => compositionNode(model, id as string, bounds as FabricBounds, "resource")),
     ...(["wan", "lan", "overlay"] as const)
       .filter((boundary) => model.nodes.some((node) => node.id === `external:${boundary}`))
-      .map((boundary, index) => compositionNode(model, `external:${boundary}`, rect(24, 142 + index * 42, 100, 34), "boundary")),
-    { ...compositionNode(model, "fabric:gateway", rect(132, 142, 132, 118), "gateway"), eyebrow: "HOST NETWORK" },
-    ...visibleNetworkIds.map((id, index) => compositionNode(model, id, rect(24, 276 + index * 40, 240, 34), "gateway")),
+      .map((boundary, index) => compositionNode(model, `external:${boundary}`, rect(24, 146 + index * 36, 92, 30), "boundary")),
+    { ...compositionNode(model, "fabric:gateway", rect(128, 144, 128, 112), "gateway"), eyebrow: "HOST NETWORK" },
+    ...shownNetworkIds.map((id, index) => compositionNode(model, id, rect(24, 270 + index * 34, 232, 30), "gateway")),
     compositionNode(model, "service:seerr", rect(276, 150, 278, 72), "orchestration"),
     compositionNode(model, "service:sonarr", rect(580, 150, 278, 72), "orchestration"),
     compositionNode(model, "service:radarr", rect(884, 150, 278, 72), "orchestration"),
     compositionNode(model, "service:qbittorrent", rect(300, 294, 300, 116), "data-plane"),
     compositionNode(model, "service:jellyfin", rect(650, 294, 300, 116), "data-plane"),
-    ...groups.map((id, index) => compositionNode(model, id, rect(14, 394 + index * 50, 240, 46), "subsystem")),
+    ...groups.map((id, index) => compositionNode(model, id, rect(14, 388 + index * 52, 240, 40), "subsystem")),
     ...pools.map((id, index) => compositionNode(model, id, rect(276 + index * 303, 600, 270, 64), "storage")),
   ];
   let subsystemIndex = 0;
@@ -492,8 +464,8 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
 
   const hostRoot = addJunction("junction:a-plus:host-network-root", "network", 272, gatewayInternal.center.y);
   addSegment("segment:a-plus:gateway-network-root", "network", [gatewayInternal.center, hostRoot.point], [gatewayInternal.id, hostRoot.id], [hostRoot.id]);
-  const networkJunctions = visibleNetworkIds.map((networkId, index) => addJunction(`junction:a-plus:${networkId}:host`, "network", 272, 293 + index * 40));
-  const railRoots = visibleNetworkIds.map((networkId, index) => addJunction(`junction:a-plus:${networkId}:rail-root`, "network", 272, 126 + index * 8));
+  const networkJunctions = shownNetworkIds.map((networkId, index) => addJunction(`junction:a-plus:${networkId}:host`, "network", 272, 285 + index * 34));
+  const railRoots = shownNetworkIds.map((networkId, index) => addJunction(`junction:a-plus:${networkId}:rail-root`, "network", 272, 120 + index * 8));
   if (networkJunctions.length) {
     addSegment(
       "segment:a-plus:host-network-trunk",
@@ -502,25 +474,27 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
       [railRoots[0]!.id, networkJunctions.at(-1)!.id],
       [...railRoots.map((junction) => junction.id), hostRoot.id, ...networkJunctions.map((junction) => junction.id)],
       "DOCKER NETWORKS",
-      rect(98, 264, 116, 14),
+      rect(84, 252, 128, 14),
     );
   }
   const hostNetworkTrunk = segments.find((item) => item.id === "segment:a-plus:host-network-trunk");
   if (!hostNetworkTrunk) throw new Error("A+ host network trunk missing");
 
   const nodeOrder = new Map(nodes.map((node, index) => [node.sourceNodeId, index]));
-  const attachmentsByNetwork = new Map(visibleNetworkIds.map((id) => [id, model.stableCapabilities
-    .filter((capability) => capability.network && capability.networkSegmentIds.includes(id) && byId.has(capability.nodeId))
+  const attachmentsByNetwork = new Map(shownNetworkIds.map((id) => [id, model.stableCapabilities
+    .filter((capability) => capability.network &&
+      capability.networkSegmentIds.some((segmentId) => networkDisplayGroupByExactId.get(segmentId) === id) &&
+      byId.has(capability.nodeId))
     .map((capability) => capability.nodeId)
     .sort((left, right) => (nodeOrder.get(left) ?? 0) - (nodeOrder.get(right) ?? 0))]));
   const eastTrunkJunctions: FabricCompositionJunction[] = [];
-  visibleNetworkIds.forEach((networkId, index) => {
+  shownNetworkIds.forEach((networkId, index) => {
     const networkNode = byId.get(networkId)!;
     const networkPort = portFor(networkNode, "network")!;
     const hostJunction = networkJunctions[index]!;
     addSegment(`segment:a-plus:${networkId}:gateway-branch`, "network", [networkPort.center, hostJunction.point], [networkPort.id, hostJunction.id], [hostJunction.id]);
 
-    const railY = 126 + index * 8;
+    const railY = 120 + index * 8;
     const root = railRoots[index]!;
     const attachments = attachmentsByNetwork.get(networkId) ?? [];
     const railJunctions: FabricCompositionJunction[] = [];
@@ -564,7 +538,8 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
         {
           nodeIds: [target.sourceNodeId],
           kind: "network",
-          networkSegmentIds: [networkId],
+          networkSegmentIds: (capabilityFor(model, target.sourceNodeId)?.networkSegmentIds ?? [])
+            .filter((segmentId) => networkDisplayGroupByExactId.get(segmentId) === networkId),
           connectivity: "membership",
         },
       );
@@ -796,58 +771,6 @@ function aPlusSynthesis(model: FabricModel): Pick<FabricCompositionScene, "title
   };
 }
 
-function operationalPipeline(model: FabricModel): Pick<FabricCompositionScene, "title" | "thesis" | "nodes" | "segments"> {
-  const groups = groupIds(model);
-  const pools = poolIds(model);
-  const displayedPools = pools.length >= 3 ? [pools[1]!, pools[0]!, pools[2]!] : pools;
-  const nodes = [
-    ...resourceNodes(model),
-    compositionNode(model, "external:wan", rect(24, 254, 82, 44), "boundary"),
-    compositionNode(model, "fabric:gateway", rect(122, 248, 112, 56), "gateway"),
-    compositionNode(model, "service:seerr", rect(264, 154, 170, 60), "orchestration"),
-    compositionNode(model, "service:sonarr", rect(264, 225, 170, 60), "orchestration"),
-    compositionNode(model, "service:radarr", rect(264, 296, 170, 60), "orchestration"),
-    compositionNode(model, "service:qbittorrent", rect(488, 242, 206, 72), "data-plane"),
-    ...displayedPools.map((id, index) => compositionNode(model, id, rect(748, 164 + index * 82, 190, 66), "storage")),
-    compositionNode(model, "service:jellyfin", rect(986, 242, 190, 72), "data-plane"),
-    ...groups.map((id, index) => compositionNode(model, id, rect(42 + index * 290, 474, 246, 76), "subsystem")),
-  ];
-  const segments = [
-    segment(model, "segment:wan-gateway", "network", [point(106, 276), point(122, 276)], "WAN", rect(24, 232, 56, 14), ["external:wan", "fabric:gateway"]),
-    segment(model, "segment:network", "network", [point(234, 276), point(246, 276), point(246, 392), point(470, 392), point(470, 276), point(488, 276)], "ACQUISITION NETWORK", rect(288, 404, 186, 16), ["fabric:gateway", "service:qbittorrent"]),
-    segment(model, "segment:control", "control", [point(446, 220), point(590, 220), point(590, 242)], "REQUEST + ORCHESTRATION", rect(448, 194, 210, 16), ["stage:orchestration", "service:qbittorrent"]),
-    segment(model, "segment:write", "write", [point(694, 276), point(748, 276)], "WRITE", rect(696, 252, 48, 16), ["service:qbittorrent", pools[0] ?? "storage"]),
-    segment(model, "segment:read", "read", [point(938, 276), point(986, 276)], "READ", rect(940, 252, 44, 16), [pools[0] ?? "storage", "service:jellyfin"]),
-  ];
-  return { title: "B · Operational pipeline", thesis: "External request, acquisition, storage, and playback read left-to-right; support stays subordinate.", nodes, segments };
-}
-
-function compactMotherboard(model: FabricModel): Pick<FabricCompositionScene, "title" | "thesis" | "nodes" | "segments"> {
-  const groups = groupIds(model);
-  const pools = poolIds(model);
-  const nodes = [
-    ...resourceNodes(model),
-    compositionNode(model, "external:wan", rect(24, 268, 82, 42), "boundary"),
-    compositionNode(model, "fabric:gateway", rect(122, 260, 116, 58), "gateway"),
-    compositionNode(model, "service:seerr", rect(314, 140, 168, 62), "orchestration"),
-    compositionNode(model, "service:sonarr", rect(516, 140, 168, 62), "orchestration"),
-    compositionNode(model, "service:radarr", rect(718, 140, 168, 62), "orchestration"),
-    compositionNode(model, "service:qbittorrent", rect(154, 358, 226, 76), "data-plane"),
-    compositionNode(model, "service:jellyfin", rect(820, 358, 226, 76), "data-plane"),
-    ...groups.slice(0, 2).map((id, index) => compositionNode(model, id, rect(44 + index * 258, 480, 226, 76), "subsystem")),
-    ...groups.slice(2).map((id, index) => compositionNode(model, id, rect(930 - index * 258, 480, 226, 76), "subsystem")),
-    ...pools.map((id, index) => compositionNode(model, id, rect(260 + index * 250, 590, 218, 62), "storage")),
-  ];
-  const segments = [
-    segment(model, "segment:wan-gateway", "network", [point(106, 289), point(122, 289)], "WAN", rect(26, 246, 54, 14), ["external:wan", "fabric:gateway"]),
-    segment(model, "segment:network", "network", [point(238, 289), point(962, 289)], "NETWORK", rect(550, 262, 100, 16), ["fabric:gateway", "boundary:network-east"]),
-    segment(model, "segment:control", "control", [point(388, 328), point(812, 328)], "CONTROL", rect(552, 306, 96, 16), ["boundary:control-west", "boundary:control-east"]),
-    segment(model, "segment:read", "read", [point(416, 382), point(784, 382)], "READ", rect(426, 360, 64, 16), ["boundary:read-west", "boundary:read-east"]),
-    segment(model, "segment:write", "write", [point(416, 416), point(784, 416)], "WRITE", rect(710, 394, 70, 16), ["boundary:write-west", "boundary:write-east"]),
-  ];
-  return { title: "C · Compact motherboard", thesis: "A compact central substrate stack with workloads and subsystem modules arranged by real attachment.", nodes, segments };
-}
-
 interface APlusResolvedRoute {
   segmentIds: string[];
   resolution: FabricLogicalRoute["resolution"];
@@ -871,6 +794,7 @@ function networkResolution(candidateSegmentIds: string[]): FabricNetworkRouteRes
 
 function aPlusSegmentIdsForRelationship(model: FabricModel, relationship: FabricRelationship, segments: FabricPhysicalSegment[]): APlusResolvedRoute {
   const available = new Set(segments.map((item) => item.id));
+  const networkDisplayGroupByExactId = networkDisplayGroupIdByExactId(model);
   const include = (ids: string[]) => ids.filter((id) => available.has(id));
   if (relationship.fromNodeId.startsWith("external:") && relationship.toNodeId === "fabric:gateway") {
     const boundary = relationship.fromNodeId.slice("external:".length);
@@ -897,20 +821,21 @@ function aPlusSegmentIdsForRelationship(model: FabricModel, relationship: Fabric
         return { segmentIds: [], resolution: "partial", networkResolution: resolvedNetwork };
       }
       const sharedNetworkId = resolvedNetwork.selectedSegmentId!;
+      const displayNetworkId = networkDisplayGroupByExactId.get(sharedNetworkId) ?? sharedNetworkId;
       const fromToRail = networkUsesHostTrunk(fromNodeId!)
-        ? [`segment:a-plus:${sharedNetworkId}:${fromNodeId}:network-branch`, "segment:a-plus:host-network-trunk"]
+        ? [`segment:a-plus:${displayNetworkId}:${fromNodeId}:network-branch`, "segment:a-plus:host-network-trunk"]
         : networkUsesEastTrunk(fromNodeId!)
-          ? [`segment:a-plus:${sharedNetworkId}:${fromNodeId}:network-branch`, "segment:a-plus:network:east-trunk"]
-          : [`segment:a-plus:${sharedNetworkId}:${fromNodeId}:network-branch`];
+          ? [`segment:a-plus:${displayNetworkId}:${fromNodeId}:network-branch`, "segment:a-plus:network:east-trunk"]
+          : [`segment:a-plus:${displayNetworkId}:${fromNodeId}:network-branch`];
       const railToDestination = networkUsesHostTrunk(toNodeId!)
-        ? ["segment:a-plus:host-network-trunk", `segment:a-plus:${sharedNetworkId}:${toNodeId}:network-branch`]
+        ? ["segment:a-plus:host-network-trunk", `segment:a-plus:${displayNetworkId}:${toNodeId}:network-branch`]
         : networkUsesEastTrunk(toNodeId!)
-          ? ["segment:a-plus:network:east-trunk", `segment:a-plus:${sharedNetworkId}:${toNodeId}:network-branch`]
-          : [`segment:a-plus:${sharedNetworkId}:${toNodeId}:network-branch`];
+          ? ["segment:a-plus:network:east-trunk", `segment:a-plus:${displayNetworkId}:${toNodeId}:network-branch`]
+          : [`segment:a-plus:${displayNetworkId}:${toNodeId}:network-branch`];
       return {
         segmentIds: include([
           ...fromToRail,
-          `segment:a-plus:${sharedNetworkId}:rail`,
+          `segment:a-plus:${displayNetworkId}:rail`,
           ...railToDestination,
         ]),
         resolution: "complete",
@@ -923,16 +848,17 @@ function aPlusSegmentIdsForRelationship(model: FabricModel, relationship: Fabric
       return { segmentIds: [], resolution: "partial", networkResolution: resolvedNetwork };
     }
     const networkId = resolvedNetwork.selectedSegmentId!;
+    const displayNetworkId = networkDisplayGroupByExactId.get(networkId) ?? networkId;
     const gatewayToEndpoint = include(networkUsesHostTrunk(endpointNodeId) ? [
       "segment:a-plus:gateway-network-root",
       "segment:a-plus:host-network-trunk",
-      `segment:a-plus:${networkId}:${endpointNodeId}:network-branch`,
+      `segment:a-plus:${displayNetworkId}:${endpointNodeId}:network-branch`,
     ] : [
       "segment:a-plus:gateway-network-root",
       "segment:a-plus:host-network-trunk",
-      `segment:a-plus:${networkId}:rail`,
+      `segment:a-plus:${displayNetworkId}:rail`,
       ...(networkUsesEastTrunk(endpointNodeId) ? ["segment:a-plus:network:east-trunk"] : []),
-      `segment:a-plus:${networkId}:${endpointNodeId}:network-branch`,
+      `segment:a-plus:${displayNetworkId}:${endpointNodeId}:network-branch`,
     ]);
     return {
       segmentIds: relationship.fromNodeId === "fabric:gateway" ? gatewayToEndpoint : [...gatewayToEndpoint].reverse(),
@@ -1001,38 +927,7 @@ function aPlusSegmentIdsForRelationship(model: FabricModel, relationship: Fabric
   };
 }
 
-function segmentIdsForRelationship(model: FabricModel, relationship: FabricRelationship, segments: FabricPhysicalSegment[], compositionId: FabricCompositionId): string[] {
-  if (compositionId === "A+") return aPlusSegmentIdsForRelationship(model, relationship, segments).segmentIds;
-  const available = new Set(segments.map((item) => item.id));
-  const ordered: string[] = [];
-  const push = (id: string) => {
-    if (available.has(id) && !ordered.includes(id)) ordered.push(id);
-  };
-  const planeForPort = (portId: string): FabricSegmentPlane =>
-    portId.includes(":control") ? "control" :
-      portId.includes(":read") ? "read" :
-        portId.includes(":write") ? "write" :
-          "network";
-  const pushEndpointBranch = (plane: FabricSegmentPlane, nodeId: string) => push(`segment:${plane}:${nodeId}`);
-
-  const fromPlane = planeForPort(relationship.fromPortId);
-  const toPlane = planeForPort(relationship.toPortId);
-
-  if (relationship.fromNodeId === "external:wan" || relationship.toNodeId === "external:wan") push("segment:wan-gateway");
-  if (relationship.fromNodeId === "external:lan" || relationship.toNodeId === "external:lan") push("segment:lan-gateway");
-  if (relationship.fromNodeId === "external:overlay" || relationship.toNodeId === "external:overlay") push("segment:overlay-gateway");
-
-  if (fromPlane === "network" || toPlane === "network") push("segment:network");
-  if (fromPlane === "control" || toPlane === "control") push("segment:control");
-  if (fromPlane === "read" || toPlane === "read") push("segment:read");
-  if (fromPlane === "write" || toPlane === "write") push("segment:write");
-
-  pushEndpointBranch(fromPlane, relationship.fromNodeId);
-  pushEndpointBranch(toPlane, relationship.toNodeId);
-  return ordered;
-}
-
-function logicalRoutes(model: FabricModel, segments: FabricPhysicalSegment[], compositionId: FabricCompositionId): FabricLogicalRoute[] {
+function logicalRoutes(model: FabricModel, segments: FabricPhysicalSegment[]): FabricLogicalRoute[] {
   return model.relationships.flatMap((relationship): FabricLogicalRoute[] => {
     const base = {
       contributorRelationshipId: relationship.id,
@@ -1042,8 +937,7 @@ function logicalRoutes(model: FabricModel, segments: FabricPhysicalSegment[], co
       evidence: relationship.evidence,
       networkBoundary: relationship.networkBoundary,
     };
-    const crossPlaneImport = compositionId === "A+" &&
-      relationship.plane === "data" &&
+    const crossPlaneImport = relationship.plane === "data" &&
       relationship.fromPortId.endsWith(":read") &&
       relationship.toPortId.endsWith(":write");
     if (crossPlaneImport) {
@@ -1099,17 +993,17 @@ function logicalRoutes(model: FabricModel, segments: FabricPhysicalSegment[], co
         },
       ];
     }
-    const aPlusRoute = compositionId === "A+" ? aPlusSegmentIdsForRelationship(model, relationship, segments) : null;
+    const aPlusRoute = aPlusSegmentIdsForRelationship(model, relationship, segments);
     return [{
       ...base,
       relationshipId: relationship.id,
-      segmentIds: aPlusRoute?.segmentIds ?? segmentIdsForRelationship(model, relationship, segments, compositionId),
+      segmentIds: aPlusRoute.segmentIds,
       fromNodeId: relationship.fromNodeId,
       toNodeId: relationship.toNodeId,
       fromPortId: relationship.fromPortId,
       toPortId: relationship.toPortId,
-      resolution: aPlusRoute?.resolution ?? "complete",
-      networkResolution: aPlusRoute?.networkResolution,
+      resolution: aPlusRoute.resolution,
+      networkResolution: aPlusRoute.networkResolution,
     }];
   });
 }
@@ -1302,11 +1196,10 @@ function buildSubsystemFocus(model: FabricModel, segments: FabricPhysicalSegment
 }
 
 export function buildFabricComposition(model: FabricModel, id: FabricCompositionId): FabricCompositionScene {
-  const base = id === "A+" ? aPlusSynthesis(model) : id === "A" ? layeredBus(model) : id === "B" ? operationalPipeline(model) : compactMotherboard(model);
+  const base = aPlusSynthesis(model);
   const summaryIds = [...new Set(model.population.accountedNodes.flatMap((node) => node.containerIds))].sort();
-  const routes = logicalRoutes(model, base.segments, id);
-  const aPlus = id === "A+" ? base as ReturnType<typeof aPlusSynthesis> : null;
-  const segments = id === "A+" ? base.segments.map((segmentItem) => {
+  const routes = logicalRoutes(model, base.segments);
+  const segments = base.segments.map((segmentItem) => {
     const contributorIds = [...new Set(routes
       .filter((route) => route.segmentIds.includes(segmentItem.id))
       .map((route) => route.contributorRelationshipId))];
@@ -1315,34 +1208,32 @@ export function buildFabricComposition(model: FabricModel, id: FabricComposition
       logicalContributorIds: contributorIds,
       directions: directionsFor(model, contributorIds),
     };
-  }) : base.segments;
+  });
   const density = coarseGridDensity(base.nodes, segments);
   const scene: FabricCompositionScene = {
     id,
     ...base,
     viewBox: VIEWBOX,
-    junctions: aPlus?.junctions ?? [],
+    junctions: base.junctions,
     segments,
     logicalRoutes: routes,
     representedIds: [...model.population.ids].sort(),
     summaryIds,
     occupiedBounds: occupiedBounds(base.nodes),
     density,
-    primaryStorageCorridors: aPlus?.primaryStorageCorridors ?? [],
+    primaryStorageCorridors: base.primaryStorageCorridors,
     subsystemFocus: buildSubsystemFocus(model, segments),
   };
-  if (id === "A+") {
-    const invalidRoutes = scene.logicalRoutes
-      .map((route) => ({ route, validation: validateLogicalRoute(route, scene.segments) }))
-      .filter(({ route, validation }) =>
-        route.resolution === "complete" &&
-        (!validation.continuous || validation.repeatedSegments.length > 0 || validation.backtracks.length > 0)
-      );
-    if (invalidRoutes.length > 0) {
-      throw new Error(`A+ logical route validation failed: ${invalidRoutes.map(({ route, validation }) =>
-        `${route.relationshipId} (${JSON.stringify(validation)})`,
-      ).join(", ")}`);
-    }
+  const invalidRoutes = scene.logicalRoutes
+    .map((route) => ({ route, validation: validateLogicalRoute(route, scene.segments) }))
+    .filter(({ route, validation }) =>
+      route.resolution === "complete" &&
+      (!validation.continuous || validation.repeatedSegments.length > 0 || validation.backtracks.length > 0)
+    );
+  if (invalidRoutes.length > 0) {
+    throw new Error(`A+ logical route validation failed: ${invalidRoutes.map(({ route, validation }) =>
+      `${route.relationshipId} (${JSON.stringify(validation)})`,
+    ).join(", ")}`);
   }
   return scene;
 }

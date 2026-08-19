@@ -1,9 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { FabricInspector } from "@/components/fabric/fabric-inspector";
-import { FabricStage, type FabricSelection } from "@/components/fabric/fabric-stage";
-import { buildFabricModel } from "@/lib/fabric/model";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  FabricComposition,
+  FabricCompositionIncomplete,
+  type FabricCompositionViewMode,
+  type FabricTopologyState,
+} from "@/components/fabric/fabric-composition";
+import {
+  buildFabricModel,
+  buildFabricTopologyInventory,
+  type FabricTopologyInventory,
+} from "@/lib/fabric/model";
 import type { DashboardSnapshot } from "@/lib/types";
 
 export function FabricApp({
@@ -21,50 +29,42 @@ export function FabricApp({
   reducedMotion: boolean;
   devControls: boolean;
 }) {
-  const model = useMemo(() => buildFabricModel(snapshot, { now, seerrConfigured }), [snapshot, now, seerrConfigured]);
-  const [selection, setSelection] = useState<FabricSelection | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [relationshipsVisible, setRelationshipsVisible] = useState(false);
+  const lastKnownTopology = useRef<FabricTopologyInventory | null>(null);
+  const currentTopology = useMemo(() => buildFabricTopologyInventory(snapshot), [snapshot]);
+  const dockerStatus = snapshot.telemetry.docker.status;
+  const hasCurrentDockerTopology =
+    (dockerStatus === "available" || dockerStatus === "stale") &&
+    (snapshot.telemetry.docker.value?.containers.length ?? 0) > 0;
+  if (hasCurrentDockerTopology) lastKnownTopology.current = currentTopology;
+  const retainedTopology = hasCurrentDockerTopology ? currentTopology : lastKnownTopology.current;
+  const topologyState: FabricTopologyState = hasCurrentDockerTopology
+    ? "live"
+    : retainedTopology
+      ? "last-known"
+      : "incomplete";
+  const model = useMemo(() => buildFabricModel(snapshot, {
+    now,
+    seerrConfigured,
+    networkBoundaries: ["wan", "lan", "overlay"],
+    inventory: retainedTopology,
+  }), [snapshot, now, seerrConfigured, retainedTopology]);
+  const [viewMode, setViewMode] = useState<FabricCompositionViewMode>("activity");
 
   useEffect(() => {
-    if (!devControls) return;
-    setRelationshipsVisible(new URLSearchParams(window.location.search).get("relationships") === "1");
+    const relationshipMap = new URLSearchParams(window.location.search).get("relationships") === "1";
+    setViewMode(relationshipMap ? "relationship-map" : "activity");
   }, [devControls]);
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || detailsOpen) return;
-      setSelection(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [detailsOpen]);
+  if (topologyState === "incomplete") return <FabricCompositionIncomplete />;
 
   return (
-    <div data-fabric-mount data-ui-mode="fabric" className="fabric-ground relative h-full w-full overflow-hidden">
-      <div className="pointer-events-none absolute left-4 top-3 z-10 flex items-center gap-3 text-[9px] uppercase tracking-[0.16em] text-faint">
-        <span>Server fabric</span>
-        <span className="h-px w-6 bg-hairline" />
-        <span className="tnum">{model.population.represented}/{model.population.total ?? "—"} workloads</span>
-        {relationshipsVisible ? <span className="text-muted">relationship map</span> : null}
-      </div>
-      <div className="fabric-board h-full w-full">
-        <FabricStage
-          model={model}
-          selection={selection}
-          onSelect={(next) => setSelection((current) => current?.kind === next.kind && current.id === next.id ? null : next)}
-          relationshipsVisible={relationshipsVisible}
-          motionEnabled={!frozen && !reducedMotion}
-        />
-      </div>
-      <FabricInspector
-        model={model}
-        selection={selection}
-        onClose={() => setSelection(null)}
-        detailsOpen={detailsOpen}
-        onDetailsOpen={() => setDetailsOpen(true)}
-        onDetailsClose={() => setDetailsOpen(false)}
-      />
-    </div>
+    <FabricComposition
+      model={model}
+      study="A+"
+      viewMode={viewMode}
+      quiet={model.relationships.every((relationship) => relationship.visibility !== "active")}
+      motionEnabled={!frozen && !reducedMotion}
+      topologyState={topologyState}
+    />
   );
 }

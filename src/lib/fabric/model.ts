@@ -87,6 +87,16 @@ export interface FabricStableCapability {
   coverage: Record<"network" | "control" | "read" | "write", FabricCoverage>;
 }
 
+export interface FabricNetworkSegment {
+  id: string;
+  names: string[];
+  label: string;
+  count: number;
+  displayGroupId: string;
+  source: FabricTopologyInventorySource;
+  freshness: FabricTopologyInventoryFreshness;
+}
+
 export interface FabricRelationship {
   id: string;
   label: string;
@@ -182,6 +192,7 @@ export interface FabricModel {
   relationships: FabricRelationship[];
   resourceViews: FabricResourceView[];
   stableCapabilities: FabricStableCapability[];
+  networkSegments: FabricNetworkSegment[];
   population: FabricPopulation;
   routing: { obstacles: FabricObstacle[]; lanes: FabricLane[] };
 }
@@ -233,6 +244,7 @@ export interface FabricTopologyInventoryNetwork extends FabricTopologyInventoryS
   names: string[];
   label: string;
   count: number;
+  displayGroupId: string;
 }
 
 export interface FabricTopologyInventoryPool extends FabricTopologyInventoryStamped {
@@ -290,6 +302,11 @@ function safeTopologyName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "unknown";
 }
 
+function networkDisplayGroupId(name: string): string {
+  if (name === "bridge" || name === "internal_default") return `network:${safeTopologyName(name)}`;
+  return "network:other-docker-segments";
+}
+
 function buildTopologyNetworkInventory(
   containers: DockerContainerTelemetry[],
   stamp: FabricTopologyInventoryStamped,
@@ -300,26 +317,14 @@ function buildTopologyNetworkInventory(
       membershipCounts.set(name, (membershipCounts.get(name) ?? 0) + 1);
     }
   }
-  const orderedNetworkNames = [...membershipCounts.keys()].sort();
-  const shownNetworkNames = orderedNetworkNames.slice(0, 2);
-  const aggregatedNetworkNames = orderedNetworkNames.slice(2);
-  const networks: FabricTopologyInventoryNetwork[] = shownNetworkNames.map((name) => ({
+  return [...membershipCounts.keys()].sort().map((name) => ({
     ...stamp,
     id: `network:${safeTopologyName(name)}`,
     names: [name],
     label: name,
     count: membershipCounts.get(name) ?? 0,
+    displayGroupId: networkDisplayGroupId(name),
   }));
-  if (aggregatedNetworkNames.length) {
-    networks.push({
-      ...stamp,
-      id: "network:other-docker-segments",
-      names: aggregatedNetworkNames,
-      label: `${aggregatedNetworkNames.length} OTHER SEGMENTS`,
-      count: aggregatedNetworkNames.reduce((sum, name) => sum + (membershipCounts.get(name) ?? 0), 0),
-    });
-  }
-  return networks;
 }
 
 function segmentIdsForNames(
@@ -341,11 +346,11 @@ function uniqueStrings(values: readonly string[]): string[] {
 
 function networkSegmentsForIds(
   segmentIds: readonly string[],
-  networkSegmentById: ReadonlyMap<string, FabricTopologyInventoryNetwork & { bounds: FabricBounds }>,
-): Array<FabricTopologyInventoryNetwork & { bounds: FabricBounds }> {
+  networkSegmentById: ReadonlyMap<string, FabricTopologyInventoryNetwork>,
+): FabricTopologyInventoryNetwork[] {
   return uniqueStrings(segmentIds)
     .map((segmentId) => networkSegmentById.get(segmentId))
-    .filter((segment): segment is FabricTopologyInventoryNetwork & { bounds: FabricBounds } => Boolean(segment));
+    .filter((segment): segment is FabricTopologyInventoryNetwork => Boolean(segment));
 }
 
 function inventoryGroupMemberToContainer(member: FabricTopologyInventoryGroupMember): DockerContainerTelemetry {
@@ -967,27 +972,57 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
   addPort("fabric:gateway", gatewayBounds, "network", "right", 0.72, "Host network path");
   addCustomPort("fabric:service:control", "fabric:service", controlBounds, "control", "top", (566 - controlBounds.x) / controlBounds.width, "Host control");
 
-  const networkSegments: Array<FabricTopologyInventoryNetwork & { bounds: FabricBounds }> = resolvedInventory.networks
-    .map((segment, index) => ({
-      ...segment,
-      bounds: boundsFor("network-segment", index),
-    }));
-  const networkSegmentByName = new Map<string, typeof networkSegments[number]>();
-  const networkSegmentById = new Map<string, typeof networkSegments[number]>();
-  for (const segment of networkSegments) {
+  const exactNetworkSegments = resolvedInventory.networks.map((segment) => ({ ...segment }));
+  const networkSegmentByName = new Map<string, FabricTopologyInventoryNetwork>();
+  const networkSegmentById = new Map<string, FabricTopologyInventoryNetwork>();
+  const networkDisplayGroupIdByExactId = new Map<string, string>();
+  for (const segment of exactNetworkSegments) {
     networkSegmentById.set(segment.id, segment);
+    networkDisplayGroupIdByExactId.set(segment.id, segment.displayGroupId);
     for (const name of segment.names) networkSegmentByName.set(name, segment);
+  }
+  const networkDisplaySegments = [...exactNetworkSegments.reduce((groups, segment) => {
+    const existing = groups.get(segment.displayGroupId);
+    if (existing) {
+      existing.names.push(...segment.names);
+      existing.count += segment.count;
+      return groups;
+    }
+    groups.set(segment.displayGroupId, {
+      ...segment,
+      id: segment.displayGroupId,
+      names: [...segment.names],
+      label: segment.label,
+      count: segment.count,
+    });
+    return groups;
+  }, new Map<string, FabricTopologyInventoryNetwork>()).values()]
+    .sort((left, right) => {
+      const rank = (id: string) => id === "network:bridge" ? 0 : id === "network:internal_default" ? 1 : id === "network:other-docker-segments" ? 2 : 3;
+      return rank(left.id) - rank(right.id) || left.id.localeCompare(right.id);
+    })
+    .map((segment, index) => ({ ...segment, bounds: boundsFor("network-segment", index) }));
+  const networkDisplaySegmentById = new Map<string, typeof networkDisplaySegments[number]>();
+  for (const segment of networkDisplaySegments) {
+    networkDisplaySegmentById.set(segment.id, segment);
     addNode({
       id: segment.id,
       kind: "fabric",
-      label: segment.label,
-      eyebrow: segment.names.length === 1 ? `DOCKER NETWORK · ${segment.count} MEMBERS` : `AGGREGATED DOCKER NETWORKS · ${segment.count} MEMBERS`,
+      label: segment.id === "network:other-docker-segments" ? `${segment.names.length} OTHER SEGMENTS` : segment.label,
+      eyebrow: segment.names.length === 1 ? `DOCKER NETWORK · ${segment.count} MEMBERS` : `GROUPED DOCKER NETWORKS · ${segment.count} MEMBERS`,
       status: topologyStatus(segment),
       bounds: segment.bounds,
       metrics: [],
-      detail: segment.names.join(" · "),
+      detail: uniqueStrings(segment.names).join(" · "),
     });
-    addPort(segment.id, segment.bounds, "network", "right", 0.5, segment.names.length === 1 ? segment.label : segment.names.join(" · "));
+    addPort(
+      segment.id,
+      segment.bounds,
+      "network",
+      "right",
+      0.5,
+      segment.names.length === 1 ? segment.label : uniqueStrings(segment.names).join(" · "),
+    );
   }
 
   const cpuBounds = boundsFor("cpu");
@@ -1028,15 +1063,17 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
       ? networkSegmentsForIds(inventoryWorkload.networkSegmentIds, networkSegmentById)
       : uniqueStrings(networkNames)
           .map((name) => networkSegmentByName.get(name))
-          .filter((segment): segment is FabricTopologyInventoryNetwork & { bounds: FabricBounds } => Boolean(segment));
+          .filter((segment): segment is FabricTopologyInventoryNetwork => Boolean(segment));
     if (networkPort) {
       for (const segment of segments) {
-        const segmentPort = ports.find((port) => port.id === portId(segment.id, "network"));
+        const displayGroupId = networkDisplayGroupIdByExactId.get(segment.id);
+        if (!displayGroupId) continue;
+        const segmentPort = ports.find((port) => port.id === portId(displayGroupId, "network"));
         if (!segmentPort) continue;
         pendingAttachments.push({
           id: `attach:network:${id}:${segment.id}`,
           nodeId,
-          fabricId: segment.id,
+          fabricId: displayGroupId,
           kind: "network",
           known: true,
           label: segment.names.join(" · "),
@@ -1125,16 +1162,18 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
       ? networkSegmentsForIds(inventoryGroup.networkSegmentIds, networkSegmentById)
       : names
           .map((name) => networkSegmentByName.get(name))
-          .filter((segment): segment is FabricTopologyInventoryNetwork & { bounds: FabricBounds } => Boolean(segment));
+          .filter((segment): segment is FabricTopologyInventoryNetwork => Boolean(segment));
     if (segments.length > 0) {
       const network = addPort(group.id, bounds, "network", "left", 0.5, "Docker network membership");
       for (const segment of segments) {
-        const segmentPort = ports.find((port) => port.id === portId(segment.id, "network"));
+        const displayGroupId = networkDisplayGroupIdByExactId.get(segment.id);
+        if (!displayGroupId) continue;
+        const segmentPort = ports.find((port) => port.id === portId(displayGroupId, "network"));
         if (!segmentPort) continue;
         pendingAttachments.push({
           id: `attach:network:${group.id}:${segment.id}`,
           nodeId: group.id,
-          fabricId: segment.id,
+          fabricId: displayGroupId,
           kind: "network",
           known: true,
           label: segment.names.join(" · "),
@@ -1355,6 +1394,15 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
     relationships,
     resourceViews,
     stableCapabilities,
+    networkSegments: exactNetworkSegments.map((segment) => ({
+      id: segment.id,
+      names: [...segment.names],
+      label: segment.label,
+      count: segment.count,
+      displayGroupId: segment.displayGroupId,
+      source: segment.source,
+      freshness: segment.freshness,
+    })),
     population: {
       total: snapshot.telemetry.docker.value?.total ?? null,
       represented: dockerContainers.length > 0 ? dockerContainers.length : inventoryContainerIds.length,

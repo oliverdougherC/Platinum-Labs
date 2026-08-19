@@ -33,6 +33,84 @@ afterEach(() => {
 });
 
 describe("FabricApp", () => {
+  it("promotes the A+ composition and exposes both production and study diagnostics", () => {
+    const { container } = render(
+      <FabricApp
+        snapshot={makeFakeSnapshot("container-field-real", NOW)}
+        now={NOW}
+        seerrConfigured
+        frozen
+        reducedMotion={false}
+        devControls={false}
+      />,
+    );
+
+    expect(container.querySelector('[data-study-id="A+"]')).not.toBeNull();
+    expect(container.querySelector("[data-study-stage][data-fabric-stage]")).not.toBeNull();
+    expect(container.querySelector('[data-study-node="service:jellyfin"][data-fabric-node="service:jellyfin"]')).not.toBeNull();
+  });
+
+  it("retains the last known Docker topology across stats loss but leaves a cold start incomplete", () => {
+    const unavailable = makeFakeSnapshot("docker-unavailable", NOW + 1_000);
+    const cold = render(
+      <FabricApp
+        snapshot={unavailable}
+        now={NOW + 1_000}
+        seerrConfigured
+        frozen
+        reducedMotion={false}
+        devControls={false}
+      />,
+    );
+
+    expect(cold.container.querySelector('[data-fabric-topology="incomplete"]')).not.toBeNull();
+    expect(cold.container.querySelector('[data-fabric-node="group:platform"]')).toBeNull();
+    cold.unmount();
+
+    const rendered = render(
+      <FabricApp
+        snapshot={makeFakeSnapshot("container-field-real", NOW)}
+        now={NOW}
+        seerrConfigured
+        frozen
+        reducedMotion={false}
+        devControls={false}
+      />,
+    );
+    expect(rendered.container.querySelector('[data-fabric-node="group:platform"]')).not.toBeNull();
+
+    rendered.rerender(
+      <FabricApp
+        snapshot={unavailable}
+        now={NOW + 1_000}
+        seerrConfigured
+        frozen
+        reducedMotion={false}
+        devControls={false}
+      />,
+    );
+
+    expect(rendered.container.querySelector('[data-fabric-topology="last-known"]')).not.toBeNull();
+    expect(rendered.container.querySelector('[data-fabric-node="group:platform"]')).not.toBeNull();
+  });
+
+  it("honors the relationship-map query on the production renderer", () => {
+    window.history.pushState({}, "", "/?relationships=1");
+    const { container } = render(
+      <FabricApp
+        snapshot={makeFakeSnapshot("relationship-map", NOW)}
+        now={NOW}
+        seerrConfigured
+        frozen
+        reducedMotion={false}
+        devControls={false}
+      />,
+    );
+
+    expect(container.querySelector("[data-study-shell]")).toHaveAttribute("data-study-view-mode", "relationship-map");
+    expect(container.querySelector('[data-study-logical-route^="declared:"][data-study-route-visible="true"]')).not.toBeNull();
+  });
+
   it("keeps the healthy surface free of freshness chatter", () => {
     const { container } = render(
       <FabricApp
@@ -48,6 +126,7 @@ describe("FabricApp", () => {
     expect(screen.getByText("Server fabric")).toBeInTheDocument();
     expect(screen.queryByText(/updated|freshness|healthy|live/i)).not.toBeInTheDocument();
     expect(container.querySelector("[role='status']")).toBeNull();
+    expect(container.querySelector("[data-fabric-route]")).toBeNull();
   });
 
   it("disables animated relationship scheduler attributes in frozen and reduced-motion modes", () => {
@@ -110,6 +189,24 @@ describe("FabricApp", () => {
 
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByLabelText("Jellyfin inspector")).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(jellyfin);
+  });
+
+  it("supports Space activation for composition nodes", () => {
+    render(
+      <FabricApp
+        snapshot={makeFakeSnapshot("active", NOW)}
+        now={NOW}
+        seerrConfigured
+        frozen
+        reducedMotion={false}
+        devControls={false}
+      />,
+    );
+
+    const sonarr = screen.getByRole("button", { name: /^Sonarr;/ });
+    fireEvent.keyDown(sonarr, { key: " " });
+    expect(screen.getByLabelText("Sonarr inspector")).toBeInTheDocument();
   });
 
   it("exposes the complete grouped workload population in technical details", () => {

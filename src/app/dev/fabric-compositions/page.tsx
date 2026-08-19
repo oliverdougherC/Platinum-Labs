@@ -1,7 +1,6 @@
 import { notFound } from "next/navigation";
 import { FabricCompositionStudy } from "@/components/dev/fabric-composition-study";
 import { isScenario, type FakeScenario } from "@/lib/fake/snapshot";
-import type { FabricCompositionId } from "@/lib/fabric/composition-study";
 import { shouldShowDevControls } from "@/lib/snapshot.server";
 
 export const dynamic = "force-dynamic";
@@ -15,8 +14,8 @@ function one(value: string | string[] | undefined): string | undefined {
 /**
  * Dev-only V3 composition study. This deliberately does not replace or mutate
  * the feature-flagged production FabricApp. It projects the existing
- * FabricModel into the three historical study geometries and the selected A+
- * synthesis against the sanitized 44-container Docker fixture.
+ * FabricModel into the promoted A+ synthesis against the sanitized 44-container
+ * Docker fixture.
  */
 export default async function FabricCompositionsPage({
   searchParams,
@@ -25,8 +24,6 @@ export default async function FabricCompositionsPage({
 }) {
   if (!shouldShowDevControls()) notFound();
   const params = await searchParams;
-  const studyRaw = one(params.study)?.toUpperCase();
-  const study: FabricCompositionId = studyRaw === "A+" || studyRaw === "B" || studyRaw === "C" ? studyRaw : "A";
   const scenarioRaw = one(params.scenario);
   const scenario: FakeScenario = isScenario(scenarioRaw) ? scenarioRaw : "container-mixed";
   const freezeRaw = Number(one(params.freeze));
@@ -36,7 +33,6 @@ export default async function FabricCompositionsPage({
 
   return (
     <FabricCompositionStudy
-      study={study}
       initialScenario={scenario}
       initialViewMode={mode}
       now={now}

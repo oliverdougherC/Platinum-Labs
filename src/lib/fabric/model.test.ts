@@ -317,7 +317,7 @@ describe("FabricModel", () => {
           "network": true,
           "networkSegmentIds": [
             "network:internal_default",
-            "network:other-docker-segments",
+            "network:media_default",
           ],
           "nodeId": "service:jellyfin",
           "read": true,
@@ -334,7 +334,7 @@ describe("FabricModel", () => {
           "network": true,
           "networkSegmentIds": [
             "network:internal_default",
-            "network:other-docker-segments",
+            "network:media_default",
           ],
           "nodeId": "service:qbittorrent",
           "read": true,
@@ -351,7 +351,7 @@ describe("FabricModel", () => {
           "network": true,
           "networkSegmentIds": [
             "network:internal_default",
-            "network:other-docker-segments",
+            "network:media_default",
           ],
           "nodeId": "service:sonarr",
           "read": true,
@@ -368,7 +368,7 @@ describe("FabricModel", () => {
           "network": true,
           "networkSegmentIds": [
             "network:internal_default",
-            "network:other-docker-segments",
+            "network:media_default",
           ],
           "nodeId": "service:radarr",
           "read": true,
@@ -385,7 +385,7 @@ describe("FabricModel", () => {
           "network": true,
           "networkSegmentIds": [
             "network:internal_default",
-            "network:other-docker-segments",
+            "network:media_default",
           ],
           "nodeId": "service:seerr",
           "read": false,
@@ -444,7 +444,8 @@ describe("FabricModel", () => {
           "network": true,
           "networkSegmentIds": [
             "network:internal_default",
-            "network:other-docker-segments",
+            "network:media_default",
+            "network:observability_default",
           ],
           "nodeId": "group:platform",
           "read": false,
@@ -462,7 +463,7 @@ describe("FabricModel", () => {
           "networkSegmentIds": [
             "network:bridge",
             "network:internal_default",
-            "network:other-docker-segments",
+            "network:media_default",
           ],
           "nodeId": "group:media-support",
           "read": false,
@@ -479,7 +480,7 @@ describe("FabricModel", () => {
           "network": true,
           "networkSegmentIds": [
             "network:internal_default",
-            "network:other-docker-segments",
+            "network:observability_default",
           ],
           "nodeId": "group:observability",
           "read": false,
@@ -660,7 +661,12 @@ describe("FabricModel", () => {
     expect(coldStart.nodes.some((node) => node.id.startsWith("network:"))).toBe(false);
     expect(coldStart.nodes.some((node) => node.kind === "group")).toBe(false);
 
-    expect(recovered.nodes.filter((node) => node.id.startsWith("network:")).map((node) => node.id)).toEqual(
+    expect(recovered.nodes.filter((node) => node.id.startsWith("network:")).map((node) => node.id)).toEqual([
+      "network:bridge",
+      "network:internal_default",
+      "network:other-docker-segments",
+    ]);
+    expect(recovered.networkSegments.map((network) => network.id)).toEqual(
       inventory.networks.map((network) => network.id),
     );
     expect(recovered.nodes.some((node) => node.id === "group:media-support")).toBe(true);
@@ -708,16 +714,29 @@ describe("FabricModel", () => {
     ]);
     expect(jellyfinAttachments.map((attachment) => attachment.id).sort()).toEqual([
       "attach:network:jellyfin:network:internal_default",
-      "attach:network:jellyfin:network:other-docker-segments",
+      "attach:network:jellyfin:network:media_default",
+    ]);
+    expect(jellyfinAttachments.map((attachment) => attachment.label).sort()).toEqual([
+      "internal_default",
+      "media_default",
     ]);
     expect(sonarrAttachments.map((attachment) => attachment.fabricId).sort()).toEqual([
       "network:internal_default",
       "network:other-docker-segments",
     ]);
+    expect(sonarrAttachments.map((attachment) => attachment.id).sort()).toEqual([
+      "attach:network:sonarr:network:internal_default",
+      "attach:network:sonarr:network:media_default",
+    ]);
     expect(mediaSupportAttachments.map((attachment) => attachment.fabricId).sort()).toEqual([
       "network:bridge",
       "network:internal_default",
       "network:other-docker-segments",
+    ]);
+    expect(mediaSupportAttachments.map((attachment) => attachment.id).sort()).toEqual([
+      "attach:network:group:media-support:network:bridge",
+      "attach:network:group:media-support:network:internal_default",
+      "attach:network:group:media-support:network:media_default",
     ]);
   });
 });

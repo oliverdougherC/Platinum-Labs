@@ -6,7 +6,6 @@ import {
   buildFabricComposition,
   validateFabricComposition,
   validateLogicalRoute,
-  type FabricCompositionId,
 } from "@/lib/fabric/composition-study";
 
 const NOW = Date.UTC(2026, 7, 15, 12, 0, 0);
@@ -78,54 +77,29 @@ function routeFor(scene: ReturnType<typeof buildFabricComposition>, relationship
   return scene.logicalRoutes.find((route) => route.relationshipId === relationshipId);
 }
 
-describe("fabric composition studies", () => {
-  for (const id of ["A", "B", "C"] satisfies FabricCompositionId[]) {
-    it(`${id} is deterministic, planar, balanced, and accounts for the real-scale population`, () => {
-      const first = buildFabricComposition(modelFor("container-mixed"), id);
-      const second = buildFabricComposition(modelFor("container-mixed"), id);
-      expect(second).toEqual(first);
-      expect(first.representedIds).toHaveLength(44);
-      expect(first.summaryIds).toEqual(first.representedIds);
-      expect(new Set(first.segments.map((segment) => segment.id)).size).toBe(first.segments.length);
-      expect(first.logicalRoutes.every((route) => route.segmentIds.length > 0)).toBe(true);
-      expect(validateFabricComposition(first)).toMatchObject({
-        duplicateGeometry: [],
-        segmentLabelIntersections: [],
-        segmentNodeIntersections: [],
-        textOverflow: [],
-        unapprovedCrossings: [],
-        longNetworkLabels: [],
-        danglingSegments: [],
-        missingPopulationIds: [],
-        valid: true,
-      });
-    });
-  }
-
-  it("keeps the same physical graph across quiet, mixed, focus, and real-scale activity", () => {
-    for (const id of ["A", "B", "C"] satisfies FabricCompositionId[]) {
-      const geometries = ["idle", "container-mixed", "transcode", "relationship-map"].map((scenario) =>
-        buildFabricComposition(modelFor(scenario as Parameters<typeof makeFakeSnapshot>[0]), id).segments.map((segment) => ({
-          id: segment.id,
-          plane: segment.plane,
-          points: segment.points,
-          labelBounds: segment.labelBounds,
-        })),
-      );
-      expect(geometries.slice(1).every((geometry) => JSON.stringify(geometry) === JSON.stringify(geometries[0]))).toBe(true);
+function minimumUnrelatedModuleGap(scene: ReturnType<typeof buildFabricComposition>) {
+  const modules = scene.nodes.filter((node) =>
+    ["orchestration", "data-plane", "subsystem", "storage"].includes(node.role),
+  );
+  let minimum = Number.POSITIVE_INFINITY;
+  let pair = "";
+  for (let index = 0; index < modules.length; index += 1) {
+    for (let peerIndex = index + 1; peerIndex < modules.length; peerIndex += 1) {
+      const left = modules[index]!;
+      const right = modules[peerIndex]!;
+      const dx = Math.max(0, left.bounds.x - (right.bounds.x + right.bounds.width), right.bounds.x - (left.bounds.x + left.bounds.width));
+      const dy = Math.max(0, left.bounds.y - (right.bounds.y + right.bounds.height), right.bounds.y - (left.bounds.y + left.bounds.height));
+      const gap = Number(Math.hypot(dx, dy).toFixed(2));
+      if (gap < minimum) {
+        minimum = gap;
+        pair = `${left.sourceNodeId}:${right.sourceNodeId}`;
+      }
     }
-  });
+  }
+  return { minimum, pair };
+}
 
-  it("aggregates logical contributors onto one physical segment per plane", () => {
-    const scene = buildFabricComposition(modelFor("active"), "A");
-    const physicalIds = new Set(scene.segments.map((segment) => segment.id));
-    expect(scene.segments.filter((segment) => segment.id === "segment:wan-gateway")).toHaveLength(1);
-    expect(scene.segments.filter((segment) => segment.id === "segment:control")).toHaveLength(1);
-    expect(scene.segments.filter((segment) => segment.id === "segment:read")).toHaveLength(1);
-    expect(scene.segments.filter((segment) => segment.id === "segment:write")).toHaveLength(1);
-    expect(scene.logicalRoutes.flatMap((route) => route.segmentIds).every((id) => physicalIds.has(id))).toBe(true);
-  });
-
+describe("fabric composition studies", () => {
   it("builds an A+ synthesis with attached visible ports and endpoint-specific logical branches", () => {
     const scene = buildFabricComposition(modelFor("container-mixed", { networkBoundaries: ["wan", "lan", "overlay"] }), "A+");
     const validation = validateFabricComposition(scene);
@@ -142,8 +116,10 @@ describe("fabric composition studies", () => {
   it("keeps the A+ storage corridors clear and rejects large internal voids with coarse-grid density", () => {
     const scene = buildFabricComposition(modelFor("container-field-real", { networkBoundaries: ["wan", "lan", "overlay"] }), "A+");
     const validation = validateFabricComposition(scene);
+    const moduleGap = minimumUnrelatedModuleGap(scene);
 
     expect(validation.blockedStorageCorridors).toEqual([]);
+    expect(moduleGap.minimum, moduleGap.pair).toBeGreaterThanOrEqual(12);
     expect(validation.density.occupiedCellRatio).toBeGreaterThanOrEqual(0.34);
     expect(validation.density.largestInternalVoid).toBeLessThanOrEqual(8);
     expect(validation.density.columns.slice(0, 4).some((count) => count > 0)).toBe(true);
@@ -177,7 +153,7 @@ describe("fabric composition studies", () => {
     const scene = buildFabricComposition(modelFor("idle", { networkBoundaries: ["wan", "lan", "overlay"] }), "A+");
 
     expect(aPlusGeometry(scene)).toEqual(aPlusGeometryFixture);
-    expect(aPlusGeometryFingerprint(scene)).toBe("48b8b99b");
+    expect(aPlusGeometryFingerprint(scene)).toBe("aeaa2ae4");
     expect(scene.segments.some((segment) => segment.id === "segment:a-plus:host-network-trunk")).toBe(true);
   });
 
@@ -224,7 +200,7 @@ describe("fabric composition studies", () => {
       resolution: "partial",
       networkResolution: {
         status: "ambiguous",
-        candidateSegmentIds: ["network:internal_default", "network:other-docker-segments"],
+        candidateSegmentIds: ["network:internal_default", "network:media_default"],
       },
       segmentIds: [],
     });
@@ -233,7 +209,7 @@ describe("fabric composition studies", () => {
       resolution: "partial",
       networkResolution: {
         status: "ambiguous",
-        candidateSegmentIds: ["network:internal_default", "network:other-docker-segments"],
+        candidateSegmentIds: ["network:internal_default", "network:media_default"],
       },
       segmentIds: [],
     });
@@ -243,7 +219,7 @@ describe("fabric composition studies", () => {
       resolution: "partial",
       networkResolution: {
         status: "ambiguous",
-        candidateSegmentIds: ["network:internal_default", "network:other-docker-segments"],
+        candidateSegmentIds: ["network:internal_default", "network:media_default"],
       },
       segmentIds: [],
     });
@@ -251,7 +227,7 @@ describe("fabric composition studies", () => {
       resolution: "partial",
       networkResolution: {
         status: "ambiguous",
-        candidateSegmentIds: ["network:internal_default", "network:other-docker-segments"],
+        candidateSegmentIds: ["network:internal_default", "network:media_default"],
       },
       segmentIds: [],
     });
@@ -312,7 +288,7 @@ describe("fabric composition studies", () => {
     const jellyfin = model.stableCapabilities.find((capability) => capability.nodeId === "service:jellyfin")!;
     const sonarr = model.stableCapabilities.find((capability) => capability.nodeId === "service:sonarr")!;
     const radarr = model.stableCapabilities.find((capability) => capability.nodeId === "service:radarr")!;
-    jellyfin.networkSegmentIds = ["network:internal_default", "network:other-docker-segments"];
+    jellyfin.networkSegmentIds = ["network:internal_default", "network:media_default"];
     sonarr.networkSegmentIds = ["network:bridge", "network:internal_default"];
     radarr.networkSegmentIds = ["network:bridge"];
     const template = model.relationships.find((relationship) => relationship.fromPortId.endsWith(":network") && relationship.toPortId.endsWith(":network"))!;
@@ -353,6 +329,18 @@ describe("fabric composition studies", () => {
         direction: "forward",
         visibility: "focus",
       },
+      {
+        ...template,
+        id: "declared:grouped-display-only:jellyfin->observability",
+        label: "Grouped display network only",
+        fromNodeId: "service:jellyfin",
+        toNodeId: "group:observability",
+        fromPortId: "service:jellyfin:network",
+        toPortId: "group:observability:network",
+        networkBoundary: "docker-internal",
+        direction: "forward",
+        visibility: "focus",
+      },
     );
 
     const scene = buildFabricComposition(model, "A+");
@@ -383,9 +371,24 @@ describe("fabric composition studies", () => {
       resolution: "partial",
       networkResolution: {
         status: "ambiguous",
-        candidateSegmentIds: ["network:internal_default", "network:other-docker-segments"],
+        candidateSegmentIds: ["network:internal_default", "network:media_default"],
       },
       segmentIds: [],
+    });
+    expect(routeFor(scene, "declared:grouped-display-only:jellyfin->observability")).toMatchObject({
+      resolution: "complete",
+      networkResolution: {
+        status: "resolved",
+        selectedSegmentId: "network:internal_default",
+        candidateSegmentIds: ["network:internal_default"],
+      },
+      segmentIds: [
+        "segment:a-plus:network:internal_default:service:jellyfin:network-branch",
+        "segment:a-plus:network:east-trunk",
+        "segment:a-plus:network:internal_default:rail",
+        "segment:a-plus:host-network-trunk",
+        "segment:a-plus:network:internal_default:group:observability:network-branch",
+      ],
     });
   });
 
@@ -397,7 +400,7 @@ describe("fabric composition studies", () => {
       resourceViewIds: ["cpu", "memory"],
     });
     expect(scene.subsystemFocus.byNodeId["group:media-support"]).toMatchObject({
-      networkSegmentIds: ["network:bridge", "network:internal_default", "network:other-docker-segments"],
+      networkSegmentIds: ["network:bridge", "network:internal_default", "network:media_default"],
       networkBranchSegmentIds: expect.arrayContaining([
         "segment:a-plus:network:bridge:group:media-support:network-branch",
         "segment:a-plus:network:internal_default:group:media-support:network-branch",
@@ -500,17 +503,17 @@ describe("fabric composition studies", () => {
 
     expect(routeFor(lanScene, "egress:jellyfin->network")).toMatchObject({
       resolution: "partial",
-      networkResolution: { status: "ambiguous", candidateSegmentIds: ["network:internal_default", "network:other-docker-segments"] },
+      networkResolution: { status: "ambiguous", candidateSegmentIds: ["network:internal_default", "network:media_default"] },
       segmentIds: [],
     });
     expect(routeFor(overlayScene, "egress:jellyfin->network")).toMatchObject({
       resolution: "partial",
-      networkResolution: { status: "ambiguous", candidateSegmentIds: ["network:internal_default", "network:other-docker-segments"] },
+      networkResolution: { status: "ambiguous", candidateSegmentIds: ["network:internal_default", "network:media_default"] },
       segmentIds: [],
     });
     expect(routeFor(wanScene, "wan-transfer:network->qbittorrent")).toMatchObject({
       resolution: "partial",
-      networkResolution: { status: "ambiguous", candidateSegmentIds: ["network:internal_default", "network:other-docker-segments"] },
+      networkResolution: { status: "ambiguous", candidateSegmentIds: ["network:internal_default", "network:media_default"] },
       segmentIds: [],
     });
   });

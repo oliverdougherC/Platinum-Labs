@@ -18,7 +18,6 @@ describe("FabricCompositionStudy", () => {
   it("uses explicit relationship-map view mode instead of inferring from scenario naming", () => {
     const { container } = render(
       <FabricCompositionStudy
-        study="A+"
         initialScenario="idle"
         initialViewMode="relationship-map"
         now={NOW}
@@ -46,7 +45,6 @@ describe("FabricCompositionStudy", () => {
   it("keeps focused relationship-map routes constrained to declared and control relationships", () => {
     const { container } = render(
       <FabricCompositionStudy
-        study="A+"
         initialScenario="downloads"
         initialViewMode="relationship-map"
         now={NOW}
@@ -61,7 +59,6 @@ describe("FabricCompositionStudy", () => {
   it("progressively reveals ordinary ports only when the node is focused", () => {
     const { container } = render(
       <FabricCompositionStudy
-        study="A+"
         initialScenario="idle"
         initialViewMode="activity"
         now={NOW}
@@ -82,7 +79,6 @@ describe("FabricCompositionStudy", () => {
   ] as const)("surfaces %s route activity as %s", (scenario, expectedState) => {
     const { container } = render(
       <FabricCompositionStudy
-        study="A+"
         initialScenario={scenario}
         initialViewMode="activity"
         now={NOW}
@@ -96,7 +92,6 @@ describe("FabricCompositionStudy", () => {
   it("keeps dormant structural substrate distinguishable from zero-byte routes", () => {
     const { container } = render(
       <FabricCompositionStudy
-        study="A+"
         initialScenario="idle"
         initialViewMode="activity"
         now={NOW}
@@ -128,7 +123,6 @@ describe("FabricCompositionStudy", () => {
 
     const { container } = render(
       <FabricCompositionStudy
-        study="A+"
         initialScenario="docker-unavailable"
         initialViewMode="activity"
         now={NOW}
@@ -143,7 +137,6 @@ describe("FabricCompositionStudy", () => {
   it("explains subsystem resource and network connectivity without inventing storage", () => {
     const { container } = render(
       <FabricCompositionStudy
-        study="A+"
         initialScenario="container-field-real"
         initialViewMode="activity"
         now={NOW}
@@ -161,7 +154,6 @@ describe("FabricCompositionStudy", () => {
   it("exposes confirmed-zero as the dominant rendered data-plane state", () => {
     const { container } = render(
       <FabricCompositionStudy
-        study="A+"
         initialScenario="confirmed-zero"
         initialViewMode="activity"
         now={NOW}

@@ -93,31 +93,29 @@ const TOPOLOGY_SHOTS = [
 ];
 
 const FABRIC_SHOTS = [
-  { name: "00-v21-before", scenario: "idle", ui: "topology", w: 1280, h: 720 },
-  { name: "01-quiet-1280x720", scenario: "idle", ui: "fabric", w: 1280, h: 720 },
-  { name: "02-active-1280x720", scenario: "active", ui: "fabric", w: 1280, h: 720 },
-  { name: "02b-mixed-1280x720", scenario: "container-mixed", ui: "fabric", w: 1280, h: 720 },
-  { name: "03-mixed-1920x1080", scenario: "container-mixed", ui: "fabric", w: 1920, h: 1080 },
-  { name: "04-real-scale-1920x1080", scenario: "container-field-real", ui: "fabric", w: 1920, h: 1080 },
-  { name: "05-active-2560x1440", scenario: "active", ui: "fabric", w: 2560, h: 1440 },
-  { name: "06-active-ultrawide-2560x1080", scenario: "active", ui: "fabric", w: 2560, h: 1080 },
-  { name: "07-zoom-150", scenario: "active", ui: "fabric", w: 1280, h: 720, zoom: 1.5 },
-  { name: "08-zoom-200", scenario: "active", ui: "fabric", w: 960, h: 540, zoom: 2 },
-  { name: "09-jellyfin-focus", scenario: "transcode", ui: "fabric", w: 1920, h: 1080, action: "fabric-jellyfin" },
-  { name: "10-sonarr-relationship-focus", scenario: "relationship-map", ui: "fabric", w: 1920, h: 1080, action: "fabric-sonarr" },
-  { name: "10b-relationship-map", scenario: "relationship-map", ui: "fabric", relationships: true, w: 1920, h: 1080 },
-  { name: "11-qbittorrent-download-focus", scenario: "downloads", ui: "fabric", w: 1920, h: 1080, action: "fabric-qbittorrent" },
-  { name: "12-radarr-import", scenario: "radarr-import", ui: "fabric", w: 1920, h: 1080, action: "fabric-radarr" },
-  { name: "13-same-pool-import", scenario: "same-pool-import", ui: "fabric", w: 1920, h: 1080 },
-  { name: "14-cross-pool-import", scenario: "cross-pool-import", ui: "fabric", w: 1920, h: 1080 },
-  { name: "15-gpu-workload", scenario: "gpu-workload", ui: "fabric", w: 1920, h: 1080 },
-  { name: "16-pool-scrub", scenario: "pool-scrub", ui: "fabric", w: 1920, h: 1080 },
-  { name: "17-stale", scenario: "stale", ui: "fabric", w: 1920, h: 1080 },
-  { name: "18-docker-unavailable", scenario: "docker-unavailable", ui: "fabric", w: 1920, h: 1080 },
-  { name: "19-reduced-motion", scenario: "active", ui: "fabric", w: 1920, h: 1080, reducedMotion: true },
-  { name: "20-compact-inspector", scenario: "active", ui: "fabric", w: 1280, h: 720, action: "fabric-jellyfin" },
-  { name: "20b-desktop-inspector", scenario: "active", ui: "fabric", w: 1920, h: 1080, action: "fabric-jellyfin" },
-  { name: "21-technical-details", scenario: "container-field-real", ui: "fabric", w: 1920, h: 1080, action: "fabric-technical" },
+  { name: "00-v21-before-quiet", scenario: "idle", ui: "topology", w: 1280, h: 720 },
+  { name: "01-v3-quiet-1280x720", scenario: "idle", ui: "fabric", w: 1280, h: 720 },
+  { name: "02-v3-mixed-1280x720", scenario: "container-mixed", ui: "fabric", w: 1280, h: 720 },
+  { name: "03-v3-quiet-1920x1080", scenario: "idle", ui: "fabric", w: 1920, h: 1080 },
+  { name: "04-v3-mixed-1920x1080", scenario: "container-mixed", ui: "fabric", w: 1920, h: 1080 },
+  { name: "05-v3-mixed-2560x1440", scenario: "container-mixed", ui: "fabric", w: 2560, h: 1440 },
+  { name: "06-v3-mixed-ultrawide-2560x1080", scenario: "container-mixed", ui: "fabric", w: 2560, h: 1080 },
+  { name: "07-v3-mixed-zoom-150", scenario: "container-mixed", ui: "fabric", w: 1280, h: 720, zoom: 1.5 },
+  { name: "08-v3-mixed-zoom-200", scenario: "container-mixed", ui: "fabric", w: 960, h: 540, zoom: 2 },
+  { name: "09-v3-44-container-1920x1080", scenario: "container-field-real", ui: "fabric", w: 1920, h: 1080 },
+  { name: "10-v3-jellyfin-focus", scenario: "transcode", ui: "fabric", w: 1920, h: 1080, action: "fabric-jellyfin" },
+  { name: "11-v3-qbittorrent-focus", scenario: "downloads", ui: "fabric", w: 1920, h: 1080, action: "fabric-qbittorrent" },
+  { name: "12-v3-sonarr-focus", scenario: "relationship-map", ui: "fabric", w: 1920, h: 1080, action: "fabric-sonarr" },
+  { name: "13-v3-media-support-focus", scenario: "container-field-real", ui: "fabric", w: 1920, h: 1080, action: "fabric-focus:group:media-support" },
+  { name: "14-v3-relationship-map", scenario: "relationship-map", ui: "fabric", relationships: true, w: 1920, h: 1080 },
+  { name: "15-v3-state-only", scenario: "transcode-unknown-rate", ui: "fabric", w: 1920, h: 1080 },
+  { name: "16-v3-stale", scenario: "stale", ui: "fabric", w: 1920, h: 1080 },
+  { name: "17-v3-confirmed-zero", scenario: "confirmed-zero", ui: "fabric", w: 1920, h: 1080 },
+  { name: "18-v3-docker-unavailable-retained", scenario: "container-field-real", ui: "fabric", w: 1920, h: 1080, transitionScenario: "docker-unavailable" },
+  { name: "19-v3-reduced-motion", scenario: "container-mixed", ui: "fabric", w: 1920, h: 1080, reducedMotion: true },
+  { name: "20-v3-compact-inspector", scenario: "transcode", ui: "fabric", w: 1280, h: 720, action: "fabric-jellyfin" },
+  { name: "21-v3-desktop-inspector", scenario: "transcode", ui: "fabric", w: 1920, h: 1080, action: "fabric-jellyfin" },
+  { name: "22-v3-technical-provenance", scenario: "transcode", ui: "fabric", w: 1920, h: 1080, action: "fabric-jellyfin-technical" },
 ];
 
 const FABRIC_STUDY_SHOTS = [
@@ -139,6 +137,8 @@ const FABRIC_STUDY_SHOTS = [
 ];
 
 const A_PLUS_ACTIVITY_SIGNATURES = new Map();
+const FABRIC_FRAME_DIAGNOSTICS = [];
+const FABRIC_STUDY_DIAGNOSTICS = [];
 
 /**
  * Truthful container accounting per scenario — the harness fails loudly if a
@@ -236,6 +236,21 @@ async function focusFlow(page, needles) {
 }
 
 async function performShotAction(page, action) {
+  if (action?.startsWith("fabric-focus:")) {
+    const targetId = action.slice("fabric-focus:".length);
+    const target = page.locator(`[data-fabric-node="${targetId}"]`);
+    await target.focus();
+    await page.keyboard.press("Enter");
+    return;
+  }
+  if (action?.startsWith("fabric-technical:")) {
+    const targetId = action.slice("fabric-technical:".length);
+    const target = page.locator(`[data-fabric-node="${targetId}"]`);
+    await target.focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: "Technical details" }).click();
+    return;
+  }
   switch (action) {
     case undefined:
       return;
@@ -278,14 +293,15 @@ async function performShotAction(page, action) {
       await page.keyboard.press("Enter");
       return;
     case "fabric-jellyfin":
+      return performShotAction(page, "fabric-focus:service:jellyfin");
     case "fabric-sonarr":
+      return performShotAction(page, "fabric-focus:service:sonarr");
     case "fabric-radarr":
-    case "fabric-qbittorrent": {
-      const id = action.slice("fabric-".length);
-      const target = page.locator(`[data-fabric-node="service:${id}"]`);
-      await target.focus();
-      await page.keyboard.press("Enter");
-      return;
+      return performShotAction(page, "fabric-focus:service:radarr");
+    case "fabric-qbittorrent":
+      return performShotAction(page, "fabric-focus:service:qbittorrent");
+    case "fabric-jellyfin-technical": {
+      return performShotAction(page, "fabric-technical:service:jellyfin");
     }
     case "fabric-technical": {
       const target = page.locator('[data-fabric-node^="group:"]').first();
@@ -317,6 +333,278 @@ async function assertInsideViewport(locator, page, label) {
       throw new Error(`${label} ${i} is outside ${viewport.width}x${viewport.height}: ${JSON.stringify(rect)}`);
     }
   }
+}
+
+async function collectFabricFrameDiagnostics(page, shot) {
+  // Production and the A+ study intentionally share the same rendered
+  // primitive and diagnostic attributes. Run the stricter study validator
+  // whenever those attributes are present so production evidence measures the
+  // complete physical substrate, not only the currently highlighted routes.
+  if ((await page.locator("[data-study-stage]").count()) === 1) {
+    const focusByAction = {
+      "fabric-jellyfin": "service:jellyfin",
+      "fabric-jellyfin-technical": "service:jellyfin",
+      "fabric-qbittorrent": "service:qbittorrent",
+      "fabric-sonarr": "service:sonarr",
+    };
+    const focus = shot.action?.startsWith("fabric-focus:")
+      ? shot.action.slice("fabric-focus:".length)
+      : focusByAction[shot.action];
+    const state = focus
+      ? "focus"
+      : shot.reducedMotion
+        ? "reduced-motion"
+        : ({
+            idle: "quiet",
+            "container-mixed": "mixed",
+            "container-field-real": "real-scale",
+            "relationship-map": "relationship-map",
+            "transcode-unknown-rate": "state-only",
+            stale: "stale",
+            "confirmed-zero": "confirmed-zero",
+          })[shot.scenario] ?? "mixed";
+    const diagnostics = await validateFabricStudyShot(page, {
+      ...shot,
+      study: "A+",
+      state,
+      focus,
+      inspector: Boolean(focus),
+    });
+    FABRIC_FRAME_DIAGNOSTICS.push(diagnostics);
+    return diagnostics;
+  }
+
+  const diagnostics = await page.locator("[data-fabric-stage]").evaluate((stage, shotName) => {
+    const visible = (element) => {
+      const style = getComputedStyle(element);
+      const opacity = Number.parseFloat(style.opacity);
+      return style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        style.visibility !== "collapse" &&
+        (Number.isNaN(opacity) || opacity > 0.2);
+    };
+    const parseRoutePoints = (value) => [...value.matchAll(/[ML](-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g)].map(([, x, y]) => ({
+      x: Number(x),
+      y: Number(y),
+    }));
+    const lines = (points) => points.slice(1).map((to, index) => [points[index], to]);
+    const lineIntersectsRect = (a, b, box) => {
+      if (a.x === b.x) {
+        return a.x > box.x && a.x < box.x + box.width && Math.max(a.y, b.y) > box.y && Math.min(a.y, b.y) < box.y + box.height;
+      }
+      if (a.y === b.y) {
+        return a.y > box.y && a.y < box.y + box.height && Math.max(a.x, b.x) > box.x && Math.min(a.x, b.x) < box.x + box.width;
+      }
+      return false;
+    };
+    const strictCrossing = (a1, a2, b1, b2) => {
+      const ah = a1.y === a2.y;
+      const bh = b1.y === b2.y;
+      if (ah === bh) return false;
+      const h1 = ah ? a1 : b1;
+      const h2 = ah ? a2 : b2;
+      const v1 = ah ? b1 : a1;
+      const v2 = ah ? b2 : a2;
+      return v1.x > Math.min(h1.x, h2.x) && v1.x < Math.max(h1.x, h2.x) && h1.y > Math.min(v1.y, v2.y) && h1.y < Math.max(v1.y, v2.y);
+    };
+    const orientation = ([from, to]) => from.x === to.x ? "vertical" : from.y === to.y ? "horizontal" : "diagonal";
+    const overlap1d = (a0, a1, b0, b1) => Math.min(Math.max(a0, a1), Math.max(b0, b1)) - Math.max(Math.min(a0, a1), Math.min(b0, b1));
+    const orthogonalDistance = (a, b) => {
+      const ao = orientation(a);
+      const bo = orientation(b);
+      if (ao === "horizontal" && bo === "vertical") {
+        const x = b[0].x;
+        const y = a[0].y;
+        const dx = Math.max(0, Math.max(Math.min(a[0].x, a[1].x) - x, x - Math.max(a[0].x, a[1].x)));
+        const dy = Math.max(0, Math.max(Math.min(b[0].y, b[1].y) - y, y - Math.max(b[0].y, b[1].y)));
+        return Math.hypot(dx, dy);
+      }
+      if (ao === "vertical" && bo === "horizontal") return orthogonalDistance(b, a);
+      return Number.POSITIVE_INFINITY;
+    };
+    const expand = (bounds, padding) => ({
+      x: bounds.x - padding,
+      y: bounds.y - padding,
+      width: bounds.width + padding * 2,
+      height: bounds.height + padding * 2,
+    });
+    const nodeEntries = [...stage.querySelectorAll("[data-fabric-node]")].filter(visible).map((element) => {
+      const rect = element.querySelector("rect");
+      const box = rect?.getBBox();
+      return rect && box ? {
+        id: element.getAttribute("data-fabric-node"),
+        kind: element.getAttribute("data-fabric-node-kind") ?? "",
+        bounds: box,
+      } : null;
+    }).filter(Boolean);
+    const moduleNodes = nodeEntries.filter((node) => ["workload", "group", "storage"].includes(node.kind));
+    let minimumModuleGap = Number.POSITIVE_INFINITY;
+    let minimumModuleGapPair = null;
+    for (let i = 0; i < moduleNodes.length; i++) {
+      for (let j = i + 1; j < moduleNodes.length; j++) {
+        const left = moduleNodes[i];
+        const right = moduleNodes[j];
+        const dx = Math.max(0, left.bounds.x - (right.bounds.x + right.bounds.width), right.bounds.x - (left.bounds.x + left.bounds.width));
+        const dy = Math.max(0, left.bounds.y - (right.bounds.y + right.bounds.height), right.bounds.y - (left.bounds.y + left.bounds.height));
+        const gap = Number(Math.hypot(dx, dy).toFixed(2));
+        if (gap < minimumModuleGap) {
+          minimumModuleGap = gap;
+          minimumModuleGapPair = `${left.id}:${right.id}`;
+        }
+      }
+    }
+    const routes = [...stage.querySelectorAll("[data-fabric-route]")].filter(visible).map((element) => ({
+      id: element.getAttribute("data-fabric-route"),
+      points: parseRoutePoints(element.getAttribute("d") ?? ""),
+    }));
+    const segments = routes.flatMap((route) => lines(route.points).map(([from, to]) => ({ routeId: route.id, from, to })));
+    const routeJunctions = routes.flatMap((route) => route.points.slice(1, -1).map((point) => `${point.x},${point.y}`));
+    const ports = [...stage.querySelectorAll("[data-fabric-port]")].filter(visible);
+    const textBoxes = [...stage.querySelectorAll(".fabric-title, .fabric-service-title, .fabric-group-title, .fabric-bus-title, .fabric-eyebrow, .fabric-metric, .fabric-member-label")]
+      .filter(visible)
+      .map((element) => ({ text: element.textContent ?? "", bounds: element.getBBox() }));
+    const crossings = [];
+    const nearCrossings = [];
+    const coincident = [];
+    const textKeepOut = [];
+    for (const segment of segments) {
+      for (const text of textBoxes) {
+        const keepOut = expand(text.bounds, 8);
+        if (lineIntersectsRect(segment.from, segment.to, keepOut)) {
+          textKeepOut.push(`${segment.routeId}:${text.text}`);
+        }
+      }
+    }
+    for (let i = 0; i < segments.length; i++) {
+      for (let j = i + 1; j < segments.length; j++) {
+        const left = segments[i];
+        const right = segments[j];
+        if (left.routeId === right.routeId) continue;
+        if (strictCrossing(left.from, left.to, right.from, right.to)) {
+          crossings.push(`${left.routeId}:${right.routeId}`);
+          continue;
+        }
+        const leftSegment = [left.from, left.to];
+        const rightSegment = [right.from, right.to];
+        const leftOrientation = orientation(leftSegment);
+        const rightOrientation = orientation(rightSegment);
+        if (leftOrientation === "horizontal" && rightOrientation === "horizontal") {
+          const overlap = overlap1d(left.from.x, left.to.x, right.from.x, right.to.x);
+          const separation = Math.abs(left.from.y - right.from.y);
+          if (overlap > 0 && separation === 0) coincident.push(`${left.routeId}:${right.routeId}`);
+          else if (overlap > 0 && separation < 12) nearCrossings.push(`${left.routeId}:${right.routeId}:h=${separation.toFixed(2)}`);
+        } else if (leftOrientation === "vertical" && rightOrientation === "vertical") {
+          const overlap = overlap1d(left.from.y, left.to.y, right.from.y, right.to.y);
+          const separation = Math.abs(left.from.x - right.from.x);
+          if (overlap > 0 && separation === 0) coincident.push(`${left.routeId}:${right.routeId}`);
+          else if (overlap > 0 && separation < 12) nearCrossings.push(`${left.routeId}:${right.routeId}:v=${separation.toFixed(2)}`);
+        } else if (leftOrientation !== "diagonal" && rightOrientation !== "diagonal") {
+          const distance = orthogonalDistance(leftSegment, rightSegment);
+          if (distance < 12) nearCrossings.push(`${left.routeId}:${right.routeId}:d=${distance.toFixed(2)}`);
+        }
+      }
+    }
+    const viewBox = stage.viewBox.baseVal;
+    const zoneWidth = viewBox.width / 3;
+    const zones = [
+      { name: "left", x: 0, width: zoneWidth },
+      { name: "center", x: zoneWidth, width: zoneWidth },
+      { name: "right", x: zoneWidth * 2, width: viewBox.width - zoneWidth * 2 },
+    ];
+    const intersectRect = (bounds, zone) => {
+      const left = Math.max(bounds.x, zone.x);
+      const right = Math.min(bounds.x + bounds.width, zone.x + zone.width);
+      const top = Math.max(bounds.y, 0);
+      const bottom = Math.min(bounds.y + bounds.height, viewBox.height);
+      return Math.max(0, right - left) * Math.max(0, bottom - top);
+    };
+    const occupancy = { left: 0, center: 0, right: 0 };
+    for (const node of moduleNodes) {
+      for (const zone of zones) {
+        occupancy[zone.name] += intersectRect(node.bounds, zone);
+      }
+    }
+    const occupancyTotal = occupancy.left + occupancy.center + occupancy.right;
+    const occupancyRatios = {
+      left: occupancyTotal ? occupancy.left / occupancyTotal : 0,
+      center: occupancyTotal ? occupancy.center / occupancyTotal : 0,
+      right: occupancyTotal ? occupancy.right / occupancyTotal : 0,
+    };
+    const gridSize = 100;
+    const cols = Math.ceil(viewBox.width / gridSize);
+    const rows = Math.ceil(viewBox.height / gridSize);
+    const occupied = Array.from({ length: rows }, () => Array.from({ length: cols }, () => false));
+    const branchDensity = Array.from({ length: rows }, () => Array.from({ length: cols }, () => new Set()));
+    const markBounds = (bounds, id) => {
+      const x0 = Math.max(0, Math.floor(bounds.x / gridSize));
+      const x1 = Math.min(cols - 1, Math.floor((bounds.x + bounds.width) / gridSize));
+      const y0 = Math.max(0, Math.floor(bounds.y / gridSize));
+      const y1 = Math.min(rows - 1, Math.floor((bounds.y + bounds.height) / gridSize));
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          occupied[y][x] = true;
+          if (id) branchDensity[y][x].add(id);
+        }
+      }
+    };
+    moduleNodes.forEach((node) => markBounds(expand(node.bounds, 8)));
+    segments.forEach((segment) => markBounds({
+      x: Math.min(segment.from.x, segment.to.x) - 4,
+      y: Math.min(segment.from.y, segment.to.y) - 4,
+      width: Math.abs(segment.from.x - segment.to.x) + 8,
+      height: Math.abs(segment.from.y - segment.to.y) + 8,
+    }, segment.routeId));
+    const maxBranchDensity = branchDensity.reduce((max, row) => Math.max(max, ...row.map((cell) => cell.size)), 0);
+    const innerRows = occupied.slice(1, -1).map((row) => row.slice(1, -1));
+    const visited = innerRows.map((row) => row.map(() => false));
+    let largestVoid = 0;
+    const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (let row = 0; row < innerRows.length; row++) {
+      for (let col = 0; col < innerRows[row].length; col++) {
+        if (innerRows[row][col] || visited[row][col]) continue;
+        let size = 0;
+        const queue = [[row, col]];
+        visited[row][col] = true;
+        while (queue.length) {
+          const [currentRow, currentCol] = queue.shift();
+          size += 1;
+          for (const [rowOffset, colOffset] of directions) {
+            const nextRow = currentRow + rowOffset;
+            const nextCol = currentCol + colOffset;
+            if (nextRow < 0 || nextRow >= innerRows.length || nextCol < 0 || nextCol >= innerRows[nextRow].length) continue;
+            if (innerRows[nextRow][nextCol] || visited[nextRow][nextCol]) continue;
+            visited[nextRow][nextCol] = true;
+            queue.push([nextRow, nextCol]);
+          }
+        }
+        largestVoid = Math.max(largestVoid, size);
+      }
+    }
+    return {
+      shot: shotName,
+      visibleSegments: segments.length,
+      visiblePorts: ports.length,
+      visibleVias: [...new Set(routeJunctions)].length,
+      visibleCrossings: crossings.length,
+      nearCrossings: [...new Set(nearCrossings)].length,
+      coincidentTraces: [...new Set(coincident)].length,
+      textKeepOutEntries: textKeepOut.length,
+      minimumUnrelatedModuleGap: Number.isFinite(minimumModuleGap) ? minimumModuleGap : null,
+      minimumUnrelatedModuleGapPair: minimumModuleGapPair,
+      maxBranchDensity,
+      occupancyRatios,
+      largestVoid,
+    };
+  }, shot.name);
+  FABRIC_FRAME_DIAGNOSTICS.push(diagnostics);
+  console.log(
+    `${shot.name}: segments=${diagnostics.visibleSegments}, ports=${diagnostics.visiblePorts}, vias=${diagnostics.visibleVias}, ` +
+    `crossings=${diagnostics.visibleCrossings}, near=${diagnostics.nearCrossings}, coincident=${diagnostics.coincidentTraces}, ` +
+    `textKeepOut=${diagnostics.textKeepOutEntries}, minGap=${diagnostics.minimumUnrelatedModuleGap ?? "n/a"}` +
+    `${diagnostics.minimumUnrelatedModuleGapPair ? `(${diagnostics.minimumUnrelatedModuleGapPair})` : ""}, ` +
+    `branchDensity(max/100)=${diagnostics.maxBranchDensity}, occupancy=${JSON.stringify(diagnostics.occupancyRatios)}, largestVoid=${diagnostics.largestVoid}`,
+  );
+  return diagnostics;
 }
 
 async function validateShot(page, shot, beforeActionBox) {
@@ -381,6 +669,13 @@ async function validateShot(page, shot, beforeActionBox) {
     if (unreadableEssentialText !== -1) throw new Error(`essential fabric type is below 8px (${shot.name}, ${unreadableEssentialText})`);
     if (shot.scenario === "idle" && await page.locator("[data-fabric-route]").count()) {
       throw new Error(`quiet overview contains an end-to-end relationship trace (${shot.name})`);
+    }
+    const diagnostics = await collectFabricFrameDiagnostics(page, shot);
+    if (diagnostics.minimumUnrelatedModuleGap !== null && diagnostics.minimumUnrelatedModuleGap < 12) {
+      throw new Error(
+        `independent fabric modules are closer than 12 SVG units (${shot.name}): ` +
+        `${diagnostics.minimumUnrelatedModuleGap} (${diagnostics.minimumUnrelatedModuleGapPair})`,
+      );
     }
   } else {
     // Truthful V2 container accounting: rendered bodies + overflow = population.
@@ -600,10 +895,13 @@ async function validateFabricStudyShot(page, shot) {
         }
       }
     }
-    const nodeBounds = new Map([...stage.querySelectorAll("[data-study-node]")].filter(isVisibleElement).map((element) => [
-      element.getAttribute("data-study-node"),
-      parseBounds(element.getAttribute("data-study-node-bounds") ?? "0,0,0,0"),
-    ]));
+    const visibleNodeElements = [...stage.querySelectorAll("[data-study-node]")].filter(isVisibleElement);
+    const visibleNodes = visibleNodeElements.map((element) => ({
+      id: element.getAttribute("data-study-node"),
+      role: element.getAttribute("data-study-node-role") ?? "",
+      bounds: parseBounds(element.getAttribute("data-study-node-bounds") ?? "0,0,0,0"),
+    }));
+    const nodeBounds = new Map(visibleNodes.map((node) => [node.id, node.bounds]));
     const nodeStateSignature = [...nodeBounds.entries()].sort(([left], [right]) => String(left).localeCompare(String(right))).map(([id, bounds]) =>
       `${id}|${bounds.x.toFixed(0)}|${bounds.y.toFixed(0)}|${bounds.width.toFixed(0)}|${bounds.height.toFixed(0)}`,
     );
@@ -732,6 +1030,8 @@ async function validateFabricStudyShot(page, shot) {
       id: element.getAttribute("data-study-logical-route"),
       resolution: element.getAttribute("data-study-route-resolution") ?? "complete",
       visible: element.getAttribute("data-study-route-visible") === "true",
+      fromNode: element.getAttribute("data-study-route-from"),
+      toNode: element.getAttribute("data-study-route-to"),
       fromPort: element.getAttribute("data-study-route-from-port"),
       toPort: element.getAttribute("data-study-route-to-port"),
       segmentIds: (element.getAttribute("data-study-route-segments") ?? "").split(",").filter(Boolean),
@@ -748,9 +1048,31 @@ async function validateFabricStudyShot(page, shot) {
     const blockedCorridors = corridors.flatMap((corridor) => [...stage.querySelectorAll('[data-study-node-role="subsystem"]')]
       .filter((element) => boxesOverlap(parseBounds(element.getAttribute("data-study-node-bounds") ?? "0,0,0,0"), corridor.bounds))
       .map((element) => `${corridor.nodeId}:${element.getAttribute("data-study-node")}`));
+    const edgeGap = (left, right) => {
+      const dx = Math.max(0, left.x - (right.x + right.width), right.x - (left.x + left.width));
+      const dy = Math.max(0, left.y - (right.y + right.height), right.y - (left.y + left.height));
+      return Number(Math.hypot(dx, dy).toFixed(2));
+    };
+    const unrelatedModuleNodes = visibleNodes.filter((node) =>
+      ["data-plane", "subsystem", "storage", "orchestration"].includes(node.role),
+    );
+    let minimumUnrelatedModuleGap = Number.POSITIVE_INFINITY;
+    let minimumUnrelatedModuleGapPair = null;
+    for (let i = 0; i < unrelatedModuleNodes.length; i++) {
+      for (let j = i + 1; j < unrelatedModuleNodes.length; j++) {
+        const left = unrelatedModuleNodes[i];
+        const right = unrelatedModuleNodes[j];
+        if (!left?.id || !right?.id) continue;
+        const gap = edgeGap(left.bounds, right.bounds);
+        if (gap < minimumUnrelatedModuleGap) {
+          minimumUnrelatedModuleGap = gap;
+          minimumUnrelatedModuleGapPair = `${left.id}:${right.id}`;
+        }
+      }
+    }
     const [densityRatio, largestVoid] = (stage.getAttribute("data-study-density") ?? "0,999").split(",").map(Number);
     const svgRect = stage.getBoundingClientRect();
-    const scale = Math.min(svgRect.width / viewBox.width, svgRect.height / viewBox.height);
+    const scale = Math.min(svgRect.width / viewBox.width, svgRect.height / viewBox.height) * (shotMetadata.zoom ?? 1);
     const zoneWidth = viewBox.width / 3;
     const zoneRects = [
       { name: "left", x: 0, y: 0, width: zoneWidth, height: viewBox.height },
@@ -868,6 +1190,8 @@ async function validateFabricStudyShot(page, shot) {
       unattachedPorts,
       trunkOnlyRoutes,
       blockedCorridors,
+      minimumUnrelatedModuleGap: Number.isFinite(minimumUnrelatedModuleGap) ? minimumUnrelatedModuleGap : null,
+      minimumUnrelatedModuleGapPair,
       densityRatio,
       largestVoid,
       undersizedText,
@@ -908,7 +1232,7 @@ async function validateFabricStudyShot(page, shot) {
         viaCount: viaEvidence.length,
       },
     };
-  }, { state: shot.state, focus: Boolean(shot.focus), inspector: Boolean(shot.inspector) });
+  }, { state: shot.state, focus: Boolean(shot.focus), inspector: Boolean(shot.inspector), zoom: shot.zoom ?? 1 });
 
   const checkKey = `${shot.state ?? shot.name}:${shot.focus ?? (shot.inspector ? "inspector" : "none")}`;
   const signature = JSON.stringify(result.activitySignature);
@@ -932,6 +1256,9 @@ async function validateFabricStudyShot(page, shot) {
   if (result.studyMode === "quiet" && result.nearCrossings.length) failures.push(`near crossings below min separation: ${result.nearCrossings.slice(0, 24).join(", ")}`);
   if (result.coincidentTraces.length) failures.push(`accidental coincident traces: ${result.coincidentTraces.join(", ")}`);
   if (result.maxBranchDensity > 7) failures.push(`max branch density per 100x100 too high: ${result.maxBranchDensity}`);
+  if (result.minimumUnrelatedModuleGap !== null && result.minimumUnrelatedModuleGap < 12) {
+    failures.push(`unrelated module edge gap below 12 SVG units: ${result.minimumUnrelatedModuleGap} (${result.minimumUnrelatedModuleGapPair})`);
+  }
   if (shot.state === "confirmed-zero") {
     if (result.renderedActivity && result.renderedActivity !== "confirmed-zero") failures.push(`confirmed-zero shot not marked by renderer (${result.renderedActivity})`);
     if (!result.renderedActivity) failures.push("confirmed-zero shot missing renderer activity data attribute");
@@ -988,7 +1315,27 @@ async function validateFabricStudyShot(page, shot) {
     failures.push("empty inspector rendered with no selection");
   }
 
-  console.log(`${shot.name}: mode=${result.activitySignature.activityMode}, active=${result.activeSegmentCount}, focus=${result.focusedSegmentCount}, totalSegments=${result.byModeSegmentCount?.total ?? result.segmentCount}, branches=${result.branchSegmentCount}, ports=${result.portCount}, vias=${result.viaEvidenceSummary}, crossings=${result.crossings.length}, nearCrossings=${result.nearCrossings.length}, textKeepOut=${result.traceTextKeepOut.length}, coincident=${result.coincidentTraces.length}, occupancy=${JSON.stringify(result.occupancyRatios)}, branchDensity(max/100)=${result.maxBranchDensity}, largestVoid=${result.largestVoid}`);
+  const diagnostics = {
+    shot: shot.name,
+    state: shot.state,
+    studyMode: result.studyMode,
+    activityMode: result.activitySignature.activityMode,
+    visibleSegments: result.byModeSegmentCount?.total ?? result.segmentCount,
+    visiblePorts: result.portCount,
+    visibleVias: result.viaEvidenceSummary,
+    visibleCrossings: result.crossings.length,
+    nearCrossings: result.nearCrossings.length,
+    coincidentTraces: result.coincidentTraces.length,
+    textKeepOutEntries: result.traceTextKeepOut.length,
+    minimumUnrelatedModuleGap: result.minimumUnrelatedModuleGap,
+    minimumUnrelatedModuleGapPair: result.minimumUnrelatedModuleGapPair,
+    maxBranchDensity: result.maxBranchDensity,
+    occupancyRatios: result.occupancyRatios,
+    densityRatio: result.densityRatio,
+    largestVoid: result.largestVoid,
+  };
+
+  console.log(`${shot.name}: mode=${result.activitySignature.activityMode}, active=${result.activeSegmentCount}, focus=${result.focusedSegmentCount}, totalSegments=${diagnostics.visibleSegments}, branches=${result.branchSegmentCount}, ports=${diagnostics.visiblePorts}, vias=${diagnostics.visibleVias}, crossings=${diagnostics.visibleCrossings}, nearCrossings=${diagnostics.nearCrossings}, textKeepOut=${diagnostics.textKeepOutEntries}, coincident=${diagnostics.coincidentTraces}, minGap=${diagnostics.minimumUnrelatedModuleGap ?? "n/a"}${diagnostics.minimumUnrelatedModuleGapPair ? `(${diagnostics.minimumUnrelatedModuleGapPair})` : ""}, occupancy=${JSON.stringify(result.occupancyRatios)}, branchDensity(max/100)=${diagnostics.maxBranchDensity}, largestVoid=${diagnostics.largestVoid}`);
 
   if (result.nearCrossings.length) {
     console.log(`near-collision summary (${shot.name}): ${result.nearCrossings.slice(0, 10).join(", ")}`);
@@ -1001,6 +1348,7 @@ async function validateFabricStudyShot(page, shot) {
     const typeSummary = Object.fromEntries(Object.entries(result.minimumTypeByRole).map(([role, value]) => [role, Number(value.toFixed(2))]));
     console.log(`validated ${shot.name}: vias=${result.viaCount} regions=${JSON.stringify(result.viaCountByRegion)} pairs=${JSON.stringify(result.viaEvidence)} min-effective-type=${JSON.stringify(typeSummary)}px population=${result.populationCount} density=${result.densityRatio.toFixed(3)}/${result.largestVoid}`);
   }
+  return diagnostics;
 }
 /** "production" (next build+start), "development" (next dev) or "external". */
 function buildMode() {
@@ -1089,28 +1437,31 @@ async function main() {
           if (shot.focus) params.set("focus", shot.focus);
           if (shot.mode) params.set("mode", shot.mode);
           if (shot.inspector) params.set("inspector", "1");
-        } else {
-          if (shot.ui) params.set("ui", shot.ui);
-          if (shot.relationships) params.set("relationships", "1");
-          if (shot.transport) params.set("transport", shot.transport);
-          if (shot.debug) params.set("debug", "geometry");
         }
         const route = FABRIC_STUDIES ? "/dev/fabric-compositions" : "/";
-        await page.goto(`${baseUrl}${route}?${params}`, { waitUntil: "networkidle" });
+        const url = FABRIC_STUDIES ? `${baseUrl}${route}?${params}` : `${homeShotUrl(baseUrl, shot)}&freeze=${FREEZE_AT}`;
+        await page.goto(url, { waitUntil: "networkidle" });
         // Fonts + SSR hydration settle; frozen mode has no further changes.
         await page.waitForTimeout(1_200);
         const beforeActionBox = await pageBox(page);
         assertNoPageScroll(beforeActionBox, shot);
         if (FABRIC_STUDIES) mkdirSync(`${OUT_DIR}/${shot.artifactDir ?? shot.study}`, { recursive: true });
         const path = FABRIC_STUDIES ? `${OUT_DIR}/${shot.artifactDir ?? shot.study}/${shot.name}.png` : `${OUT_DIR}/${shot.name}.png`;
-        // Preserve the rendered frame even when a diagnostic fails so visual
-        // review can drive the next geometry iteration.
-        await page.screenshot({ path });
         if (FABRIC_STUDIES) {
-          await validateFabricStudyShot(page, shot);
+          // Preserve the rendered frame even when a diagnostic fails so visual
+          // review can drive the next geometry iteration.
+          await page.screenshot({ path });
+          FABRIC_STUDY_DIAGNOSTICS.push(await validateFabricStudyShot(page, shot));
         } else {
+          if (shot.transitionScenario) {
+            await page.evaluate((nextScenario) => window.__homelabSetScenario(nextScenario), shot.transitionScenario);
+            await page.waitForTimeout(900);
+          }
           await performShotAction(page, shot.action);
           await page.waitForTimeout(250);
+          // Preserve the action-applied frame even when validation fails so
+          // the captured artifact matches the reviewer-facing state.
+          await page.screenshot({ path });
           await validateShot(page, shot, beforeActionBox);
         }
         if (FABRIC_STUDIES) capturedStudyStillNames.push(shot.name);
@@ -1151,6 +1502,13 @@ async function main() {
             `found ${actualAPlusPngs.join(", ")}; unexpected media ${unexpectedAPlusMedia.join(", ") || "none"}`,
           );
         }
+        const diagnosticsPath = `${OUT_DIR}/diagnostics.json`;
+        writeFileSync(diagnosticsPath, `${JSON.stringify({ capturedAt: new Date().toISOString(), diagnostics: FABRIC_STUDY_DIAGNOSTICS }, null, 2)}\n`);
+        console.log(`captured ${diagnosticsPath}`);
+      } else if (FABRIC && FABRIC_FRAME_DIAGNOSTICS.length > 0) {
+        const diagnosticsPath = `${OUT_DIR}/diagnostics.json`;
+        writeFileSync(diagnosticsPath, `${JSON.stringify({ capturedAt: new Date().toISOString(), diagnostics: FABRIC_FRAME_DIAGNOSTICS }, null, 2)}\n`);
+        console.log(`captured ${diagnosticsPath}`);
       }
     }
   } finally {
@@ -1163,17 +1521,39 @@ function metricMap(entries) {
   return Object.fromEntries(entries.map(({ name, value }) => [name, value]));
 }
 
+function homeShotUrl(baseUrl, shotLike) {
+  const params = new URLSearchParams({
+    scenario: shotLike.scenario,
+    switcher: "off",
+  });
+  if (shotLike.ui === "fabric") params.set("ui", "fabric");
+  if (shotLike.relationships) params.set("relationships", "1");
+  if (shotLike.transport) params.set("transport", shotLike.transport);
+  if (shotLike.debug) params.set("debug", "geometry");
+  return `${baseUrl}/?${params}`;
+}
+
 async function measurePerformanceProfile(browser, baseUrl, profile) {
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1080 },
     reducedMotion: profile.reducedMotion ? "reduce" : "no-preference",
   });
   const page = await context.newPage();
-  await page.goto(`${baseUrl}/?scenario=${profile.scenario}&switcher=off${FABRIC ? "&ui=fabric" : ""}`, {
+  await page.goto(homeShotUrl(baseUrl, {
+    scenario: profile.scenario,
+    ui: FABRIC ? "fabric" : undefined,
+    relationships: profile.relationships,
+    transport: profile.transport,
+    debug: profile.debug,
+  }), {
     waitUntil: "domcontentloaded",
   });
   await page.waitForSelector("[data-app-shell]");
   await page.waitForTimeout(2_000);
+  if (profile.action) {
+    await performShotAction(page, profile.action);
+    await page.waitForTimeout(250);
+  }
   const client = await context.newCDPSession(page);
   await client.send("Performance.enable");
 
@@ -1236,9 +1616,9 @@ async function measurePerformanceProfile(browser, baseUrl, profile) {
  */
 const PERFORMANCE_BUDGET_MS_PER_S = {
   idle: 40,
-  "representative-active": 80,
-  "container-field-real": 100,
-  "container-field-stress": 150,
+  active: 80,
+  "44-container": 100,
+  focus: 95,
   "reduced-motion": 40,
   "hidden-tab": 15,
 };
@@ -1246,9 +1626,9 @@ const PERFORMANCE_BUDGET_MS_PER_S = {
 async function capturePerformance(browser, baseUrl) {
   const profiles = [
     { name: "idle", scenario: "idle", reducedMotion: false, hidden: false },
-    { name: "representative-active", scenario: "active", reducedMotion: false, hidden: false },
-    { name: "container-field-real", scenario: "container-field-real", reducedMotion: false, hidden: false },
-    { name: "container-field-stress", scenario: "container-field-stress", reducedMotion: false, hidden: false },
+    { name: "active", scenario: "active", reducedMotion: false, hidden: false },
+    { name: "44-container", scenario: "container-field-real", reducedMotion: false, hidden: false },
+    { name: "focus", scenario: "transcode", reducedMotion: false, hidden: false, action: "fabric-jellyfin" },
     { name: "reduced-motion", scenario: "active", reducedMotion: true, hidden: false },
     { name: "hidden-tab", scenario: "active", reducedMotion: false, hidden: true },
   ];
@@ -1360,11 +1740,13 @@ async function captureMotion(browser, baseUrl) {
   });
   const page = await context.newPage();
   const targetRoute = FABRIC_STUDIES
-    ? `${baseUrl}/dev/fabric-compositions?study=A%2B&scenario=idle&freeze=${FREEZE_AT}`
+    ? `${baseUrl}/dev/fabric-compositions?scenario=idle&freeze=${FREEZE_AT}`
     : `${baseUrl}/?scenario=idle&switcher=off${FABRIC ? "&ui=fabric" : ""}`;
   console.log(FABRIC_STUDIES
     ? "recording motion (same mounted A+ study): quiet → mixed → Jellyfin focus → release → quiet…"
-    : "recording motion (same mounted scene): 7s idle → 13s active → 6s easing…");
+    : FABRIC
+      ? "recording motion (same mounted fabric homepage): quiet → active → Jellyfin focus → release → quiet…"
+      : "recording motion (same mounted scene): 7s idle → 13s active → 6s easing…");
   // NOT networkidle: the live page holds an SSE stream open, so the network
   // never idles. The fixture-hook wait below is the real readiness signal.
   await page.goto(targetRoute, { waitUntil: "domcontentloaded" });
@@ -1386,7 +1768,7 @@ async function captureMotion(browser, baseUrl) {
     await page.evaluate(() => window.__homelabSetScenario("idle"));
     await page.waitForTimeout(3_000);
   } else if (FABRIC) {
-    const node = page.locator('[data-fabric-node="service:qbittorrent"]');
+    const node = page.locator('[data-fabric-node="service:jellyfin"]');
     await node.focus();
     await page.keyboard.press("Enter");
     await page.waitForTimeout(3_000);
@@ -1411,7 +1793,9 @@ async function captureMotion(browser, baseUrl) {
   const webmPath = await video.path();
   const basename = FABRIC_STUDIES
     ? "motion-quiet-to-mixed-to-jellyfin-focus-to-release"
-    : "motion-idle-to-active";
+    : FABRIC
+      ? "motion-quiet-to-active-to-jellyfin-focus-to-release-to-quiet"
+      : "motion-idle-to-active";
   const motionDir = FABRIC_STUDIES ? `${OUT_DIR}/A-plus` : OUT_DIR;
   mkdirSync(motionDir, { recursive: true });
   const target = `${motionDir}/${basename}.webm`;
