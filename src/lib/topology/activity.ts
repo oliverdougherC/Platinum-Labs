@@ -48,6 +48,7 @@ import type {
 } from "@/lib/types";
 
 export type ServiceEndpointId = "jellyfin" | "sonarr" | "radarr" | "qbittorrent";
+export type FlowControllerServiceId = Extract<ServiceEndpointId, "sonarr" | "radarr">;
 
 /** A semantic flow endpoint. The renderer maps these onto scene bodies. */
 export type FlowEndpoint =
@@ -100,6 +101,8 @@ export interface FlowObservation {
   updatedAt: number | null;
   /** Typed aggregate rate for flows whose coverage/source needs explanation. */
   rate?: AggregateRateObservation;
+  /** Controller attribution when the observation is owned by one Arr service. */
+  controllerServiceId?: FlowControllerServiceId;
   /**
    * Rate observations that were CONSIDERED but did not become the headline —
    * kept for detail/accessibility surfaces instead of being erased. The
@@ -136,6 +139,19 @@ function makeFlow(
     to,
     ...rest,
   };
+}
+
+function controllerForItems(
+  items: DashboardSnapshot["acquisition"]["items"],
+  states: readonly DashboardSnapshot["acquisition"]["items"][number]["state"][],
+): FlowControllerServiceId | undefined {
+  const controllers = new Set<FlowControllerServiceId>();
+  for (const item of items) {
+    if (!states.includes(item.state)) continue;
+    if (item.source === "sonarr" || item.source === "radarr") controllers.add(item.source);
+  }
+  if (controllers.size !== 1) return undefined;
+  return [...controllers][0];
 }
 
 type SourceState =
@@ -366,14 +382,20 @@ export function deriveFlows(
   if (qb.usable) {
     const downloadBps = rate(acq.rollup.aggregateRateBps);
     const uploadBps = rate(acq.rollup.uploadRateBps ?? null);
+    const downloadingActive = acq.rollup.downloading > 0;
+    const seedingActive = (acq.rollup.seeding ?? 0) > 0;
     const downloading =
-      acq.rollup.downloading > 0 &&
+      downloadingActive &&
       downloadBps !== null &&
-      downloadBps >= FLOW_DEADBAND_BPS;
+      (downloadBps === 0 || downloadBps >= FLOW_DEADBAND_BPS);
     const seeding =
-      (acq.rollup.seeding ?? 0) > 0 &&
+      seedingActive &&
       uploadBps !== null &&
-      uploadBps >= FLOW_DEADBAND_BPS;
+      (uploadBps === 0 || uploadBps >= FLOW_DEADBAND_BPS);
+    const controllerServiceId = controllerForItems(
+      acq.items,
+      ["downloading", "searching", "importing"],
+    );
 
     if (downloading || seeding) {
       // One shared WAN conduit; download and seed-upload are opposite
@@ -399,6 +421,7 @@ export function deriveFlows(
                 ? "qBittorrent download"
                 : "qBittorrent seeding",
           updatedAt: qb.updatedAt,
+          controllerServiceId,
         }),
       );
 
@@ -424,6 +447,7 @@ export function deriveFlows(
               : "derived from qBittorrent rates; storage destination not declared",
           label: downloading ? "download landing on storage" : "seeding from storage",
           updatedAt: qb.updatedAt,
+          controllerServiceId,
         }),
       );
     }
@@ -452,6 +476,7 @@ export function deriveFlows(
         provenance: `queue ownership reported by ${arr === "sonarr" ? "Sonarr" : "Radarr"}`,
         label: `${arr === "sonarr" ? "Sonarr" : "Radarr"} orchestrating qBittorrent`,
         updatedAt: src.updatedAt,
+        controllerServiceId: arr,
       }),
     );
   }
@@ -487,6 +512,7 @@ export function deriveFlows(
         provenance: `import state reported by ${arrName}; byte rate not measured on this lane`,
         label: `${arrName} importing`,
         updatedAt: src.updatedAt,
+        controllerServiceId: arr,
       }),
     );
 
@@ -516,6 +542,7 @@ export function deriveFlows(
               src.updatedAt,
               snapshot.telemetry.disk.updatedAt,
             ),
+            controllerServiceId: arr,
           }),
         );
       }

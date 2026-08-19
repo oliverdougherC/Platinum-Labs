@@ -22,7 +22,14 @@ import {
   type FabricRoute,
 } from "@/lib/fabric/routing";
 import { buildSceneModel, type BodyStatus, type ServiceId } from "@/lib/scene/model";
-import { primaryRate, type FlowEndpoint, type FlowObservation } from "@/lib/topology/activity";
+import {
+  downloadStorageEndpoint,
+  mediaStorageEndpoint,
+  primaryRate,
+  type FlowControllerServiceId,
+  type FlowEndpoint,
+  type FlowObservation,
+} from "@/lib/topology/activity";
 import type {
   DashboardSnapshot,
   DockerContainerTelemetry,
@@ -86,6 +93,7 @@ export interface FabricRelationship {
   plane: "data" | "control";
   evidence: FabricEvidence;
   freshness: FabricFreshness;
+  renderedActivity: FabricRenderedActivity;
   coverage: FabricCoverage;
   fromNodeId: string;
   toNodeId: string;
@@ -100,9 +108,18 @@ export interface FabricRelationship {
   provenance: string;
   basis: string | null;
   attribution: string | null;
+  controllerServiceId?: FlowControllerServiceId;
   networkBoundary: FabricNetworkBoundary;
   route: FabricRoute;
 }
+
+export type FabricRenderedActivity =
+  | "live-transfer"
+  | "live-state-only"
+  | "stale"
+  | "confirmed-zero"
+  | "unknown"
+  | "dormant";
 
 export interface FabricResourceView {
   id: "cpu" | "memory" | "gpu" | "arc";
@@ -176,6 +193,214 @@ export interface FabricModelOptions {
   networkBoundaries?: readonly Extract<FabricNetworkBoundary, "wan" | "lan" | "overlay">[];
   /** Presentation-only normalization for observations whose boundary is known upstream. */
   networkBoundaryByFlowId?: Readonly<Record<string, FabricNetworkBoundary>>;
+  /** Sanitized topology identity/membership fallback for Docker outages. */
+  inventory?: FabricTopologyInventory | null;
+}
+
+export type FabricTopologyInventorySource = "configured" | "live" | "last-known";
+export type FabricTopologyInventoryFreshness = "live" | "stale" | "unknown";
+
+interface FabricTopologyInventoryStamped {
+  source: FabricTopologyInventorySource;
+  freshness: FabricTopologyInventoryFreshness;
+}
+
+export interface FabricTopologyInventoryWorkload extends FabricTopologyInventoryStamped {
+  nodeId: `service:${ServiceId}`;
+  serviceId: ServiceId;
+  containerIds: string[];
+  networkNames: string[];
+  networkSegmentIds: string[];
+}
+
+export interface FabricTopologyInventoryGroupMember {
+  id: string;
+  composeService: string | null;
+  networkNames: string[];
+  networkSegmentIds: string[];
+}
+
+export interface FabricTopologyInventoryGroup extends FabricTopologyInventoryStamped {
+  id: string;
+  label: string;
+  members: FabricTopologyInventoryGroupMember[];
+  networkNames: string[];
+  networkSegmentIds: string[];
+}
+
+export interface FabricTopologyInventoryNetwork extends FabricTopologyInventoryStamped {
+  id: string;
+  names: string[];
+  label: string;
+  count: number;
+}
+
+export interface FabricTopologyInventoryPool extends FabricTopologyInventoryStamped {
+  id: string;
+  name: string;
+  label: string;
+  generic: boolean;
+}
+
+export interface FabricTopologyInventory {
+  workloads: FabricTopologyInventoryWorkload[];
+  groups: FabricTopologyInventoryGroup[];
+  networks: FabricTopologyInventoryNetwork[];
+  pools: FabricTopologyInventoryPool[];
+}
+
+interface FabricRenderedActivityInput {
+  plane: FabricRelationship["plane"];
+  evidence: FabricEvidence;
+  freshness: FabricFreshness;
+  coverage: FabricCoverage;
+  rateBytesPerSecond: number | null;
+  focus?: boolean;
+  confirmedZero?: boolean;
+}
+
+function topologyFreshnessFromTelemetry(status: TelemetryStatus): FabricTopologyInventoryFreshness {
+  if (status === "available") return "live";
+  if (status === "stale") return "stale";
+  return "unknown";
+}
+
+function topologySourceFromDocker(
+  status: TelemetryStatus,
+  hasContainers: boolean,
+): FabricTopologyInventorySource {
+  return hasContainers && (status === "available" || status === "stale") ? "live" : "configured";
+}
+
+function staleFallback<T extends FabricTopologyInventoryStamped>(entries: readonly T[]): T[] {
+  return entries.map((entry) => ({
+    ...entry,
+    source: entry.source === "configured" ? "configured" : "last-known",
+    freshness: entry.freshness === "unknown" ? "unknown" : "stale",
+  }));
+}
+
+function topologyStatus(stamp: FabricTopologyInventoryStamped): FabricNodeStatus {
+  if (stamp.freshness === "live") return "healthy";
+  if (stamp.freshness === "stale") return "stale";
+  return "unknown";
+}
+
+function safeTopologyName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "unknown";
+}
+
+function buildTopologyNetworkInventory(
+  containers: DockerContainerTelemetry[],
+  stamp: FabricTopologyInventoryStamped,
+): FabricTopologyInventoryNetwork[] {
+  const membershipCounts = new Map<string, number>();
+  for (const container of containers) {
+    for (const name of container.networkNames ?? []) {
+      membershipCounts.set(name, (membershipCounts.get(name) ?? 0) + 1);
+    }
+  }
+  const orderedNetworkNames = [...membershipCounts.keys()].sort();
+  const shownNetworkNames = orderedNetworkNames.slice(0, 2);
+  const aggregatedNetworkNames = orderedNetworkNames.slice(2);
+  const networks: FabricTopologyInventoryNetwork[] = shownNetworkNames.map((name) => ({
+    ...stamp,
+    id: `network:${safeTopologyName(name)}`,
+    names: [name],
+    label: name,
+    count: membershipCounts.get(name) ?? 0,
+  }));
+  if (aggregatedNetworkNames.length) {
+    networks.push({
+      ...stamp,
+      id: "network:other-docker-segments",
+      names: aggregatedNetworkNames,
+      label: `${aggregatedNetworkNames.length} OTHER SEGMENTS`,
+      count: aggregatedNetworkNames.reduce((sum, name) => sum + (membershipCounts.get(name) ?? 0), 0),
+    });
+  }
+  return networks;
+}
+
+function segmentIdsForNames(
+  names: readonly string[],
+  networks: readonly Pick<FabricTopologyInventoryNetwork, "id" | "names">[],
+): string[] {
+  const byName = new Map<string, string>();
+  for (const network of networks) {
+    for (const name of network.names) byName.set(name, network.id);
+  }
+  return [...new Set(
+    names.map((name) => byName.get(name)).filter((id): id is string => typeof id === "string"),
+  )].sort();
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
+function networkSegmentsForIds(
+  segmentIds: readonly string[],
+  networkSegmentById: ReadonlyMap<string, FabricTopologyInventoryNetwork & { bounds: FabricBounds }>,
+): Array<FabricTopologyInventoryNetwork & { bounds: FabricBounds }> {
+  return uniqueStrings(segmentIds)
+    .map((segmentId) => networkSegmentById.get(segmentId))
+    .filter((segment): segment is FabricTopologyInventoryNetwork & { bounds: FabricBounds } => Boolean(segment));
+}
+
+function inventoryGroupMemberToContainer(member: FabricTopologyInventoryGroupMember): DockerContainerTelemetry {
+  return {
+    name: member.composeService ?? member.id,
+    stableId: member.id,
+    composeProject: null,
+    composeService: member.composeService,
+    networkNames: [...member.networkNames],
+    state: "unknown",
+    health: null,
+    restartCount: null,
+    cpuFraction: null,
+    memoryBytes: null,
+    netRxBps: null,
+    netTxBps: null,
+    blockReadBps: null,
+    blockWriteBps: null,
+  };
+}
+
+function inventoryGroupToWorkloadGroup(
+  group: FabricTopologyInventoryGroup,
+): FabricWorkloadGroup {
+  const members = group.members.map(inventoryGroupMemberToContainer);
+  return {
+    id: group.id,
+    label: group.label,
+    members: members.map((member) => ({
+      ...member,
+      id: member.stableId ?? `name-${safeTopologyName(member.name)}`,
+      attention: false,
+      metricCoverage: "unknown",
+    })),
+    attentionCount: 0,
+    accounting: accountingForContainers(members),
+  };
+}
+
+export function deriveFabricRenderedActivity(
+  input: FabricRenderedActivityInput,
+): FabricRenderedActivity {
+  if (input.focus) return "dormant";
+  if (input.freshness === "stale") return "stale";
+  if (input.freshness !== "live") return "unknown";
+  if (input.confirmedZero || (input.rateBytesPerSecond === 0 && input.coverage === "complete")) {
+    return "confirmed-zero";
+  }
+  if (typeof input.rateBytesPerSecond === "number" && input.rateBytesPerSecond > 0) {
+    return "live-transfer";
+  }
+  if (input.plane === "control" || input.evidence === "state-only") {
+    return "live-state-only";
+  }
+  return "unknown";
 }
 
 const SERVICE_ORDER: ServiceId[] = ["jellyfin", "qbittorrent", "sonarr", "radarr", "seerr"];
@@ -359,6 +584,92 @@ function findServiceContainer(
   }) ?? null;
 }
 
+export function buildFabricTopologyInventory(
+  snapshot: DashboardSnapshot,
+): FabricTopologyInventory {
+  const dockerContainers = snapshot.telemetry.docker.value?.containers ?? [];
+  const dockerStamp: FabricTopologyInventoryStamped = {
+    source: topologySourceFromDocker(snapshot.telemetry.docker.status, dockerContainers.length > 0),
+    freshness: topologyFreshnessFromTelemetry(snapshot.telemetry.docker.status),
+  };
+  const networks = buildTopologyNetworkInventory(dockerContainers, dockerStamp);
+  const groups = groupWorkloads(dockerContainers).map((group) => ({
+    ...dockerStamp,
+    id: group.id,
+    label: group.label,
+    members: group.members.map((member) => ({
+      id: member.id,
+      composeService: member.composeService ?? null,
+      networkNames: [...(member.networkNames ?? [])],
+      networkSegmentIds: segmentIdsForNames(member.networkNames ?? [], networks),
+    })),
+    networkNames: [...new Set(group.members.flatMap((member) => member.networkNames ?? []))].sort(),
+    networkSegmentIds: segmentIdsForNames(
+      [...new Set(group.members.flatMap((member) => member.networkNames ?? []))].sort(),
+      networks,
+    ),
+  }));
+  const workloads: FabricTopologyInventoryWorkload[] = SERVICE_ORDER.map((serviceId) => {
+    const container = findServiceContainer(snapshot, dockerContainers, serviceId);
+    const networkNames = [...(container?.networkNames ?? [])];
+    return {
+      ...dockerStamp,
+      nodeId: `service:${serviceId}`,
+      serviceId,
+      containerIds: container ? [accountedContainerId(container)] : [],
+      networkNames,
+      networkSegmentIds: segmentIdsForNames(networkNames, networks),
+    };
+  });
+  const configuredPoolStamp: FabricTopologyInventoryStamped = {
+    source: "configured",
+    freshness: "unknown",
+  };
+  const configuredPools: FabricTopologyInventoryPool[] = snapshot.zfs.pools.map((pool) => ({
+    ...configuredPoolStamp,
+    id: `pool:${pool.name}`,
+    name: pool.name,
+    label: pool.name,
+    generic: false,
+  }));
+  const hasGenericStorage =
+    mediaStorageEndpoint(snapshot).kind === "storage" ||
+    downloadStorageEndpoint(snapshot).kind === "storage";
+  if (hasGenericStorage) {
+    configuredPools.push({
+      ...configuredPoolStamp,
+      id: "pool:unmapped",
+      name: "unmapped",
+      label: "Storage endpoint",
+      generic: true,
+    });
+  }
+  return {
+    workloads,
+    groups,
+    networks,
+    pools: configuredPools,
+  };
+}
+
+export function resolveFabricTopologyInventory(
+  snapshot: DashboardSnapshot,
+  inventory?: FabricTopologyInventory | null,
+): FabricTopologyInventory {
+  const current = buildFabricTopologyInventory(snapshot);
+  const hasCurrentDockerTopology =
+    current.workloads.some((workload) => workload.networkSegmentIds.length > 0) ||
+    current.groups.length > 0 ||
+    current.networks.length > 0;
+  if (hasCurrentDockerTopology || !inventory) return current;
+  return {
+    workloads: staleFallback(inventory.workloads),
+    groups: staleFallback(inventory.groups),
+    networks: staleFallback(inventory.networks),
+    pools: current.pools.length > 0 ? current.pools : staleFallback(inventory.pools),
+  };
+}
+
 function accountedNodeFromContainers(
   nodeId: string,
   label: string,
@@ -425,12 +736,20 @@ function relationshipFromFlow(
   const coverage: FabricCoverage = flow.rate?.coverage ??
     (flow.channels.some((channel) => channel.bytesPerSecond === null) ? "unknown" : "complete");
   const basis = flow.rate?.basis ?? null;
+  const renderedActivity = deriveFabricRenderedActivity({
+    plane: flow.plane,
+    evidence: flow.evidence,
+    freshness: flow.freshness,
+    coverage,
+    rateBytesPerSecond: rate,
+  });
   return {
     id: flow.id,
     label: flow.label,
     plane: flow.plane,
     evidence: flow.evidence,
     freshness: flow.freshness,
+    renderedActivity,
     coverage,
     fromNodeId,
     toNodeId,
@@ -440,11 +759,12 @@ function relationshipFromFlow(
     width: flowWidth(rate, flow.plane),
     direction: directionOf(flow),
     tone: toneOf(flow),
-    animated: flow.plane === "data" && flow.freshness === "live" && rate !== null && rate > 0,
+    animated: renderedActivity === "live-transfer",
     visibility: "active",
     provenance: flow.provenance,
     basis,
     attribution: flow.evidence === "derived" ? "Path or rate includes declared or correlated attribution." : null,
+    controllerServiceId: flow.controllerServiceId,
     networkBoundary,
     route: routeInContext(fromPort, toPort, context, `relationship:${flowPortKind(flow, "from")}`, [fromNodeId, toNodeId]),
   };
@@ -462,13 +782,23 @@ function gatewayBoundaryRelationship(
   const toPort = ports.get(`fabric:gateway:${networkBoundary}-network`);
   if (!fromPort || !toPort) return null;
   const rate = primaryRate(flow);
+  const coverage: FabricCoverage =
+    flow.rate?.coverage ?? (flow.channels.some((channel) => channel.bytesPerSecond === null) ? "unknown" : "complete");
+  const renderedActivity = deriveFabricRenderedActivity({
+    plane: "data",
+    evidence: flow.evidence,
+    freshness: flow.freshness,
+    coverage,
+    rateBytesPerSecond: rate,
+  });
   return {
     id: `${flow.id}:gateway-boundary:${networkBoundary}`,
     label: `${networkBoundary === "overlay" ? "Overlay" : networkBoundary.toUpperCase()} ↔ host gateway`,
     plane: "data",
     evidence: flow.evidence,
     freshness: flow.freshness,
-    coverage: flow.rate?.coverage ?? (flow.channels.some((channel) => channel.bytesPerSecond === null) ? "unknown" : "complete"),
+    renderedActivity,
+    coverage,
     fromNodeId: `external:${networkBoundary}`,
     toNodeId: "fabric:gateway",
     fromPortId: fromPort.id,
@@ -477,11 +807,12 @@ function gatewayBoundaryRelationship(
     width: flowWidth(rate, "data"),
     direction: directionOf(flow),
     tone: toneOf(flow),
-    animated: flow.freshness === "live" && rate !== null && rate > 0,
+    animated: renderedActivity === "live-transfer",
     visibility: "active",
     provenance: flow.provenance,
     basis: flow.rate?.basis ?? null,
     attribution: "Observed external traffic terminates at the host gateway; Docker membership is modeled separately.",
+    controllerServiceId: flow.controllerServiceId,
     networkBoundary,
     route: routeInContext(fromPort, toPort, context, "relationship:network", [`external:${networkBoundary}`, "fabric:gateway"]),
   };
@@ -501,12 +832,21 @@ function relationshipFromDeclaration(
   const fromPort = ports.get(fromPortId);
   const toPort = ports.get(toPortId);
   if (!fromPort || !toPort) return null;
+  const renderedActivity = deriveFabricRenderedActivity({
+    plane: "control",
+    evidence: "reported",
+    freshness: "live",
+    coverage: "complete",
+    rateBytesPerSecond: null,
+    focus: true,
+  });
   return {
     id: `declared:${index}:${fromNodeId}->${toNodeId}`,
     label: declaration.label ?? `${declaredNodeLabel(fromNodeId)} → ${declaredNodeLabel(toNodeId)}`,
     plane: "control",
     evidence: "reported",
     freshness: "live",
+    renderedActivity,
     coverage: "complete",
     fromNodeId,
     toNodeId,
@@ -516,7 +856,7 @@ function relationshipFromDeclaration(
     width: 1,
     direction: "forward",
     tone: "in",
-    animated: false,
+    animated: renderedActivity === "live-transfer",
     visibility: "focus",
     provenance: "operator-declared topology configuration",
     basis: declaration.kind === "control" ? "declared control" : "declared dependency",
@@ -548,6 +888,13 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
     return port;
   };
 
+  const resolvedInventory = resolveFabricTopologyInventory(snapshot, options.inventory);
+  const inventoryWorkloadByServiceId = new Map<ServiceId, FabricTopologyInventoryWorkload>(
+    resolvedInventory.workloads.map((workload) => [workload.serviceId, workload]),
+  );
+  const inventoryGroupById = new Map<string, FabricTopologyInventoryGroup>(
+    resolvedInventory.groups.map((group) => [group.id, group]),
+  );
   const dockerContainers = snapshot.telemetry.docker.value?.containers ?? [];
   const serviceContainers = new Map<ServiceId, DockerContainerTelemetry | null>(
     SERVICE_ORDER.map((id) => [id, findServiceContainer(snapshot, dockerContainers, id)]),
@@ -556,7 +903,13 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
     SERVICE_ORDER.map((id) => [id, new Set<FabricPortKind>()]),
   );
   for (const id of SERVICE_ORDER) {
-    if ((serviceContainers.get(id)?.networkNames?.length ?? 0) > 0) serviceKinds.get(id)!.add("network");
+    const inventoryWorkload = inventoryWorkloadByServiceId.get(id);
+    if (
+      (serviceContainers.get(id)?.networkNames?.length ?? 0) > 0 ||
+      (inventoryWorkload?.networkSegmentIds.length ?? 0) > 0
+    ) {
+      serviceKinds.get(id)!.add("network");
+    }
   }
   for (const flow of scene.flows) {
     if (flow.from.kind === "service") serviceKinds.get(flow.from.id)?.add(flowPortKind(flow, "from"));
@@ -614,38 +967,22 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
   addPort("fabric:gateway", gatewayBounds, "network", "right", 0.72, "Host network path");
   addCustomPort("fabric:service:control", "fabric:service", controlBounds, "control", "top", (566 - controlBounds.x) / controlBounds.width, "Host control");
 
-  const membershipCounts = new Map<string, number>();
-  for (const container of dockerContainers) {
-    for (const name of container.networkNames ?? []) membershipCounts.set(name, (membershipCounts.get(name) ?? 0) + 1);
-  }
-  const orderedNetworkNames = [...membershipCounts.keys()].sort();
-  const shownNetworkNames = orderedNetworkNames.slice(0, 2);
-  const aggregatedNetworkNames = orderedNetworkNames.slice(2);
-  const networkSegments: Array<{ id: string; names: string[]; label: string; count: number; bounds: FabricBounds }> = shownNetworkNames.map((name, index) => ({
-    id: `network:${name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`,
-    names: [name],
-    label: name,
-    count: membershipCounts.get(name) ?? 0,
-    bounds: boundsFor("network-segment", index),
-  }));
-  if (aggregatedNetworkNames.length) {
-    networkSegments.push({
-      id: "network:other-docker-segments",
-      names: aggregatedNetworkNames,
-      label: `${aggregatedNetworkNames.length} OTHER SEGMENTS`,
-      count: aggregatedNetworkNames.reduce((sum, name) => sum + (membershipCounts.get(name) ?? 0), 0),
-      bounds: boundsFor("network-segment", 2),
-    });
-  }
+  const networkSegments: Array<FabricTopologyInventoryNetwork & { bounds: FabricBounds }> = resolvedInventory.networks
+    .map((segment, index) => ({
+      ...segment,
+      bounds: boundsFor("network-segment", index),
+    }));
   const networkSegmentByName = new Map<string, typeof networkSegments[number]>();
+  const networkSegmentById = new Map<string, typeof networkSegments[number]>();
   for (const segment of networkSegments) {
+    networkSegmentById.set(segment.id, segment);
     for (const name of segment.names) networkSegmentByName.set(name, segment);
     addNode({
       id: segment.id,
       kind: "fabric",
       label: segment.label,
       eyebrow: segment.names.length === 1 ? `DOCKER NETWORK · ${segment.count} MEMBERS` : `AGGREGATED DOCKER NETWORKS · ${segment.count} MEMBERS`,
-      status: snapshot.telemetry.docker.status === "available" ? "healthy" : snapshot.telemetry.docker.status,
+      status: topologyStatus(segment),
       bounds: segment.bounds,
       metrics: [],
       detail: segment.names.join(" · "),
@@ -684,18 +1021,52 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
             : addPort(nodeId, bounds, kind, "bottom", 0.82, "Write");
       nodePorts.set(kind, port);
     }
-    const networkNames = matchingContainer?.networkNames ?? [];
-    const segment = networkNames.map((name) => networkSegmentByName.get(name)).find(Boolean);
-    const segmentPort = segment ? ports.find((port) => port.id === portId(segment.id, "network")) : null;
+    const inventoryWorkload = inventoryWorkloadByServiceId.get(id);
+    const networkNames = matchingContainer?.networkNames ?? inventoryWorkload?.networkNames ?? [];
     const networkPort = nodePorts.get("network");
-    if (segment && segmentPort && networkPort) {
-      pendingAttachments.push({ id: `attach:network:${id}`, nodeId, fabricId: segment.id, kind: "network", known: true, label: networkNames.join(" · "), from: segmentPort, to: networkPort });
+    const segments = inventoryWorkload
+      ? networkSegmentsForIds(inventoryWorkload.networkSegmentIds, networkSegmentById)
+      : uniqueStrings(networkNames)
+          .map((name) => networkSegmentByName.get(name))
+          .filter((segment): segment is FabricTopologyInventoryNetwork & { bounds: FabricBounds } => Boolean(segment));
+    if (networkPort) {
+      for (const segment of segments) {
+        const segmentPort = ports.find((port) => port.id === portId(segment.id, "network"));
+        if (!segmentPort) continue;
+        pendingAttachments.push({
+          id: `attach:network:${id}:${segment.id}`,
+          nodeId,
+          fabricId: segment.id,
+          kind: "network",
+          known: true,
+          label: segment.names.join(" · "),
+          from: segmentPort,
+          to: networkPort,
+        });
+      }
     }
     accountedNodes.push(accountedNodeFromContainers(nodeId, service.label, "workload", matchingContainer ? [matchingContainer] : []));
   }
 
-  const pools = [...scene.storage];
-  if (scene.genericStorageTarget) {
+  const pools = scene.storage.length > 0
+    ? [...scene.storage]
+    : resolvedInventory.pools.map((pool, index) => ({
+        name: pool.name,
+        capacityFraction: 0,
+        capacityTone: "ok" as const,
+        rank: index,
+        healthy: pool.freshness !== "unknown",
+        healthLabel: pool.generic ? "POOL NOT DECLARED" : "UNKNOWN",
+        scrubbing: false,
+        lastScrubAt: null,
+        scrubErrors: 0,
+        readBps: null,
+        writeBps: null,
+        ioFreshness: "unavailable" as const,
+        capacityLabelBytes: { used: 0, total: 0 },
+        capacityBasis: "logical" as const,
+      }));
+  if (scene.genericStorageTarget && !pools.some((pool) => pool.name === "unmapped")) {
     pools.push({
       name: "unmapped", capacityFraction: 0, capacityTone: "ok", rank: pools.length,
       healthy: true, healthLabel: "UNMAPPED", scrubbing: false, lastScrubAt: null,
@@ -718,10 +1089,21 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
     pendingAttachments.push({ id: `attach:write:${pool.name}`, nodeId, fabricId: "fabric:storage-write", kind: "write", known: pool.name !== "unmapped", label: `${pool.name} write substrate`, from: writeFabric, to: write });
   });
 
-  const groups = groupWorkloads(dockerContainers);
+  const groups = snapshot.telemetry.docker.value
+    ? groupWorkloads(dockerContainers)
+    : resolvedInventory.groups.map(inventoryGroupToWorkloadGroup);
   groups.forEach((group, index) => {
     const bounds = boundsFor("group", index);
-    const status: FabricNodeStatus = group.attentionCount > 0 ? "degraded" : snapshot.telemetry.docker.status === "available" ? "healthy" : snapshot.telemetry.docker.status;
+    const inventoryGroup = inventoryGroupById.get(group.id);
+    const status: FabricNodeStatus = group.attentionCount > 0
+      ? "degraded"
+      : snapshot.telemetry.docker.value
+        ? snapshot.telemetry.docker.status === "available"
+          ? "healthy"
+          : snapshot.telemetry.docker.status
+        : inventoryGroup
+          ? topologyStatus(inventoryGroup)
+          : "unknown";
     const cpu = group.accounting.cpuCores;
     const memoryAccounting = group.accounting.memoryBytes;
     const io = group.accounting.ioBytesPerSecond;
@@ -739,11 +1121,27 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
       ],
     });
     const names = [...new Set(group.members.flatMap((member) => member.networkNames ?? []))].sort();
-    const segment = names.map((name) => networkSegmentByName.get(name)).find(Boolean);
-    const segmentPort = segment ? ports.find((port) => port.id === portId(segment.id, "network")) : null;
-    if (segment && segmentPort) {
+    const segments = inventoryGroup
+      ? networkSegmentsForIds(inventoryGroup.networkSegmentIds, networkSegmentById)
+      : names
+          .map((name) => networkSegmentByName.get(name))
+          .filter((segment): segment is FabricTopologyInventoryNetwork & { bounds: FabricBounds } => Boolean(segment));
+    if (segments.length > 0) {
       const network = addPort(group.id, bounds, "network", "left", 0.5, "Docker network membership");
-      pendingAttachments.push({ id: `attach:network:${group.id}`, nodeId: group.id, fabricId: segment.id, kind: "network", known: true, label: names.join(" · "), from: segmentPort, to: network });
+      for (const segment of segments) {
+        const segmentPort = ports.find((port) => port.id === portId(segment.id, "network"));
+        if (!segmentPort) continue;
+        pendingAttachments.push({
+          id: `attach:network:${group.id}:${segment.id}`,
+          nodeId: group.id,
+          fabricId: segment.id,
+          kind: "network",
+          known: true,
+          label: segment.names.join(" · "),
+          from: segmentPort,
+          to: network,
+        });
+      }
     }
     accountedNodes.push({
       nodeId: group.id,
@@ -867,7 +1265,9 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
         ...defaults.coverage,
         control: controlConfigured ? "complete" : defaults.coverage.control,
       },
-      networkSegmentIds: segmentIdsForContainers(container ? [container] : []),
+      networkSegmentIds: segmentIdsForContainers(container ? [container] : []).length > 0
+        ? segmentIdsForContainers(container ? [container] : [])
+        : [...(inventoryWorkloadByServiceId.get(id)?.networkSegmentIds ?? [])],
     };
   });
   for (const node of nodes.filter((candidate) => candidate.kind === "storage")) {
@@ -916,13 +1316,16 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
     const control = aggregateCapability(memberCapabilities.map((member) => member.control));
     const read = aggregateCapability(memberCapabilities.map((member) => member.read));
     const write = aggregateCapability(memberCapabilities.map((member) => member.write));
+    const networkSegmentIds = segmentIdsForContainers(group.members).length > 0
+      ? segmentIdsForContainers(group.members)
+      : [...(inventoryGroupById.get(group.id)?.networkSegmentIds ?? [])];
     stableCapabilities.push({
       nodeId: group.id,
       network: network.value,
       control: control.value,
       read: read.value,
       write: write.value,
-      networkSegmentIds: segmentIdsForContainers(group.members),
+      networkSegmentIds,
       coverage: {
         network: network.coverage,
         control: control.coverage,
@@ -931,6 +1334,11 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
       },
     });
   }
+
+  const inventoryContainerIds = uniqueStrings([
+    ...resolvedInventory.workloads.flatMap((workload) => workload.containerIds),
+    ...resolvedInventory.groups.flatMap((group) => group.members.map((member) => member.id)),
+  ]);
 
   return {
     regions: [
@@ -949,10 +1357,12 @@ export function buildFabricModel(snapshot: DashboardSnapshot, options: FabricMod
     stableCapabilities,
     population: {
       total: snapshot.telemetry.docker.value?.total ?? null,
-      represented: dockerContainers.length,
+      represented: dockerContainers.length > 0 ? dockerContainers.length : inventoryContainerIds.length,
       running: snapshot.telemetry.docker.value?.running ?? null,
       groups,
-      ids: dockerContainers.map(accountedContainerId),
+      ids: dockerContainers.length > 0
+        ? dockerContainers.map(accountedContainerId)
+        : inventoryContainerIds,
       accountedNodes,
     },
     routing: { obstacles, lanes },

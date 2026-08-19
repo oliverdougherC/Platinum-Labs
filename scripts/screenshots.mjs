@@ -121,19 +121,24 @@ const FABRIC_SHOTS = [
 ];
 
 const FABRIC_STUDY_SHOTS = [
-  { study: "A+", artifactDir: "A-plus", name: "01-quiet-1280x720", scenario: "idle", w: 1280, h: 720 },
-  { study: "A+", artifactDir: "A-plus", name: "02-mixed-1280x720", scenario: "container-mixed", w: 1280, h: 720 },
-  { study: "A+", artifactDir: "A-plus", name: "03-mixed-1920x1080", scenario: "container-mixed", w: 1920, h: 1080 },
-  { study: "A+", artifactDir: "A-plus", name: "04-real-scale-44-1920x1080", scenario: "container-field-real", w: 1920, h: 1080 },
-  { study: "A+", artifactDir: "A-plus", name: "05-jellyfin-focus-1920x1080", scenario: "transcode", focus: "jellyfin", w: 1920, h: 1080 },
-  { study: "A+", artifactDir: "A-plus", name: "06-sonarr-focus-1920x1080", scenario: "relationship-map", focus: "sonarr", w: 1920, h: 1080 },
-  { study: "A+", artifactDir: "A-plus", name: "07-qbittorrent-focus-1920x1080", scenario: "downloads", focus: "qbittorrent", w: 1920, h: 1080 },
-  { study: "A+", artifactDir: "A-plus", name: "08-subsystem-focus-1920x1080", scenario: "container-field-real", focus: "group:media-support", w: 1920, h: 1080 },
-  { study: "A+", artifactDir: "A-plus", name: "09-inspector-open-1280x720", scenario: "container-field-real", inspector: true, w: 1280, h: 720 },
-  { study: "A+", artifactDir: "A-plus", name: "10-inspector-open-1920x1080", scenario: "container-field-real", inspector: true, w: 1920, h: 1080 },
-  { study: "A+", artifactDir: "A-plus", name: "11-relationship-map-1920x1080", scenario: "relationship-map", w: 1920, h: 1080 },
-  { study: "A+", artifactDir: "A-plus", name: "12-reduced-motion-1920x1080", scenario: "container-mixed", reducedMotion: true, w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "quiet", name: "01-quiet-1280x720", scenario: "idle", w: 1280, h: 720 },
+  { study: "A+", artifactDir: "A-plus", state: "mixed", name: "02-mixed-1280x720", scenario: "container-mixed", w: 1280, h: 720 },
+  { study: "A+", artifactDir: "A-plus", state: "mixed", name: "03-mixed-1920x1080", scenario: "container-mixed", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "real-scale", name: "04-real-scale-44-1920x1080", scenario: "container-field-real", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "focus", name: "05-jellyfin-focus-1920x1080", scenario: "transcode", focus: "service:jellyfin", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "focus", name: "06-qbittorrent-focus-1920x1080", scenario: "downloads", focus: "service:qbittorrent", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "focus", name: "07-sonarr-focus-1920x1080", scenario: "relationship-map", focus: "service:sonarr", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "focus", name: "08-subsystem-focus-1920x1080", scenario: "container-field-real", focus: "group:media-support", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "focus", name: "09-inspector-open-1280x720", scenario: "container-field-real", inspector: true, w: 1280, h: 720 },
+  { study: "A+", artifactDir: "A-plus", state: "focus", name: "10-inspector-open-1920x1080", scenario: "container-field-real", inspector: true, w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "relationship-map", name: "11-relationship-map-1920x1080", scenario: "relationship-map", mode: "relationship-map", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "stale", name: "12-stale-1920x1080", scenario: "stale", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "state-only", name: "13-unknown-rate-state-only-1920x1080", scenario: "transcode-unknown-rate", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "confirmed-zero", name: "14-confirmed-zero-1920x1080", scenario: "confirmed-zero", w: 1920, h: 1080 },
+  { study: "A+", artifactDir: "A-plus", state: "reduced-motion", name: "15-reduced-motion-1920x1080", scenario: "container-mixed", reducedMotion: true, w: 1920, h: 1080 },
 ];
+
+const A_PLUS_ACTIVITY_SIGNATURES = new Map();
 
 /**
  * Truthful container accounting per scenario — the harness fails loudly if a
@@ -439,7 +444,7 @@ async function validateShot(page, shot, beforeActionBox) {
 }
 
 async function validateFabricStudyShot(page, shot) {
-  const result = await page.locator("[data-study-stage]").evaluate((stage) => {
+  const result = await page.locator("[data-study-stage]").evaluate((stage, shotMetadata) => {
     const parsePoints = (value) => value.split(";").filter(Boolean).map((pair) => {
       const [x, y] = pair.split(",").map(Number);
       return { x, y };
@@ -468,21 +473,76 @@ async function validateFabricStudyShot(page, shot) {
       const v2 = ah ? b2 : a2;
       return v1.x > Math.min(h1.x, h2.x) && v1.x < Math.max(h1.x, h2.x) && h1.y > Math.min(v1.y, v2.y) && h1.y < Math.max(v1.y, v2.y);
     };
-    const segmentElements = [...stage.querySelectorAll("[data-study-segment]")];
-    const segments = segmentElements.map((element) => ({
-      id: element.getAttribute("data-study-segment"),
-      plane: element.closest("[data-study-segment-group]")?.getAttribute("data-study-segment-plane") ?? "",
-      points: parsePoints(element.getAttribute("data-study-points") ?? ""),
-      endpointA: element.getAttribute("data-study-endpoint-a") ?? "",
-      endpointB: element.getAttribute("data-study-endpoint-b") ?? "",
-      junctionIds: (element.getAttribute("data-study-junction-ids") ?? "").split(",").filter(Boolean),
-    }));
-    const junctions = [...stage.querySelectorAll("[data-study-junction]")].map((element) => ({
+    const segmentOrientation = (segment) => {
+      if (segment[0].x === segment[1].x) return "vertical";
+      if (segment[0].y === segment[1].y) return "horizontal";
+      return "diagonal";
+    };
+    const orthogonalDistance = (a, b) => {
+      const aOrientation = segmentOrientation(a);
+      const bOrientation = segmentOrientation(b);
+      if (aOrientation === "horizontal" && bOrientation === "vertical") {
+        const x = b[0].x;
+        const y = a[0].y;
+        const dx = Math.max(0, Math.max(Math.min(a[0].x, a[1].x) - x, x - Math.max(a[0].x, a[1].x)));
+        const dy = Math.max(0, Math.max(Math.min(b[0].y, b[1].y) - y, y - Math.max(b[0].y, b[1].y)));
+        return Math.hypot(dx, dy);
+      }
+      if (aOrientation === "vertical" && bOrientation === "horizontal") {
+        return orthogonalDistance(b, a);
+      }
+      return Number.POSITIVE_INFINITY;
+    };
+    const isVisibleElement = (element) => {
+      const style = getComputedStyle(element);
+      const opacity = Number.parseFloat(style.opacity);
+      return style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        style.visibility !== "collapse" &&
+        (Number.isNaN(opacity) || opacity > 0);
+    };
+    const inflateBounds = (bounds, xPad, yPad) => ({
+      x: bounds.x - xPad,
+      y: bounds.y - yPad,
+      width: bounds.width + xPad * 2,
+      height: bounds.height + yPad * 2,
+    });
+    const shell = stage.closest("[data-study-shell]");
+    const studyMode = shell?.getAttribute("data-study-mode") ?? "mixed";
+    const inspectorOpen = shell?.getAttribute("data-study-inspector-open") ?? "false";
+    const renderedActivityAttribute = shell?.getAttribute("data-study-rendered-activity") ??
+      shell?.getAttribute("data-study-rendered-state") ??
+      shell?.getAttribute("data-study-activity");
+    const activityMode = shotMetadata.focus || shotMetadata.inspector ? "focus" : studyMode;
+
+    const segmentElements = [...stage.querySelectorAll("[data-study-segment]")].filter(isVisibleElement);
+    const segments = segmentElements.map((element) => {
+      const group = element.closest("[data-study-segment-group]");
+      const plane = group?.getAttribute("data-study-segment-plane") ?? "";
+      const groupClass = group?.getAttribute("class") ?? "";
+      return {
+        id: element.getAttribute("data-study-segment"),
+        plane,
+        points: parsePoints(element.getAttribute("data-study-points") ?? ""),
+        endpointA: element.getAttribute("data-study-endpoint-a") ?? "",
+        endpointB: element.getAttribute("data-study-endpoint-b") ?? "",
+        junctionIds: (element.getAttribute("data-study-junction-ids") ?? "").split(",").filter(Boolean),
+        branch: groupClass.includes("is-branch"),
+        focused: groupClass.includes("is-focused"),
+        active: group?.getAttribute("data-study-segment-activity") === "live-transfer",
+      };
+    });
+    const junctions = [...stage.querySelectorAll("[data-study-junction]")].filter(isVisibleElement).map((element) => ({
       id: element.getAttribute("data-study-junction"),
       kind: element.getAttribute("data-study-junction-kind"),
       region: element.getAttribute("data-study-junction-region") ?? "",
       crossingPairIds: (element.getAttribute("data-study-junction-crossing-pairs") ?? "").split("|").filter(Boolean),
       point: parsePoints(element.getAttribute("data-study-junction-point") ?? "")[0],
+    }));
+    const labels = [...stage.querySelectorAll("[data-study-segment-label]")].filter(isVisibleElement).map((element) => ({
+      id: element.getAttribute("data-study-segment-label"),
+      bounds: parseBounds(element.getAttribute("data-study-label-bounds") ?? "0,0,0,0"),
+      text: element.querySelector("text")?.textContent ?? "",
     }));
     const geometryKeys = segments.map((segment) => {
       const forward = segment.points.map((point) => `${point.x},${point.y}`).join(";");
@@ -490,15 +550,14 @@ async function validateFabricStudyShot(page, shot) {
       return forward < reverse ? forward : reverse;
     });
     const duplicateGeometry = geometryKeys.filter((key, index) => geometryKeys.indexOf(key) !== index);
-    const labels = [...stage.querySelectorAll("[data-study-segment-label]")].map((element) => ({
-      id: element.getAttribute("data-study-segment-label"),
-      bounds: parseBounds(element.getAttribute("data-study-label-bounds") ?? "0,0,0,0"),
-      text: element.querySelector("text")?.textContent ?? "",
-    }));
     const labelIntersections = segments.flatMap((segment) => lines(segment.points).flatMap(([a, b]) =>
       labels.filter((label) => lineIntersectsRect(a, b, label.bounds)).map((label) => `${segment.id}:${label.id}`),
     ));
-    const essentialText = [...stage.querySelectorAll("[data-study-essential-text]")].map((element) => ({
+    const ownerPortIds = new Map([...stage.querySelectorAll("[data-study-node]")].map((element) => [
+      element.getAttribute("data-study-node"),
+      [...element.querySelectorAll("[data-study-port-id]")].map((port) => port.getAttribute("data-study-port-id")),
+    ]));
+    const essentialText = [...stage.querySelectorAll("[data-study-essential-text]")].filter(isVisibleElement).map((element) => ({
       owner: element.getAttribute("data-owner-node"),
       role: element.getAttribute("data-study-text-role"),
       bounds: element.getBBox(),
@@ -521,19 +580,33 @@ async function validateFabricStudyShot(page, shot) {
         .filter((text) => text.owner === owner && text.role !== "status" && boxesOverlap(bounds, text.bounds, 1))
         .map((text) => `${owner}:${text.text}`);
     });
-    const ownerPortIds = new Map([...stage.querySelectorAll("[data-study-node]")].map((element) => [
-      element.getAttribute("data-study-node"),
-      [...element.querySelectorAll("[data-study-port-id]")].map((port) => port.getAttribute("data-study-port-id")),
-    ]));
-    const textIntersections = segments.flatMap((segment) => lines(segment.points).flatMap(([a, b]) =>
-      essentialText
-        .filter((text) => text.owner && !(ownerPortIds.get(text.owner)?.some((portId) => segment.endpointA === portId || segment.endpointB === portId)) && lineIntersectsRect(a, b, text.bounds))
-        .map((text) => `${segment.id}:${text.owner}:${text.text}`),
-    ));
-    const nodeBounds = new Map([...stage.querySelectorAll("[data-study-node]")].map((element) => [
+    const statusTexts = essentialText.filter((item) => item.role === "status" && item.text).map((item) => item.text);
+    const textIntersections = [];
+    const traceTextKeepOut = [];
+    for (const segment of segments) {
+      for (const [a, b] of lines(segment.points)) {
+        for (const text of essentialText) {
+          const isEndpointText = Boolean(text.owner &&
+            ownerPortIds.get(text.owner)?.some((portId) => segment.endpointA === portId || segment.endpointB === portId));
+          if (text.owner && !isEndpointText && lineIntersectsRect(a, b, text.bounds)) {
+            textIntersections.push(`${segment.id}:${text.owner}:${text.text}`);
+          }
+          if (text.owner && !isEndpointText) {
+            const keepOutBounds = inflateBounds(text.bounds, 8, 8);
+            if (lineIntersectsRect(a, b, keepOutBounds)) {
+              traceTextKeepOut.push(`${segment.id}:${text.owner}:${text.text}`);
+            }
+          }
+        }
+      }
+    }
+    const nodeBounds = new Map([...stage.querySelectorAll("[data-study-node]")].filter(isVisibleElement).map((element) => [
       element.getAttribute("data-study-node"),
       parseBounds(element.getAttribute("data-study-node-bounds") ?? "0,0,0,0"),
     ]));
+    const nodeStateSignature = [...nodeBounds.entries()].sort(([left], [right]) => String(left).localeCompare(String(right))).map(([id, bounds]) =>
+      `${id}|${bounds.x.toFixed(0)}|${bounds.y.toFixed(0)}|${bounds.width.toFixed(0)}|${bounds.height.toFixed(0)}`,
+    );
     const textOverflow = essentialText.filter((text) => {
       if (!text.owner) return false;
       const owner = nodeBounds.get(text.owner);
@@ -543,28 +616,87 @@ async function validateFabricStudyShot(page, shot) {
         text.bounds.x + text.bounds.width > owner.x + owner.width + epsilon ||
         text.bounds.y + text.bounds.height > owner.y + owner.height + epsilon;
     }).map((text) => `${text.owner}:${text.text}`);
+
     const crossings = [];
+    const nearCrossings = [];
+    const coincidentTraces = [];
+    const hasSharedEndpoint = (left, right) => [left.endpointA, left.endpointB].some((endpoint) => endpoint && (right.endpointA === endpoint || right.endpointB === endpoint));
+    const hasProjectedOverlap = (a1, a2, b1, b2, axis) => {
+      if (axis === "h") {
+        const minA = Math.min(a1.x, a2.x);
+        const maxA = Math.max(a1.x, a2.x);
+        const minB = Math.min(b1.x, b2.x);
+        const maxB = Math.max(b1.x, b2.x);
+        return maxA >= minB && maxB >= minA;
+      }
+      const minA = Math.min(a1.y, a2.y);
+      const maxA = Math.max(a1.y, a2.y);
+      const minB = Math.min(b1.y, b2.y);
+      const maxB = Math.max(b1.y, b2.y);
+      return maxA >= minB && maxB >= minA;
+    };
     for (let i = 0; i < segments.length; i++) {
       for (let j = i + 1; j < segments.length; j++) {
+        const first = segments[i];
+        const second = segments[j];
+        const isIndependentBranchPair = first.branch && second.branch && !hasSharedEndpoint(first, second);
+        const isUnrelatedRailPair = !first.branch && !second.branch && first.plane !== second.plane;
+        const nearCrossingThreshold = isIndependentBranchPair ? 8 : isUnrelatedRailPair ? 12 : Number.POSITIVE_INFINITY;
         for (const [a1, a2] of lines(segments[i].points)) {
           for (const [b1, b2] of lines(segments[j].points)) {
-            if (!strictCrossing(a1, a2, b1, b2)) continue;
-            const horizontal = a1.y === a2.y ? [a1, a2] : [b1, b2];
-            const vertical = a1.y === a2.y ? [b1, b2] : [a1, a2];
-            const crossing = { x: vertical[0].x, y: horizontal[0].y };
-            const approved = junctions.some((junction) => junction.kind === "via" && junction.point?.x === crossing.x && junction.point?.y === crossing.y &&
-              junction.crossingPairIds.includes(segments[i].id) && junction.crossingPairIds.includes(segments[j].id) &&
-              (segments[i].junctionIds.includes(junction.id) || segments[j].junctionIds.includes(junction.id)));
-            if (!approved) crossings.push(`${segments[i].id}:${segments[j].id}`);
+            if (strictCrossing(a1, a2, b1, b2)) {
+              const horizontal = a1.y === a2.y ? [a1, a2] : [b1, b2];
+              const vertical = a1.y === a2.y ? [b1, b2] : [a1, a2];
+              const crossing = { x: vertical[0].x, y: horizontal[0].y };
+              const approved = junctions.some((junction) => junction.kind === "via" && junction.point?.x === crossing.x && junction.point?.y === crossing.y &&
+                junction.crossingPairIds.includes(segments[i].id) && junction.crossingPairIds.includes(segments[j].id) &&
+                (segments[i].junctionIds.includes(junction.id) || segments[j].junctionIds.includes(junction.id)));
+              const approvedNetworkMembershipJoin = segments[i].plane === "network" && segments[j].plane === "network" &&
+                ((segments[i].branch && segments[j].id.endsWith(":rail")) || (segments[j].branch && segments[i].id.endsWith(":rail")));
+              if (!approved && !approvedNetworkMembershipJoin) crossings.push(`${segments[i].id}:${segments[j].id}`);
+            } else {
+              const aOrient = segmentOrientation([a1, a2]);
+              const bOrient = segmentOrientation([b1, b2]);
+              if ((aOrient === "horizontal" && bOrient === "horizontal")) {
+                const overlaps = hasProjectedOverlap(a1, a2, b1, b2, "h");
+                const separation = Math.abs(a1.y - b1.y);
+                if (overlaps && separation === 0) {
+                  coincidentTraces.push(`${segments[i].id}:${segments[j].id}`);
+                } else if (overlaps && nearCrossingThreshold !== Number.POSITIVE_INFINITY && separation < nearCrossingThreshold) {
+                  nearCrossings.push(`${segments[i].id}:${segments[j].id}:h=${separation.toFixed(2)}`);
+                }
+              } else if ((aOrient === "vertical" && bOrient === "vertical")) {
+                const overlaps = hasProjectedOverlap(a1, a2, b1, b2, "v");
+                const separation = Math.abs(a1.x - b1.x);
+                if (overlaps && separation === 0) {
+                  coincidentTraces.push(`${segments[i].id}:${segments[j].id}`);
+                } else if (overlaps && nearCrossingThreshold !== Number.POSITIVE_INFINITY && separation < nearCrossingThreshold) {
+                  nearCrossings.push(`${segments[i].id}:${segments[j].id}:v=${separation.toFixed(2)}`);
+                }
+              } else if (aOrient !== "diagonal" && bOrient !== "diagonal") {
+                const distance = orthogonalDistance([a1, a2], [b1, b2]);
+                if (nearCrossingThreshold !== Number.POSITIVE_INFINITY && distance < nearCrossingThreshold) {
+                  nearCrossings.push(`${segments[i].id}:${segments[j].id}:d=${distance.toFixed(2)}`);
+                }
+              }
+            }
           }
         }
       }
     }
+
     const occupied = parseBounds(stage.getAttribute("data-study-occupied-bounds") ?? "0,0,0,0");
     const viewBox = stage.viewBox.baseVal;
     const occupiedRatio = (occupied.width * occupied.height) / (viewBox.width * viewBox.height);
     const occupiedCenter = occupied.x + occupied.width / 2;
     const balanced = Math.abs(occupiedCenter - viewBox.width / 2) <= viewBox.width * 0.08;
+    const intersectRect = (bounds, boxX, boxY, boxW, boxH) => {
+      const left = Math.max(bounds.x, boxX);
+      const right = Math.min(bounds.x + bounds.width, boxX + boxW);
+      const top = Math.max(bounds.y, boxY);
+      const bottom = Math.min(bounds.y + bounds.height, boxY + boxH);
+      return Math.max(0, right - left) * Math.max(0, bottom - top);
+    };
     const longNetworkLabels = labels.filter((label) => {
       const group = stage.querySelector(`[data-study-segment-group="${label.id}"]`);
       return group?.getAttribute("data-study-segment-plane") === "network" && label.text.length > 36;
@@ -577,10 +709,10 @@ async function validateFabricStudyShot(page, shot) {
       const id = element.getAttribute("data-study-node") ?? "unknown";
       const memberIds = (element.getAttribute("data-study-member-ids") ?? "").split(",").filter(Boolean);
       const title = element.querySelector(".fabric-study-title")?.textContent?.trim() ?? "";
-      const promoted = element.querySelector("[data-study-promoted]")?.textContent?.trim() ?? "";
-      return !title || memberIds.length === 0 || !promoted ? [id] : [];
+      const promotedCount = Number(element.getAttribute("data-study-promoted-count") ?? "0");
+      return !title || memberIds.length === 0 || promotedCount < 1 ? [id] : [];
     });
-    const ports = [...stage.querySelectorAll("[data-study-port-id]")].map((element) => ({
+    const ports = [...stage.querySelectorAll("[data-study-port-id]")].filter(isVisibleElement).map((element) => ({
       id: element.getAttribute("data-study-port-id"),
       kind: element.getAttribute("data-study-port-kind"),
       nodeId: element.closest("[data-study-node]")?.getAttribute("data-study-node"),
@@ -592,15 +724,17 @@ async function validateFabricStudyShot(page, shot) {
     })).map((port) => port.id);
     const routes = [...stage.querySelectorAll("[data-study-logical-route]")].map((element) => ({
       id: element.getAttribute("data-study-logical-route"),
+      resolution: element.getAttribute("data-study-route-resolution") ?? "complete",
+      visible: element.getAttribute("data-study-route-visible") === "true",
       fromPort: element.getAttribute("data-study-route-from-port"),
       toPort: element.getAttribute("data-study-route-to-port"),
       segmentIds: (element.getAttribute("data-study-route-segments") ?? "").split(",").filter(Boolean),
     }));
-    const trunkOnlyRoutes = routes.filter((route) => {
+    const trunkOnlyRoutes = routes.filter((route) => route.visible && route.resolution === "complete" && (() => {
       const routeSegments = route.segmentIds.map((id) => segments.find((segment) => segment.id === id)).filter(Boolean);
       return !routeSegments.some((segment) => segment.endpointA === route.fromPort || segment.endpointB === route.fromPort) ||
         !routeSegments.some((segment) => segment.endpointA === route.toPort || segment.endpointB === route.toPort);
-    }).map((route) => route.id);
+    })()).map((route) => route.id);
     const corridors = [...stage.querySelectorAll("[data-study-storage-corridor]")].map((element) => ({
       nodeId: element.getAttribute("data-study-storage-corridor"),
       bounds: parseBounds(element.getAttribute("data-study-corridor-bounds") ?? "0,0,0,0"),
@@ -611,6 +745,51 @@ async function validateFabricStudyShot(page, shot) {
     const [densityRatio, largestVoid] = (stage.getAttribute("data-study-density") ?? "0,999").split(",").map(Number);
     const svgRect = stage.getBoundingClientRect();
     const scale = Math.min(svgRect.width / viewBox.width, svgRect.height / viewBox.height);
+    const zoneWidth = viewBox.width / 3;
+    const zoneRects = [
+      { name: "left", x: 0, y: 0, width: zoneWidth, height: viewBox.height },
+      { name: "center", x: zoneWidth, y: 0, width: zoneWidth, height: viewBox.height },
+      { name: "right", x: 2 * zoneWidth, y: 0, width: viewBox.width - 2 * zoneWidth, height: viewBox.height },
+    ];
+    const occupancy = { left: 0, center: 0, right: 0 };
+    for (const [id, bounds] of nodeBounds.entries()) {
+      const target = stage.querySelector(`[data-study-node="${id}"]`);
+      if (!target) continue;
+      for (const zone of zoneRects) {
+        const overlap = intersectRect(bounds, zone.x, zone.y, zone.width, zone.height);
+        occupancy[zone.name] += overlap;
+      }
+    }
+    const occupancyTotal = occupancy.left + occupancy.center + occupancy.right;
+    const occupancyRatios = {
+      left: occupancyTotal ? occupancy.left / occupancyTotal : 0,
+      center: occupancyTotal ? occupancy.center / occupancyTotal : 0,
+      right: occupancyTotal ? occupancy.right / occupancyTotal : 0,
+    };
+
+    const gridSize = 100;
+    const cols = Math.ceil(viewBox.width / gridSize);
+    const rows = Math.ceil(viewBox.height / gridSize);
+    const branchDensity = Array.from({ length: rows }, () => Array.from({ length: cols }, () => new Set()));
+    const branchSegments = segments.filter((segment) => segment.branch);
+    for (const segment of branchSegments) {
+      for (const [a, b] of lines(segment.points)) {
+        const o = segmentOrientation([a, b]);
+        if (o === "horizontal") {
+          const y = Math.floor(((a.y + b.y) / 2) / gridSize);
+          const x0 = Math.floor(Math.min(a.x, b.x) / gridSize);
+          const x1 = Math.floor(Math.max(a.x, b.x) / gridSize);
+          for (let x = x0; x <= x1; x++) if (x >= 0 && x < cols && y >= 0 && y < rows) branchDensity[y][x].add(segment.id);
+        } else if (o === "vertical") {
+          const x = Math.floor(((a.x + b.x) / 2) / gridSize);
+          const y0 = Math.floor(Math.min(a.y, b.y) / gridSize);
+          const y1 = Math.floor(Math.max(a.y, b.y) / gridSize);
+          for (let y = y0; y <= y1; y++) if (x >= 0 && x < cols && y >= 0 && y < rows) branchDensity[y][x].add(segment.id);
+        }
+      }
+    }
+    const maxBranchDensity = branchDensity.reduce((max, row) => Math.max(max, ...row.map((cell) => cell.size)), 0);
+
     const typography = [...new Set([
       ...stage.querySelectorAll("[data-study-essential-text]"),
       ...stage.querySelectorAll(".fabric-study-metric-label"),
@@ -652,6 +831,7 @@ async function validateFabricStudyShot(page, shot) {
     }));
     const inspectorMetrics = [...document.querySelectorAll("[data-study-inspector-metrics] > div")].length;
     const inspectorRelationships = [...document.querySelectorAll("[data-study-inspector-relationships] > li")].length;
+
     return {
       segmentCount: segments.length,
       duplicateGeometry,
@@ -660,10 +840,21 @@ async function validateFabricStudyShot(page, shot) {
       textOverflow,
       textCollisions,
       statusCollisions,
+      statusTexts,
       crossings,
+      nearCrossings: [...new Set(nearCrossings)],
+      coincidentTraces: [...new Set(coincidentTraces)],
+      traceTextKeepOut,
+      byModeSegmentCount: {
+        quiet: shotMetadata.state === "quiet" ? segments.length : 0,
+        active: shotMetadata.state === "quiet" ? 0 : segments.filter((segment) => segment.active).length,
+        focus: shotMetadata.focus || shotMetadata.inspector ? segments.filter((segment) => segment.focused).length : 0,
+        total: segments.length,
+      },
       occupiedRatio,
       balanced,
       longNetworkLabels,
+      renderedActivity: renderedActivityAttribute,
       dangling,
       populationCount: populationIds.length,
       missingPopulation,
@@ -681,18 +872,76 @@ async function validateFabricStudyShot(page, shot) {
       viaEvidence,
       inspectorMetrics,
       inspectorRelationships,
+      studyMode,
+      inspectorOpen,
+      occupancyRatios,
+      maxBranchDensity,
+      occupancyCheckPassed: Object.values(occupancyRatios).every((ratio) => ratio > 0.08),
+      activeSegmentCount: segments.filter((segment) => segment.active).length,
+      focusedSegmentCount: segments.filter((segment) => segment.focused).length,
+      branchSegmentCount: branchSegments.length,
+      portCount: ports.length,
+      viaEvidenceSummary: viaEvidence.length,
+      routeCount: routes.length,
+      activitySignature: {
+        state: shotMetadata.state,
+        activityMode,
+        studyMode,
+        inspectorOpen,
+        nodeStateSignature,
+        activeSegmentCount: segments.filter((segment) => segment.active).length,
+        focusedSegmentCount: segments.filter((segment) => segment.focused).length,
+        byModeSegmentCount: shotMetadata.state === "quiet"
+          ? segments.length
+          : shotMetadata.focus || shotMetadata.inspector
+            ? segments.filter((segment) => segment.focused).length
+            : segments.filter((segment) => segment.active).length,
+        segmentSignature: segments.map((segment) => `${segment.id}:${segment.plane}:${segment.active ? "active" : "dormant"}:${segment.focused ? "focus" : "normal"}`).sort(),
+        branchSegmentCount: branchSegments.length,
+        portCount: ports.length,
+        viaCount: viaEvidence.length,
+      },
     };
-  });
+  }, { state: shot.state, focus: Boolean(shot.focus), inspector: Boolean(shot.inspector) });
+
+  const checkKey = `${shot.state ?? shot.name}:${shot.focus ?? (shot.inspector ? "inspector" : "none")}`;
+  const signature = JSON.stringify(result.activitySignature);
+  if (!A_PLUS_ACTIVITY_SIGNATURES.has(checkKey)) {
+    A_PLUS_ACTIVITY_SIGNATURES.set(checkKey, signature);
+  } else if (A_PLUS_ACTIVITY_SIGNATURES.get(checkKey) !== signature) {
+    throw new Error(`activity-state data attributes changed for ${checkKey}: ${shot.name}`);
+  }
 
   const failures = [];
-  if (result.segmentCount < 5) failures.push(`physical segment graph incomplete (${result.segmentCount})`);
+  const minimumVisibleSegments = shot.study === "A+" && result.studyMode === "quiet" ? 3 : 5;
+  if (result.segmentCount < minimumVisibleSegments) failures.push(`physical segment graph incomplete (${result.segmentCount})`);
   if (result.duplicateGeometry.length) failures.push(`duplicate physical geometry: ${result.duplicateGeometry.join(", ")}`);
   if (result.labelIntersections.length) failures.push(`segment/label intersections: ${result.labelIntersections.join(", ")}`);
   if (result.textIntersections.length) failures.push(`segment/essential-text intersections: ${result.textIntersections.join(", ")}`);
   if (result.textOverflow.length) failures.push(`text overflow: ${result.textOverflow.join(", ")}`);
+  if (result.traceTextKeepOut.length) failures.push(`trace/text keep-out entries: ${result.traceTextKeepOut.join(", ")}`);
   if (result.textCollisions.length) failures.push(`essential text collisions: ${result.textCollisions.join(", ")}`);
   if (result.statusCollisions.length) failures.push(`text/status collisions: ${result.statusCollisions.join(", ")}`);
   if (result.crossings.length) failures.push(`unapproved crossings: ${result.crossings.join(", ")}`);
+  if (result.studyMode === "quiet" && result.nearCrossings.length) failures.push(`near crossings below min separation: ${result.nearCrossings.slice(0, 24).join(", ")}`);
+  if (result.studyMode === "quiet" && result.coincidentTraces.length) failures.push(`accidental coincident traces: ${result.coincidentTraces.join(", ")}`);
+  if (result.maxBranchDensity > 7) failures.push(`max branch density per 100x100 too high: ${result.maxBranchDensity}`);
+  if (shot.state === "confirmed-zero") {
+    if (result.renderedActivity && result.renderedActivity !== "confirmed-zero") failures.push(`confirmed-zero shot not marked by renderer (${result.renderedActivity})`);
+    if (!result.renderedActivity) failures.push("confirmed-zero shot missing renderer activity data attribute");
+    if (result.activeSegmentCount > 0) failures.push(`confirmed-zero shot is active (${result.activeSegmentCount})`);
+  }
+  if (result.studyMode === "quiet") {
+    if (result.portCount > 12) failures.push(`quiet visible ports exceeds target (12): ${result.portCount}`);
+    if (result.viaCount > 3) failures.push(`quiet via count exceeds target (3): ${result.viaCount}`);
+  }
+  if (result.studyMode === "quiet" && (result.textCollisions.length || result.traceTextKeepOut.length)) {
+    failures.push("quiet mode keeps near text collisions and keep-out entries under guardrail");
+  }
+  if (!result.occupancyRatios || !result.occupancyRatios.left || !result.occupancyRatios.center || !result.occupancyRatios.right) {
+    failures.push("unable to compute zone occupancy");
+  }
+
   if (shot.study === "A+") {
     if (result.densityRatio < 0.34 || result.largestVoid > 8) failures.push(`composition density: ratio=${result.densityRatio.toFixed(3)} largestVoid=${result.largestVoid}`);
     if (result.unattachedPorts.length) failures.push(`visible ports without exact physical attachment: ${result.unattachedPorts.join(", ")}`);
@@ -704,10 +953,13 @@ async function validateFabricStudyShot(page, shot) {
     if (result.viaCount > 6) failures.push(`via budget exceeded: ${result.viaCount}`);
     if (Object.values(result.viaCountByRegion).some((count) => count > 2)) failures.push(`via region budget exceeded: ${JSON.stringify(result.viaCountByRegion)}`);
     if (result.prohibitedVias.length) failures.push(`undeclared or prohibited vias: ${result.prohibitedVias.join(", ")}`);
+    if (!result.occupancyCheckPassed) failures.push(`left/center/right occupancy out-of-range: ${JSON.stringify(result.occupancyRatios)}`);
   } else if (result.occupiedRatio < 0.72 || !result.balanced) failures.push(`unbalanced occupied board: ratio=${result.occupiedRatio.toFixed(3)} balanced=${result.balanced}`);
   if (result.longNetworkLabels.length) failures.push(`raw long network labels: ${result.longNetworkLabels.join(", ")}`);
   if (result.dangling.length) failures.push(`dangling dormant segments: ${result.dangling.join(", ")}`);
-  if (result.populationCount !== 44 || result.missingPopulation.length) failures.push(`population accounting: count=${result.populationCount}, missing=${result.missingPopulation.join(",")}`);
+  if ((shot.state === "real-scale" && result.populationCount !== 44) || result.populationCount < 1 || result.missingPopulation.length) {
+    failures.push(`population accounting: count=${result.populationCount}, missing=${result.missingPopulation.join(",")}`);
+  }
   if (result.subsystemProblems.length) failures.push(`unnamed/unpromoted subsystem summaries: ${result.subsystemProblems.join(",")}`);
 
   const stage = page.locator("[data-study-stage]");
@@ -729,13 +981,18 @@ async function validateFabricStudyShot(page, shot) {
   } else if (await inspector.count()) {
     failures.push("empty inspector rendered with no selection");
   }
+
+  console.log(`${shot.name}: mode=${result.activitySignature.activityMode}, active=${result.activeSegmentCount}, focus=${result.focusedSegmentCount}, totalSegments=${result.byModeSegmentCount?.total ?? result.segmentCount}, branches=${result.branchSegmentCount}, ports=${result.portCount}, vias=${result.viaEvidenceSummary}, occupancy=${JSON.stringify(result.occupancyRatios)}, branchDensity(max/100)=${result.maxBranchDensity}, largestVoid=${result.largestVoid}`);
+
+  if (result.nearCrossings.length) {
+    console.log(`near-collision summary (${shot.name}): ${result.nearCrossings.slice(0, 10).join(", ")}`);
+  }
   if (failures.length) throw new Error(`fabric composition evidence failed (${shot.study}/${shot.name}):\n- ${failures.join("\n- ")}`);
   if (shot.study === "A+") {
     const typeSummary = Object.fromEntries(Object.entries(result.minimumTypeByRole).map(([role, value]) => [role, Number(value.toFixed(2))]));
     console.log(`validated ${shot.name}: vias=${result.viaCount} regions=${JSON.stringify(result.viaCountByRegion)} pairs=${JSON.stringify(result.viaEvidence)} min-effective-type=${JSON.stringify(typeSummary)}px population=${result.populationCount} density=${result.densityRatio.toFixed(3)}/${result.largestVoid}`);
   }
 }
-
 /** "production" (next build+start), "development" (next dev) or "external". */
 function buildMode() {
   if (arg("--base-url")) return "external";
@@ -821,6 +1078,7 @@ async function main() {
         if (FABRIC_STUDIES) {
           params.set("study", shot.study);
           if (shot.focus) params.set("focus", shot.focus);
+          if (shot.mode) params.set("mode", shot.mode);
           if (shot.inspector) params.set("inspector", "1");
         } else {
           if (shot.ui) params.set("ui", shot.ui);
@@ -834,6 +1092,11 @@ async function main() {
         await page.waitForTimeout(1_200);
         const beforeActionBox = await pageBox(page);
         assertNoPageScroll(beforeActionBox, shot);
+        if (FABRIC_STUDIES) mkdirSync(`${OUT_DIR}/${shot.artifactDir ?? shot.study}`, { recursive: true });
+        const path = FABRIC_STUDIES ? `${OUT_DIR}/${shot.artifactDir ?? shot.study}/${shot.name}.png` : `${OUT_DIR}/${shot.name}.png`;
+        // Preserve the rendered frame even when a diagnostic fails so visual
+        // review can drive the next geometry iteration.
+        await page.screenshot({ path });
         if (FABRIC_STUDIES) {
           await validateFabricStudyShot(page, shot);
         } else {
@@ -841,9 +1104,6 @@ async function main() {
           await page.waitForTimeout(250);
           await validateShot(page, shot, beforeActionBox);
         }
-        if (FABRIC_STUDIES) mkdirSync(`${OUT_DIR}/${shot.artifactDir ?? shot.study}`, { recursive: true });
-        const path = FABRIC_STUDIES ? `${OUT_DIR}/${shot.artifactDir ?? shot.study}/${shot.name}.png` : `${OUT_DIR}/${shot.name}.png`;
-        await page.screenshot({ path });
         if (FABRIC_STUDIES) capturedStudyStillNames.push(shot.name);
         console.log(`captured ${path}`);
         if (await page.locator("[data-overlay-panel]").count()) {

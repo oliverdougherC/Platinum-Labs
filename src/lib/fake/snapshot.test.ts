@@ -74,6 +74,15 @@ describe("required scenario characteristics", () => {
     expect(r.aggregateRateBps).toBeGreaterThan(0);
   });
 
+  it("confirmed-zero: active work has a measured zero rate", () => {
+    const acquisition = makeFakeSnapshot("confirmed-zero", NOW).acquisition;
+    expect(acquisition.rollup.downloading).toBe(1);
+    expect(acquisition.rollup.aggregateRateBps).toBe(0);
+    expect(acquisition.items).toEqual([
+      expect.objectContaining({ state: "downloading", rateBps: 0 }),
+    ]);
+  });
+
   it("stalled: a stalled/failed transfer is present", () => {
     expect(
       makeFakeSnapshot("stalled", NOW).acquisition.rollup.failedOrStalled,
@@ -149,6 +158,9 @@ describe("required scenario characteristics", () => {
     expect(makeFakeSnapshot("pool-scrub", NOW).zfs.pools.find((pool) => pool.name === "DataStore")?.scan).toBe("scrubbing");
     expect(makeFakeSnapshot("docker-unavailable", NOW).telemetry.docker).toMatchObject({ status: "unavailable", value: null });
     expect(makeFakeSnapshot("relationship-map", NOW).fabricRelationships).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: "service:seerr", to: "service:sonarr" }),
+      expect.objectContaining({ from: "service:seerr", to: "service:radarr" }),
+      expect.objectContaining({ from: "service:sonarr", to: "service:qbittorrent" }),
       expect.objectContaining({ from: "service:sonarr", to: "service:jellyfin" }),
       expect.objectContaining({ from: "host:control", to: "service:seerr" }),
     ]));

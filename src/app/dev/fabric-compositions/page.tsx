@@ -32,11 +32,13 @@ export default async function FabricCompositionsPage({
   const freezeRaw = Number(one(params.freeze));
   const now = Number.isFinite(freezeRaw) && freezeRaw > 0 ? freezeRaw : DEFAULT_NOW;
   const focus = one(params.focus) ?? (one(params.inspector) === "1" ? "group:platform" : null);
+  const mode = one(params.mode) === "relationship-map" ? "relationship-map" : "activity";
 
   return (
     <FabricCompositionStudy
       study={study}
       initialScenario={scenario}
+      initialViewMode={mode}
       now={now}
       initialFocus={focus}
     />

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildFabricModel } from "@/lib/fabric/model";
+import {
+  buildFabricModel,
+  buildFabricTopologyInventory,
+  deriveFabricRenderedActivity,
+} from "@/lib/fabric/model";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
 import { countRouteCrossings, countRouteOverlaps, expandBounds, routeHitsPorts, routeIntersectsBounds } from "@/lib/fabric/routing";
 
@@ -108,8 +112,8 @@ describe("FabricModel", () => {
     const sonarr = snapshot.telemetry.docker.value!.containers.find((item) => item.composeService === "sonarr")!;
     sonarr.name = "media-stack-sonarr-1";
     const model = buildFabricModel(snapshot, { now: NOW, seerrConfigured: true });
-    expect(model.attachments.find((item) => item.id === "attach:network:jellyfin")).toMatchObject({ known: true, label: expect.stringContaining("media_default") });
-    expect(model.attachments.find((item) => item.id === "attach:network:sonarr")).toMatchObject({ known: true, label: expect.stringContaining("media_default") });
+    expect(model.attachments.find((item) => item.id === "attach:network:jellyfin:network:internal_default")).toMatchObject({ known: true, label: "internal_default" });
+    expect(model.attachments.find((item) => item.id === "attach:network:sonarr:network:internal_default")).toMatchObject({ known: true, label: "internal_default" });
     expect(model.population.groups.flatMap((group) => group.members).some((item) => item.composeService === "jellyfin" || item.composeService === "sonarr")).toBe(false);
   });
 
@@ -529,5 +533,191 @@ describe("FabricModel", () => {
         coverage: { control: "complete" },
       });
     }
+  });
+
+  it("derives every rendered activity state deterministically", () => {
+    expect(deriveFabricRenderedActivity({
+      plane: "data",
+      evidence: "measured",
+      freshness: "live",
+      coverage: "complete",
+      rateBytesPerSecond: 1,
+    })).toBe("live-transfer");
+    expect(deriveFabricRenderedActivity({
+      plane: "control",
+      evidence: "state-only",
+      freshness: "live",
+      coverage: "unknown",
+      rateBytesPerSecond: null,
+    })).toBe("live-state-only");
+    expect(deriveFabricRenderedActivity({
+      plane: "data",
+      evidence: "derived",
+      freshness: "stale",
+      coverage: "complete",
+      rateBytesPerSecond: 2,
+    })).toBe("stale");
+    expect(deriveFabricRenderedActivity({
+      plane: "data",
+      evidence: "measured",
+      freshness: "live",
+      coverage: "complete",
+      rateBytesPerSecond: 0,
+    })).toBe("confirmed-zero");
+    expect(deriveFabricRenderedActivity({
+      plane: "data",
+      evidence: "reported",
+      freshness: "unknown",
+      coverage: "unknown",
+      rateBytesPerSecond: null,
+    })).toBe("unknown");
+    expect(deriveFabricRenderedActivity({
+      plane: "control",
+      evidence: "reported",
+      freshness: "live",
+      coverage: "complete",
+      rateBytesPerSecond: null,
+      focus: true,
+    })).toBe("dormant");
+  });
+
+  it("renders honest confirmed-zero acquisition relationships without motion", () => {
+    const snapshot = makeFakeSnapshot("downloads", NOW);
+    snapshot.acquisition.items = snapshot.acquisition.items.filter((item) => item.source === "sonarr");
+    snapshot.acquisition.rollup = {
+      ...snapshot.acquisition.rollup,
+      aggregateRateBps: 0,
+      uploadRateBps: 0,
+      seeding: 0,
+    };
+
+    const model = buildFabricModel(snapshot, { now: NOW, seerrConfigured: true });
+    const wan = model.relationships.find((relationship) => relationship.id === "wan-transfer:network->qbittorrent")!;
+    const storage = model.relationships.find((relationship) => relationship.id === "storage-transfer:qbittorrent->pool:NVME")!;
+
+    expect(wan).toMatchObject({
+      renderedActivity: "confirmed-zero",
+      rateBytesPerSecond: 0,
+      animated: false,
+      controllerServiceId: "sonarr",
+    });
+    expect(storage).toMatchObject({
+      renderedActivity: "confirmed-zero",
+      rateBytesPerSecond: 0,
+      animated: false,
+      controllerServiceId: "sonarr",
+    });
+  });
+
+  it("copies typed controller attribution onto derived relationships", () => {
+    const snapshot = makeFakeSnapshot("downloads", NOW);
+    snapshot.acquisition.items = snapshot.acquisition.items.filter((item) => item.source === "sonarr");
+
+    const model = buildFabricModel(snapshot, { now: NOW, seerrConfigured: true });
+
+    expect(model.relationships.find((relationship) => relationship.id === "storage-transfer:qbittorrent->pool:NVME")).toMatchObject({
+      controllerServiceId: "sonarr",
+    });
+    expect(model.relationships.find((relationship) => relationship.id === "control:sonarr->qbittorrent")).toMatchObject({
+      controllerServiceId: "sonarr",
+    });
+    expect(model.relationships.find((relationship) => relationship.id === "import-copy:pool:NVME->pool:DataStore")).toMatchObject({
+      controllerServiceId: "sonarr",
+    });
+  });
+
+  it("builds sanitized topology inventory and reuses it during Docker outage without inventing runtime stats", () => {
+    const live = makeFakeSnapshot("container-field-real", NOW);
+    const inventory = buildFabricTopologyInventory(live);
+    const outage = {
+      ...live,
+      telemetry: {
+        ...live.telemetry,
+        docker: {
+          status: "unavailable" as const,
+          updatedAt: null,
+          value: null,
+        },
+      },
+    };
+
+    const coldStart = buildFabricModel(outage, { now: NOW, seerrConfigured: true });
+    const recovered = buildFabricModel(outage, { now: NOW, seerrConfigured: true, inventory });
+    const liveModel = buildFabricModel(live, { now: NOW, seerrConfigured: true });
+
+    expect(inventory.groups[0]).toEqual(expect.objectContaining({
+      source: "live",
+      freshness: "live",
+      members: expect.any(Array),
+    }));
+    expect(Object.keys(inventory.groups[0]!.members[0]!).sort()).toEqual([
+      "composeService",
+      "id",
+      "networkNames",
+      "networkSegmentIds",
+    ]);
+
+    expect(coldStart.nodes.some((node) => node.id.startsWith("network:"))).toBe(false);
+    expect(coldStart.nodes.some((node) => node.kind === "group")).toBe(false);
+
+    expect(recovered.nodes.filter((node) => node.id.startsWith("network:")).map((node) => node.id)).toEqual(
+      inventory.networks.map((network) => network.id),
+    );
+    expect(recovered.nodes.some((node) => node.id === "group:media-support")).toBe(true);
+    expect(recovered.attachments.find((attachment) => attachment.id === "attach:network:jellyfin:network:internal_default")).toMatchObject({
+      known: true,
+    });
+    expect(recovered.stableCapabilities.find((capability) => capability.nodeId === "service:jellyfin")?.networkSegmentIds).toEqual(
+      liveModel.stableCapabilities.find((capability) => capability.nodeId === "service:jellyfin")?.networkSegmentIds,
+    );
+    expect(recovered.population.represented).toBe(44);
+    expect(recovered.population.running).toBeNull();
+    expect(recovered.population.ids).toHaveLength(44);
+    expect(recovered.population.accountedNodes.find((node) => node.nodeId === "service:jellyfin")).toMatchObject({
+      containerIds: [],
+      accounting: {
+        cpuCores: { value: null, coverage: "unknown" },
+        memoryBytes: { value: null, coverage: "unknown" },
+      },
+    });
+  });
+
+  it("fans out one network attachment per resolved membership segment for services and groups", () => {
+    const live = makeFakeSnapshot("container-field-real", NOW);
+    const inventory = buildFabricTopologyInventory(live);
+    const outage = {
+      ...live,
+      telemetry: {
+        ...live.telemetry,
+        docker: {
+          status: "unavailable" as const,
+          updatedAt: null,
+          value: null,
+        },
+      },
+    };
+
+    const model = buildFabricModel(outage, { now: NOW, seerrConfigured: true, inventory });
+    const jellyfinAttachments = model.attachments.filter((attachment) => attachment.nodeId === "service:jellyfin" && attachment.kind === "network");
+    const sonarrAttachments = model.attachments.filter((attachment) => attachment.nodeId === "service:sonarr" && attachment.kind === "network");
+    const mediaSupportAttachments = model.attachments.filter((attachment) => attachment.nodeId === "group:media-support" && attachment.kind === "network");
+
+    expect(jellyfinAttachments.map((attachment) => attachment.fabricId).sort()).toEqual([
+      "network:internal_default",
+      "network:other-docker-segments",
+    ]);
+    expect(jellyfinAttachments.map((attachment) => attachment.id).sort()).toEqual([
+      "attach:network:jellyfin:network:internal_default",
+      "attach:network:jellyfin:network:other-docker-segments",
+    ]);
+    expect(sonarrAttachments.map((attachment) => attachment.fabricId).sort()).toEqual([
+      "network:internal_default",
+      "network:other-docker-segments",
+    ]);
+    expect(mediaSupportAttachments.map((attachment) => attachment.fabricId).sort()).toEqual([
+      "network:bridge",
+      "network:internal_default",
+      "network:other-docker-segments",
+    ]);
   });
 });

@@ -327,6 +327,40 @@ describe("deriveFlows — control plane vs data plane (PLA-266 v2)", () => {
     expect(copy.from).toEqual({ kind: "pool", name: "NVME" });
     expect(copy.to).toEqual({ kind: "pool", name: "DataStore" });
   });
+
+  it("carries typed controller attribution from acquisition/import state instead of provenance wording", () => {
+    const base = makeFakeSnapshot("downloads", NOW);
+    const sonarrOnly: DashboardSnapshot = {
+      ...base,
+      acquisition: {
+        ...base.acquisition,
+        items: base.acquisition.items.filter((item) => item.source === "sonarr"),
+      },
+    };
+    const changedWording: DashboardSnapshot = {
+      ...sonarrOnly,
+      mediaPool: null,
+      downloadPool: null,
+    };
+
+    expect(byId(sonarrOnly, "wan-transfer:network->qbittorrent")?.controllerServiceId).toBe("sonarr");
+    expect(byId(sonarrOnly, "storage-transfer:qbittorrent->pool:NVME")?.controllerServiceId).toBe("sonarr");
+    expect(byId(sonarrOnly, "control:sonarr->qbittorrent")?.controllerServiceId).toBe("sonarr");
+    expect(byId(sonarrOnly, "organize:sonarr->pool:DataStore")?.controllerServiceId).toBe("sonarr");
+    expect(byId(sonarrOnly, "import-copy:pool:NVME->pool:DataStore")?.controllerServiceId).toBe("sonarr");
+
+    const pooled = byId(sonarrOnly, "storage-transfer:qbittorrent->pool:NVME")!;
+    const generic = byId(changedWording, "storage-transfer:qbittorrent->storage")!;
+    expect(pooled.provenance).not.toBe(generic.provenance);
+    expect(generic.controllerServiceId).toBe("sonarr");
+    expect(byId(changedWording, "organize:sonarr->storage")?.controllerServiceId).toBe("sonarr");
+  });
+
+  it("leaves shared acquisition flows unattributed when both Arr controllers are active", () => {
+    const mixed = makeFakeSnapshot("downloads", NOW);
+    expect(byId(mixed, "wan-transfer:network->qbittorrent")?.controllerServiceId).toBeUndefined();
+    expect(byId(mixed, "storage-transfer:qbittorrent->pool:NVME")?.controllerServiceId).toBeUndefined();
+  });
 });
 
 describe("deriveFlows — same-pool vs cross-pool imports (PLA-275)", () => {

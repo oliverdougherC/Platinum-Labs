@@ -189,6 +189,23 @@ function acquisitionActive(): AcquisitionSnapshot {
   return { items, rollup: rollup(items) };
 }
 
+/** Active queue ownership with a measured, honest zero transfer rate. */
+function acquisitionConfirmedZero(): AcquisitionSnapshot {
+  const items: AcquisitionItem[] = [
+    {
+      id: "q-zero",
+      source: "sonarr",
+      title: "Severance — S02E07",
+      quality: "WEB-DL 1080p",
+      state: "downloading",
+      progress: 0.63,
+      rateBps: 0,
+      etaSeconds: null,
+    },
+  ];
+  return { items, rollup: rollup(items) };
+}
+
 /** Simultaneous download + seed-upload (the bidirectional WAN conduit demo). */
 function acquisitionSeeding(): AcquisitionSnapshot {
   const items: AcquisitionItem[] = [
@@ -437,6 +454,7 @@ export const SCENARIOS = [
   "transcode-unknown-rate",
   "direct-stream",
   "paused",
+  "confirmed-zero",
   "multi-session",
   "mixed-session",
   "downloads",
@@ -485,6 +503,7 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "transcode-unknown-rate": "Jellyfin — playing, rate unknown",
   "direct-stream": "Jellyfin — direct stream (estimated)",
   paused: "Jellyfin — paused session",
+  "confirmed-zero": "Active download — confirmed zero rate",
   "multi-session": "Multiple sessions",
   "mixed-session": "Mixed known / unknown sessions",
   downloads: "Active downloads / imports",
@@ -771,6 +790,14 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       telemetryProfile: "idle",
     }),
 
+  "confirmed-zero": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionConfirmedZero(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "idle",
+    }),
+
   "multi-session": (now) =>
     compose(now, {
       jellyfin: {
@@ -951,6 +978,9 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       telemetryProfile: "active",
     });
     snapshot.fabricRelationships = [
+      { from: "service:seerr", to: "service:sonarr", kind: "dependency", label: "request routing" },
+      { from: "service:seerr", to: "service:radarr", kind: "dependency", label: "request routing" },
+      { from: "service:sonarr", to: "service:qbittorrent", kind: "control", label: "download client" },
       { from: "service:sonarr", to: "service:jellyfin", kind: "control", label: "library refresh" },
       { from: "host:control", to: "service:seerr", kind: "dependency", label: "operator control" },
     ];

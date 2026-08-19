@@ -476,7 +476,7 @@
   min-width: 0;
   min-height: 0;
   grid-template-rows: auto minmax(0, 1fr);
-  padding: 1.25rem 1.5rem 1rem;
+  padding: 0.9rem 1rem 0.8rem;
   transition: padding 220ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
@@ -485,8 +485,8 @@
   align-items: end;
   justify-content: space-between;
   gap: 2rem;
-  min-height: 3.5rem;
-  padding: 0 0.2rem 0.5rem;
+  min-height: 2.3rem;
+  padding: 0 0.1rem 0.25rem;
 }
 
 .fabric-study-heading p {
@@ -499,8 +499,8 @@
 .fabric-study-heading h1 {
   margin-top: 0.2rem;
   color: rgb(var(--color-fg));
-  font-size: 1rem;
-  font-weight: 540;
+  font-size: 0.93rem;
+  font-weight: 520;
 }
 
 .fabric-study-heading .fabric-study-thesis {
@@ -512,18 +512,26 @@
   text-transform: none;
 }
 
-.fabric-study-shell[data-study-id="A+"] .fabric-study-heading {
-  min-height: 2.9rem;
+.fabric-study-shell[data-study-id="A+"] .fabric-study-heading,
+.fabric-study-shell[data-study-view-mode="relationship-map"] .fabric-study-heading {
+  display: none;
 }
 
-.fabric-study-shell[data-study-id="A+"] .fabric-study-thesis {
+.fabric-study-shell[data-study-id="A+"] .fabric-study-stage-frame {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.fabric-study-shell[data-study-id="A+"] .fabric-study-thesis,
+.fabric-study-shell[data-study-view-mode="relationship-map"] .fabric-study-thesis {
   display: none;
 }
 
 [data-study-stage] {
+  display: block;
   width: 100%;
   height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .fabric-study-inspector {
@@ -553,7 +561,7 @@
 }
 
 .fabric-study-node-subsystem .fabric-study-card {
-  fill: rgb(var(--color-surface) / 0.18);
+  fill: rgb(var(--color-surface) / 0.13);
   stroke-dasharray: 1.5 3;
 }
 
@@ -580,7 +588,7 @@
 .fabric-study-node[role="button"] {
   cursor: pointer;
   outline: none;
-  opacity: 0.44;
+  opacity: 0.3;
   transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
@@ -588,6 +596,10 @@
 .fabric-study-node.is-selected,
 .fabric-study-node:not([role="button"]) {
   opacity: 1;
+}
+
+.fabric-study-node.is-subdued {
+  opacity: 0.22;
 }
 
 .fabric-study-node.is-selected .fabric-study-card,
@@ -643,7 +655,7 @@
 }
 
 .fabric-study-promoted {
-  fill: rgb(var(--color-warn));
+  fill: rgb(var(--color-warn) / 0.72);
   font-size: 12px;
 }
 
@@ -686,24 +698,72 @@
 .fabric-study-substrate-write { stroke-width: 5; }
 
 .fabric-study-channel {
-  stroke-width: 1.6;
-  opacity: 0.8;
+  stroke-width: 1.4;
+  opacity: 0.7;
 }
 
 .fabric-study-segment-group.is-branch .fabric-study-channel {
-  stroke-width: 1.15;
-  opacity: 0.62;
+  stroke-width: 1;
+  opacity: 0.48;
 }
 
 .fabric-study-channel-network { stroke: rgb(var(--color-border)); }
 .fabric-study-channel-control { stroke: rgb(var(--color-flow-ctl)); stroke-dasharray: 3 7; }
 .fabric-study-channel-read { stroke: rgb(var(--color-flow-in)); }
 .fabric-study-channel-write { stroke: rgb(var(--color-flow-out)); }
-.fabric-study-channel-dormant { stroke: rgb(var(--color-faint) / 0.32); stroke-width: 0.75; }
 .fabric-study-segment-group.is-focused .fabric-study-channel { stroke-width: 2.4; opacity: 1; }
+.fabric-study-segment-group.is-focused.is-branch .fabric-study-channel-network {
+  stroke: rgb(var(--color-accent));
+}
 
-.fabric-study-shell[data-study-id="A+"] [data-study-segment-plane="control"]:not(.is-active):not(.is-focused) {
-  opacity: 0.08;
+.fabric-study-channel-activity-live-transfer {
+  stroke-dasharray: 9 9;
+  animation: flow-march linear infinite;
+}
+
+.fabric-study-channel-activity-live-state-only {
+  stroke: rgb(var(--color-flow-ctl) / 0.88);
+  stroke-dasharray: 1 5;
+  stroke-linecap: round;
+  opacity: 0.92;
+}
+
+.fabric-study-channel-activity-stale {
+  stroke: rgb(var(--color-faint) / 0.7);
+  stroke-dasharray: 5 7;
+  opacity: 0.52;
+}
+
+.fabric-study-channel-activity-confirmed-zero {
+  stroke: rgb(var(--color-faint) / 0.34);
+  stroke-dasharray: 2 8;
+  opacity: 0.3;
+}
+
+.fabric-study-channel-activity-unknown {
+  stroke: rgb(var(--color-accent) / 0.58);
+  stroke-dasharray: 1.25 5;
+  opacity: 0.64;
+}
+
+.fabric-study-channel-activity-dormant-structural {
+  stroke: rgb(var(--color-faint) / 0.22);
+  opacity: 0.22;
+}
+
+.fabric-study-shell[data-study-view-mode="relationship-map"] .fabric-study-channel-activity-live-transfer {
+  opacity: 0.38;
+}
+
+.fabric-study-shell[data-study-view-mode="relationship-map"] .fabric-study-segment-group.is-active .fabric-study-channel-control {
+  stroke: rgb(var(--color-flow-ctl) / 0.82);
+  stroke-dasharray: 2 6;
+  opacity: 0.9;
+}
+
+.fabric-study-shell[data-study-view-mode="relationship-map"] .fabric-study-node-subsystem.is-subdued,
+.fabric-study-shell[data-study-mode="quiet"] .fabric-study-node-subsystem.is-subdued {
+  opacity: 0.42;
 }
 
 .fabric-study-label-backdrop {
@@ -733,11 +793,11 @@
 .fabric-study-port-core { fill: rgb(var(--color-muted)); }
 
 .fabric-study-resource-graphic {
-  fill: rgb(var(--color-accent) / 0.78);
+  fill: rgb(var(--color-accent) / 0.54);
 }
 
 .fabric-study-resource-track {
-  fill: rgb(var(--color-hairline) / 0.85);
+  fill: rgb(var(--color-hairline) / 0.68);
 }
 
 .fabric-study-resource-selected {

@@ -1,0 +1,2586 @@
+{
+  "nodes": [
+    {
+      "id": "resource:cpu",
+      "bounds": {
+        "x": 24,
+        "y": 26,
+        "width": 318,
+        "height": 88
+      },
+      "ports": []
+    },
+    {
+      "id": "resource:memory",
+      "bounds": {
+        "x": 354,
+        "y": 26,
+        "width": 246,
+        "height": 88
+      },
+      "ports": []
+    },
+    {
+      "id": "resource:gpu",
+      "bounds": {
+        "x": 612,
+        "y": 26,
+        "width": 302,
+        "height": 88
+      },
+      "ports": []
+    },
+    {
+      "id": "resource:arc",
+      "bounds": {
+        "x": 926,
+        "y": 26,
+        "width": 250,
+        "height": 88
+      },
+      "ports": []
+    },
+    {
+      "id": "external:wan",
+      "bounds": {
+        "x": 24,
+        "y": 142,
+        "width": 100,
+        "height": 34
+      },
+      "ports": [
+        {
+          "id": "external:wan:network",
+          "kind": "network",
+          "center": {
+            "x": 124,
+            "y": 159
+          }
+        }
+      ]
+    },
+    {
+      "id": "external:lan",
+      "bounds": {
+        "x": 24,
+        "y": 184,
+        "width": 100,
+        "height": 34
+      },
+      "ports": [
+        {
+          "id": "external:lan:network",
+          "kind": "network",
+          "center": {
+            "x": 124,
+            "y": 201
+          }
+        }
+      ]
+    },
+    {
+      "id": "external:overlay",
+      "bounds": {
+        "x": 24,
+        "y": 226,
+        "width": 100,
+        "height": 34
+      },
+      "ports": [
+        {
+          "id": "external:overlay:network",
+          "kind": "network",
+          "center": {
+            "x": 124,
+            "y": 243
+          }
+        }
+      ]
+    },
+    {
+      "id": "fabric:gateway",
+      "bounds": {
+        "x": 132,
+        "y": 142,
+        "width": 132,
+        "height": 118
+      },
+      "ports": [
+        {
+          "id": "fabric:gateway:wan-network",
+          "kind": "network",
+          "center": {
+            "x": 132,
+            "y": 159
+          }
+        },
+        {
+          "id": "fabric:gateway:lan-network",
+          "kind": "network",
+          "center": {
+            "x": 132,
+            "y": 201
+          }
+        },
+        {
+          "id": "fabric:gateway:overlay-network",
+          "kind": "network",
+          "center": {
+            "x": 132,
+            "y": 243
+          }
+        },
+        {
+          "id": "fabric:gateway:network",
+          "kind": "network",
+          "center": {
+            "x": 264,
+            "y": 247
+          }
+        },
+        {
+          "id": "fabric:service:control",
+          "kind": "control",
+          "center": {
+            "x": 248,
+            "y": 260
+          }
+        }
+      ]
+    },
+    {
+      "id": "network:other-docker-segments",
+      "bounds": {
+        "x": 24,
+        "y": 276,
+        "width": 240,
+        "height": 34
+      },
+      "ports": [
+        {
+          "id": "network:other-docker-segments:network",
+          "kind": "network",
+          "center": {
+            "x": 264,
+            "y": 293
+          }
+        }
+      ]
+    },
+    {
+      "id": "network:bridge",
+      "bounds": {
+        "x": 24,
+        "y": 316,
+        "width": 240,
+        "height": 34
+      },
+      "ports": [
+        {
+          "id": "network:bridge:network",
+          "kind": "network",
+          "center": {
+            "x": 264,
+            "y": 333
+          }
+        }
+      ]
+    },
+    {
+      "id": "network:internal_default",
+      "bounds": {
+        "x": 24,
+        "y": 356,
+        "width": 240,
+        "height": 34
+      },
+      "ports": [
+        {
+          "id": "network:internal_default:network",
+          "kind": "network",
+          "center": {
+            "x": 264,
+            "y": 373
+          }
+        }
+      ]
+    },
+    {
+      "id": "service:seerr",
+      "bounds": {
+        "x": 276,
+        "y": 150,
+        "width": 278,
+        "height": 72
+      },
+      "ports": [
+        {
+          "id": "service:seerr:network",
+          "kind": "network",
+          "center": {
+            "x": 415,
+            "y": 150
+          }
+        },
+        {
+          "id": "service:seerr:control",
+          "kind": "control",
+          "center": {
+            "x": 500,
+            "y": 222
+          }
+        }
+      ]
+    },
+    {
+      "id": "service:sonarr",
+      "bounds": {
+        "x": 580,
+        "y": 150,
+        "width": 278,
+        "height": 72
+      },
+      "ports": [
+        {
+          "id": "service:sonarr:network",
+          "kind": "network",
+          "center": {
+            "x": 719,
+            "y": 150
+          }
+        },
+        {
+          "id": "service:sonarr:control",
+          "kind": "control",
+          "center": {
+            "x": 804,
+            "y": 222
+          }
+        },
+        {
+          "id": "service:sonarr:read",
+          "kind": "read",
+          "center": {
+            "x": 616,
+            "y": 222
+          }
+        },
+        {
+          "id": "service:sonarr:write",
+          "kind": "write",
+          "center": {
+            "x": 636,
+            "y": 222
+          }
+        }
+      ]
+    },
+    {
+      "id": "service:radarr",
+      "bounds": {
+        "x": 884,
+        "y": 150,
+        "width": 278,
+        "height": 72
+      },
+      "ports": [
+        {
+          "id": "service:radarr:network",
+          "kind": "network",
+          "center": {
+            "x": 1023,
+            "y": 150
+          }
+        },
+        {
+          "id": "service:radarr:control",
+          "kind": "control",
+          "center": {
+            "x": 1108,
+            "y": 222
+          }
+        },
+        {
+          "id": "service:radarr:read",
+          "kind": "read",
+          "center": {
+            "x": 966,
+            "y": 222
+          }
+        },
+        {
+          "id": "service:radarr:write",
+          "kind": "write",
+          "center": {
+            "x": 978,
+            "y": 222
+          }
+        }
+      ]
+    },
+    {
+      "id": "service:qbittorrent",
+      "bounds": {
+        "x": 300,
+        "y": 294,
+        "width": 300,
+        "height": 116
+      },
+      "ports": [
+        {
+          "id": "service:qbittorrent:network",
+          "kind": "network",
+          "center": {
+            "x": 300,
+            "y": 318
+          }
+        },
+        {
+          "id": "service:qbittorrent:control",
+          "kind": "control",
+          "center": {
+            "x": 366,
+            "y": 294
+          }
+        },
+        {
+          "id": "service:qbittorrent:read",
+          "kind": "read",
+          "center": {
+            "x": 416,
+            "y": 410
+          }
+        },
+        {
+          "id": "service:qbittorrent:write",
+          "kind": "write",
+          "center": {
+            "x": 400,
+            "y": 410
+          }
+        }
+      ]
+    },
+    {
+      "id": "service:jellyfin",
+      "bounds": {
+        "x": 650,
+        "y": 294,
+        "width": 300,
+        "height": 116
+      },
+      "ports": [
+        {
+          "id": "service:jellyfin:network",
+          "kind": "network",
+          "center": {
+            "x": 950,
+            "y": 318
+          }
+        },
+        {
+          "id": "service:jellyfin:control",
+          "kind": "control",
+          "center": {
+            "x": 884,
+            "y": 294
+          }
+        },
+        {
+          "id": "service:jellyfin:read",
+          "kind": "read",
+          "center": {
+            "x": 760,
+            "y": 410
+          }
+        }
+      ]
+    },
+    {
+      "id": "group:platform",
+      "bounds": {
+        "x": 14,
+        "y": 394,
+        "width": 240,
+        "height": 46
+      },
+      "ports": [
+        {
+          "id": "group:platform:network",
+          "kind": "network",
+          "center": {
+            "x": 254,
+            "y": 426
+          }
+        }
+      ]
+    },
+    {
+      "id": "group:media-support",
+      "bounds": {
+        "x": 14,
+        "y": 444,
+        "width": 240,
+        "height": 46
+      },
+      "ports": [
+        {
+          "id": "group:media-support:network",
+          "kind": "network",
+          "center": {
+            "x": 254,
+            "y": 476
+          }
+        }
+      ]
+    },
+    {
+      "id": "group:observability",
+      "bounds": {
+        "x": 14,
+        "y": 494,
+        "width": 240,
+        "height": 46
+      },
+      "ports": [
+        {
+          "id": "group:observability:network",
+          "kind": "network",
+          "center": {
+            "x": 254,
+            "y": 526
+          }
+        }
+      ]
+    },
+    {
+      "id": "group:network-edge",
+      "bounds": {
+        "x": 14,
+        "y": 544,
+        "width": 240,
+        "height": 46
+      },
+      "ports": [
+        {
+          "id": "group:network-edge:network",
+          "kind": "network",
+          "center": {
+            "x": 254,
+            "y": 576
+          }
+        }
+      ]
+    },
+    {
+      "id": "pool:DataStore",
+      "bounds": {
+        "x": 276,
+        "y": 600,
+        "width": 270,
+        "height": 64
+      },
+      "ports": [
+        {
+          "id": "pool:DataStore:read",
+          "kind": "read",
+          "center": {
+            "x": 367.8,
+            "y": 664
+          }
+        },
+        {
+          "id": "pool:DataStore:write",
+          "kind": "write",
+          "center": {
+            "x": 465,
+            "y": 664
+          }
+        }
+      ]
+    },
+    {
+      "id": "pool:NVME",
+      "bounds": {
+        "x": 579,
+        "y": 600,
+        "width": 270,
+        "height": 64
+      },
+      "ports": [
+        {
+          "id": "pool:NVME:read",
+          "kind": "read",
+          "center": {
+            "x": 670.8,
+            "y": 664
+          }
+        },
+        {
+          "id": "pool:NVME:write",
+          "kind": "write",
+          "center": {
+            "x": 768,
+            "y": 664
+          }
+        }
+      ]
+    },
+    {
+      "id": "pool:eSATA",
+      "bounds": {
+        "x": 882,
+        "y": 600,
+        "width": 270,
+        "height": 64
+      },
+      "ports": [
+        {
+          "id": "pool:eSATA:read",
+          "kind": "read",
+          "center": {
+            "x": 1071,
+            "y": 664
+          }
+        },
+        {
+          "id": "pool:eSATA:write",
+          "kind": "write",
+          "center": {
+            "x": 973.8,
+            "y": 664
+          }
+        }
+      ]
+    }
+  ],
+  "junctions": [
+    {
+      "id": "junction:a-plus:host-network-root",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 247
+      }
+    },
+    {
+      "id": "junction:a-plus:network:other-docker-segments:host",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 293
+      }
+    },
+    {
+      "id": "junction:a-plus:network:bridge:host",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 333
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:host",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 373
+      }
+    },
+    {
+      "id": "junction:a-plus:network:other-docker-segments:rail-root",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 126
+      }
+    },
+    {
+      "id": "junction:a-plus:network:bridge:rail-root",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 134
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:rail-root",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 142
+      }
+    },
+    {
+      "id": "junction:a-plus:network:other-docker-segments:service:seerr",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 415,
+        "y": 126
+      }
+    },
+    {
+      "id": "junction:a-plus:network:other-docker-segments:service:sonarr",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 719,
+        "y": 126
+      }
+    },
+    {
+      "id": "junction:a-plus:network:other-docker-segments:service:radarr",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 1023,
+        "y": 126
+      }
+    },
+    {
+      "id": "junction:a-plus:network:other-docker-segments:service:qbittorrent",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 318
+      }
+    },
+    {
+      "id": "junction:a-plus:network:other-docker-segments:service:jellyfin",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 1196,
+        "y": 318
+      }
+    },
+    {
+      "id": "junction:a-plus:network:other-docker-segments:group:platform",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 426
+      }
+    },
+    {
+      "id": "junction:a-plus:network:other-docker-segments:group:media-support",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 476
+      }
+    },
+    {
+      "id": "junction:a-plus:network:other-docker-segments:group:observability",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 526
+      }
+    },
+    {
+      "id": "junction:a-plus:network:other-docker-segments:rail-east",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 1196,
+        "y": 318
+      }
+    },
+    {
+      "id": "junction:a-plus:network:bridge:group:media-support",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 468
+      }
+    },
+    {
+      "id": "junction:a-plus:network:bridge:rail-east",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 1194,
+        "y": 134
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:service:seerr",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 415,
+        "y": 142
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:service:sonarr",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 719,
+        "y": 142
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:service:radarr",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 1023,
+        "y": 142
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:service:qbittorrent",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 302
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:service:jellyfin",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 1196,
+        "y": 302
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:group:platform",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 410
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:group:media-support",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 460
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:group:observability",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 510
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:group:network-edge",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 560
+      }
+    },
+    {
+      "id": "junction:a-plus:network:internal_default:rail-east",
+      "plane": "network",
+      "kind": "junction",
+      "point": {
+        "x": 1196,
+        "y": 302
+      }
+    },
+    {
+      "id": "junction:a-plus:control:west",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 300,
+        "y": 258
+      }
+    },
+    {
+      "id": "junction:a-plus:control:east",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 1176,
+        "y": 258
+      }
+    },
+    {
+      "id": "via:a-plus:control:gateway:host-network",
+      "plane": "control",
+      "kind": "via",
+      "point": {
+        "x": 272,
+        "y": 266
+      }
+    },
+    {
+      "id": "junction:a-plus:control:fabric:gateway",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 300,
+        "y": 258
+      }
+    },
+    {
+      "id": "junction:a-plus:control:service:qbittorrent",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 366,
+        "y": 258
+      }
+    },
+    {
+      "id": "junction:a-plus:control:service:jellyfin",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 884,
+        "y": 258
+      }
+    },
+    {
+      "id": "junction:a-plus:read:west",
+      "plane": "read",
+      "kind": "junction",
+      "point": {
+        "x": 272,
+        "y": 548
+      }
+    },
+    {
+      "id": "junction:a-plus:read:east",
+      "plane": "read",
+      "kind": "junction",
+      "point": {
+        "x": 1180,
+        "y": 548
+      }
+    },
+    {
+      "id": "junction:a-plus:read:service:qbittorrent",
+      "plane": "read",
+      "kind": "junction",
+      "point": {
+        "x": 416,
+        "y": 548
+      }
+    },
+    {
+      "id": "junction:a-plus:read:service:jellyfin",
+      "plane": "read",
+      "kind": "junction",
+      "point": {
+        "x": 760,
+        "y": 548
+      }
+    },
+    {
+      "id": "junction:a-plus:write:west",
+      "plane": "write",
+      "kind": "junction",
+      "point": {
+        "x": 260,
+        "y": 574
+      }
+    },
+    {
+      "id": "junction:a-plus:write:east",
+      "plane": "write",
+      "kind": "junction",
+      "point": {
+        "x": 1192,
+        "y": 574
+      }
+    },
+    {
+      "id": "via:a-plus:write:qbittorrent:read-substrate",
+      "plane": "write",
+      "kind": "via",
+      "point": {
+        "x": 280,
+        "y": 548
+      }
+    },
+    {
+      "id": "junction:a-plus:write:service:qbittorrent",
+      "plane": "write",
+      "kind": "junction",
+      "point": {
+        "x": 280,
+        "y": 574
+      }
+    },
+    {
+      "id": "junction:a-plus:control:service:seerr",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 500,
+        "y": 222
+      }
+    },
+    {
+      "id": "junction:a-plus:control:service:sonarr",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 804,
+        "y": 222
+      }
+    },
+    {
+      "id": "junction:a-plus:control:service:radarr",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 1108,
+        "y": 222
+      }
+    },
+    {
+      "id": "junction:a-plus:control:orchestration-collector-west",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 500,
+        "y": 222
+      }
+    },
+    {
+      "id": "junction:a-plus:control:orchestration-collector-east",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 1108,
+        "y": 222
+      }
+    },
+    {
+      "id": "junction:a-plus:control:orchestration-approach-top",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 560,
+        "y": 222
+      }
+    },
+    {
+      "id": "junction:a-plus:control:orchestration-approach-substrate",
+      "plane": "control",
+      "kind": "junction",
+      "point": {
+        "x": 560,
+        "y": 258
+      }
+    },
+    {
+      "id": "junction:a-plus:write:service:sonarr",
+      "plane": "write",
+      "kind": "junction",
+      "point": {
+        "x": 1196,
+        "y": 226
+      }
+    },
+    {
+      "id": "junction:a-plus:write:service:radarr",
+      "plane": "write",
+      "kind": "junction",
+      "point": {
+        "x": 1196,
+        "y": 226
+      }
+    },
+    {
+      "id": "junction:a-plus:write:orchestration-substrate",
+      "plane": "write",
+      "kind": "junction",
+      "point": {
+        "x": 1196,
+        "y": 574
+      }
+    },
+    {
+      "id": "junction:a-plus:read:service:sonarr",
+      "plane": "read",
+      "kind": "junction",
+      "point": {
+        "x": 620,
+        "y": 222
+      }
+    },
+    {
+      "id": "junction:a-plus:read:service:radarr",
+      "plane": "read",
+      "kind": "junction",
+      "point": {
+        "x": 620,
+        "y": 222
+      }
+    },
+    {
+      "id": "junction:a-plus:read:orchestration-substrate",
+      "plane": "read",
+      "kind": "junction",
+      "point": {
+        "x": 620,
+        "y": 548
+      }
+    },
+    {
+      "id": "via:a-plus:read:orchestration:control-substrate",
+      "plane": "read",
+      "kind": "via",
+      "point": {
+        "x": 620,
+        "y": 258
+      }
+    },
+    {
+      "id": "junction:a-plus:read:pool:DataStore",
+      "plane": "read",
+      "kind": "junction",
+      "point": {
+        "x": 367.8,
+        "y": 674
+      }
+    },
+    {
+      "id": "junction:a-plus:write:pool:DataStore",
+      "plane": "write",
+      "kind": "junction",
+      "point": {
+        "x": 465,
+        "y": 664
+      }
+    },
+    {
+      "id": "junction:a-plus:read:pool:NVME",
+      "plane": "read",
+      "kind": "junction",
+      "point": {
+        "x": 670.8,
+        "y": 674
+      }
+    },
+    {
+      "id": "junction:a-plus:write:pool:NVME",
+      "plane": "write",
+      "kind": "junction",
+      "point": {
+        "x": 768,
+        "y": 664
+      }
+    },
+    {
+      "id": "junction:a-plus:read:pool:eSATA",
+      "plane": "read",
+      "kind": "junction",
+      "point": {
+        "x": 1071,
+        "y": 674
+      }
+    },
+    {
+      "id": "junction:a-plus:write:pool:eSATA",
+      "plane": "write",
+      "kind": "junction",
+      "point": {
+        "x": 973.8,
+        "y": 664
+      }
+    },
+    {
+      "id": "junction:a-plus:read:storage-collector-west",
+      "plane": "read",
+      "kind": "junction",
+      "point": {
+        "x": 257,
+        "y": 674
+      }
+    },
+    {
+      "id": "junction:a-plus:write:storage-collector-east",
+      "plane": "write",
+      "kind": "junction",
+      "point": {
+        "x": 1192,
+        "y": 664
+      }
+    }
+  ],
+  "segments": [
+    {
+      "id": "segment:a-plus:wan-gateway",
+      "plane": "network",
+      "endpointIds": [
+        "external:wan:network",
+        "fabric:gateway:wan-network"
+      ],
+      "junctionIds": [],
+      "points": [
+        {
+          "x": 124,
+          "y": 159
+        },
+        {
+          "x": 132,
+          "y": 159
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:lan-gateway",
+      "plane": "network",
+      "endpointIds": [
+        "external:lan:network",
+        "fabric:gateway:lan-network"
+      ],
+      "junctionIds": [],
+      "points": [
+        {
+          "x": 124,
+          "y": 201
+        },
+        {
+          "x": 132,
+          "y": 201
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:overlay-gateway",
+      "plane": "network",
+      "endpointIds": [
+        "external:overlay:network",
+        "fabric:gateway:overlay-network"
+      ],
+      "junctionIds": [],
+      "points": [
+        {
+          "x": 124,
+          "y": 243
+        },
+        {
+          "x": 132,
+          "y": 243
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:gateway-network-root",
+      "plane": "network",
+      "endpointIds": [
+        "fabric:gateway:network",
+        "junction:a-plus:host-network-root"
+      ],
+      "junctionIds": [
+        "junction:a-plus:host-network-root"
+      ],
+      "points": [
+        {
+          "x": 264,
+          "y": 247
+        },
+        {
+          "x": 272,
+          "y": 247
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:host-network-trunk",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:other-docker-segments:rail-root",
+        "junction:a-plus:network:internal_default:host"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:other-docker-segments:rail-root",
+        "junction:a-plus:network:bridge:rail-root",
+        "junction:a-plus:network:internal_default:rail-root",
+        "junction:a-plus:host-network-root",
+        "junction:a-plus:network:other-docker-segments:host",
+        "junction:a-plus:network:bridge:host",
+        "junction:a-plus:network:internal_default:host",
+        "junction:a-plus:network:other-docker-segments:service:qbittorrent",
+        "junction:a-plus:network:other-docker-segments:group:platform",
+        "junction:a-plus:network:other-docker-segments:group:media-support",
+        "junction:a-plus:network:other-docker-segments:group:observability",
+        "junction:a-plus:network:bridge:group:media-support",
+        "junction:a-plus:network:internal_default:service:qbittorrent",
+        "junction:a-plus:network:internal_default:group:platform",
+        "junction:a-plus:network:internal_default:group:media-support",
+        "junction:a-plus:network:internal_default:group:observability",
+        "junction:a-plus:network:internal_default:group:network-edge"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 126
+        },
+        {
+          "x": 272,
+          "y": 373
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:other-docker-segments:gateway-branch",
+      "plane": "network",
+      "endpointIds": [
+        "network:other-docker-segments:network",
+        "junction:a-plus:network:other-docker-segments:host"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:other-docker-segments:host"
+      ],
+      "points": [
+        {
+          "x": 264,
+          "y": 293
+        },
+        {
+          "x": 272,
+          "y": 293
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:other-docker-segments:service:seerr:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:other-docker-segments:service:seerr",
+        "service:seerr:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:other-docker-segments:service:seerr"
+      ],
+      "points": [
+        {
+          "x": 415,
+          "y": 126
+        },
+        {
+          "x": 415,
+          "y": 150
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:other-docker-segments:service:sonarr:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:other-docker-segments:service:sonarr",
+        "service:sonarr:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:other-docker-segments:service:sonarr"
+      ],
+      "points": [
+        {
+          "x": 719,
+          "y": 126
+        },
+        {
+          "x": 719,
+          "y": 150
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:other-docker-segments:service:radarr:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:other-docker-segments:service:radarr",
+        "service:radarr:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:other-docker-segments:service:radarr"
+      ],
+      "points": [
+        {
+          "x": 1023,
+          "y": 126
+        },
+        {
+          "x": 1023,
+          "y": 150
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:other-docker-segments:service:qbittorrent:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:other-docker-segments:service:qbittorrent",
+        "service:qbittorrent:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:other-docker-segments:service:qbittorrent"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 318
+        },
+        {
+          "x": 280,
+          "y": 318
+        },
+        {
+          "x": 280,
+          "y": 318
+        },
+        {
+          "x": 300,
+          "y": 318
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:other-docker-segments:service:jellyfin:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:other-docker-segments:service:jellyfin",
+        "service:jellyfin:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:other-docker-segments:service:jellyfin"
+      ],
+      "points": [
+        {
+          "x": 1196,
+          "y": 318
+        },
+        {
+          "x": 1180,
+          "y": 318
+        },
+        {
+          "x": 1180,
+          "y": 318
+        },
+        {
+          "x": 950,
+          "y": 318
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:other-docker-segments:group:platform:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:other-docker-segments:group:platform",
+        "group:platform:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:other-docker-segments:group:platform"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 426
+        },
+        {
+          "x": 260,
+          "y": 426
+        },
+        {
+          "x": 260,
+          "y": 426
+        },
+        {
+          "x": 254,
+          "y": 426
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:other-docker-segments:group:media-support:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:other-docker-segments:group:media-support",
+        "group:media-support:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:other-docker-segments:group:media-support"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 476
+        },
+        {
+          "x": 260,
+          "y": 476
+        },
+        {
+          "x": 260,
+          "y": 476
+        },
+        {
+          "x": 254,
+          "y": 476
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:other-docker-segments:group:observability:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:other-docker-segments:group:observability",
+        "group:observability:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:other-docker-segments:group:observability"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 526
+        },
+        {
+          "x": 260,
+          "y": 526
+        },
+        {
+          "x": 260,
+          "y": 526
+        },
+        {
+          "x": 254,
+          "y": 526
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:other-docker-segments:rail",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:other-docker-segments:rail-root",
+        "junction:a-plus:network:other-docker-segments:rail-east"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:other-docker-segments:rail-root",
+        "junction:a-plus:network:other-docker-segments:service:seerr",
+        "junction:a-plus:network:other-docker-segments:service:sonarr",
+        "junction:a-plus:network:other-docker-segments:service:radarr",
+        "junction:a-plus:network:other-docker-segments:service:jellyfin",
+        "junction:a-plus:network:other-docker-segments:rail-east"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 126
+        },
+        {
+          "x": 1196,
+          "y": 126
+        },
+        {
+          "x": 1196,
+          "y": 318
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:bridge:gateway-branch",
+      "plane": "network",
+      "endpointIds": [
+        "network:bridge:network",
+        "junction:a-plus:network:bridge:host"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:bridge:host"
+      ],
+      "points": [
+        {
+          "x": 264,
+          "y": 333
+        },
+        {
+          "x": 272,
+          "y": 333
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:bridge:group:media-support:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:bridge:group:media-support",
+        "group:media-support:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:bridge:group:media-support"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 468
+        },
+        {
+          "x": 260,
+          "y": 468
+        },
+        {
+          "x": 260,
+          "y": 476
+        },
+        {
+          "x": 254,
+          "y": 476
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:bridge:rail",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:bridge:rail-root",
+        "junction:a-plus:network:bridge:rail-east"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:bridge:rail-root",
+        "junction:a-plus:network:bridge:rail-east"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 134
+        },
+        {
+          "x": 1194,
+          "y": 134
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:internal_default:gateway-branch",
+      "plane": "network",
+      "endpointIds": [
+        "network:internal_default:network",
+        "junction:a-plus:network:internal_default:host"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:internal_default:host"
+      ],
+      "points": [
+        {
+          "x": 264,
+          "y": 373
+        },
+        {
+          "x": 272,
+          "y": 373
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:internal_default:service:seerr:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:internal_default:service:seerr",
+        "service:seerr:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:internal_default:service:seerr"
+      ],
+      "points": [
+        {
+          "x": 415,
+          "y": 142
+        },
+        {
+          "x": 415,
+          "y": 150
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:internal_default:service:sonarr:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:internal_default:service:sonarr",
+        "service:sonarr:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:internal_default:service:sonarr"
+      ],
+      "points": [
+        {
+          "x": 719,
+          "y": 142
+        },
+        {
+          "x": 719,
+          "y": 150
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:internal_default:service:radarr:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:internal_default:service:radarr",
+        "service:radarr:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:internal_default:service:radarr"
+      ],
+      "points": [
+        {
+          "x": 1023,
+          "y": 142
+        },
+        {
+          "x": 1023,
+          "y": 150
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:internal_default:service:qbittorrent:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:internal_default:service:qbittorrent",
+        "service:qbittorrent:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:internal_default:service:qbittorrent"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 302
+        },
+        {
+          "x": 292,
+          "y": 302
+        },
+        {
+          "x": 292,
+          "y": 318
+        },
+        {
+          "x": 300,
+          "y": 318
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:internal_default:service:jellyfin:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:internal_default:service:jellyfin",
+        "service:jellyfin:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:internal_default:service:jellyfin"
+      ],
+      "points": [
+        {
+          "x": 1196,
+          "y": 302
+        },
+        {
+          "x": 1156,
+          "y": 302
+        },
+        {
+          "x": 1156,
+          "y": 318
+        },
+        {
+          "x": 950,
+          "y": 318
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:internal_default:group:platform:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:internal_default:group:platform",
+        "group:platform:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:internal_default:group:platform"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 410
+        },
+        {
+          "x": 260,
+          "y": 410
+        },
+        {
+          "x": 260,
+          "y": 426
+        },
+        {
+          "x": 254,
+          "y": 426
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:internal_default:group:media-support:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:internal_default:group:media-support",
+        "group:media-support:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:internal_default:group:media-support"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 460
+        },
+        {
+          "x": 260,
+          "y": 460
+        },
+        {
+          "x": 260,
+          "y": 476
+        },
+        {
+          "x": 254,
+          "y": 476
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:internal_default:group:observability:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:internal_default:group:observability",
+        "group:observability:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:internal_default:group:observability"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 510
+        },
+        {
+          "x": 260,
+          "y": 510
+        },
+        {
+          "x": 260,
+          "y": 526
+        },
+        {
+          "x": 254,
+          "y": 526
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:internal_default:group:network-edge:network-branch",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:internal_default:group:network-edge",
+        "group:network-edge:network"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:internal_default:group:network-edge"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 560
+        },
+        {
+          "x": 260,
+          "y": 560
+        },
+        {
+          "x": 260,
+          "y": 576
+        },
+        {
+          "x": 254,
+          "y": 576
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:network:internal_default:rail",
+      "plane": "network",
+      "endpointIds": [
+        "junction:a-plus:network:internal_default:rail-root",
+        "junction:a-plus:network:internal_default:rail-east"
+      ],
+      "junctionIds": [
+        "junction:a-plus:network:internal_default:rail-root",
+        "junction:a-plus:network:internal_default:service:seerr",
+        "junction:a-plus:network:internal_default:service:sonarr",
+        "junction:a-plus:network:internal_default:service:radarr",
+        "junction:a-plus:network:internal_default:service:jellyfin",
+        "junction:a-plus:network:internal_default:rail-east"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 142
+        },
+        {
+          "x": 1196,
+          "y": 142
+        },
+        {
+          "x": 1196,
+          "y": 302
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:control:fabric:gateway:branch",
+      "plane": "control",
+      "endpointIds": [
+        "fabric:service:control",
+        "junction:a-plus:control:fabric:gateway"
+      ],
+      "junctionIds": [
+        "junction:a-plus:control:fabric:gateway",
+        "via:a-plus:control:gateway:host-network"
+      ],
+      "points": [
+        {
+          "x": 248,
+          "y": 260
+        },
+        {
+          "x": 248,
+          "y": 266
+        },
+        {
+          "x": 300,
+          "y": 266
+        },
+        {
+          "x": 300,
+          "y": 258
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:control:service:qbittorrent:branch",
+      "plane": "control",
+      "endpointIds": [
+        "service:qbittorrent:control",
+        "junction:a-plus:control:service:qbittorrent"
+      ],
+      "junctionIds": [
+        "junction:a-plus:control:service:qbittorrent"
+      ],
+      "points": [
+        {
+          "x": 366,
+          "y": 294
+        },
+        {
+          "x": 366,
+          "y": 258
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:control:service:jellyfin:branch",
+      "plane": "control",
+      "endpointIds": [
+        "service:jellyfin:control",
+        "junction:a-plus:control:service:jellyfin"
+      ],
+      "junctionIds": [
+        "junction:a-plus:control:service:jellyfin"
+      ],
+      "points": [
+        {
+          "x": 884,
+          "y": 294
+        },
+        {
+          "x": 884,
+          "y": 258
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:control:substrate",
+      "plane": "control",
+      "endpointIds": [
+        "junction:a-plus:control:west",
+        "junction:a-plus:control:east"
+      ],
+      "junctionIds": [
+        "junction:a-plus:control:west",
+        "junction:a-plus:control:fabric:gateway",
+        "junction:a-plus:control:service:qbittorrent",
+        "junction:a-plus:control:service:jellyfin",
+        "junction:a-plus:control:east",
+        "junction:a-plus:control:orchestration-approach-substrate"
+      ],
+      "points": [
+        {
+          "x": 300,
+          "y": 258
+        },
+        {
+          "x": 1176,
+          "y": 258
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:read:service:qbittorrent:branch",
+      "plane": "read",
+      "endpointIds": [
+        "service:qbittorrent:read",
+        "junction:a-plus:read:service:qbittorrent"
+      ],
+      "junctionIds": [
+        "junction:a-plus:read:service:qbittorrent"
+      ],
+      "points": [
+        {
+          "x": 416,
+          "y": 410
+        },
+        {
+          "x": 416,
+          "y": 548
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:read:service:jellyfin:branch",
+      "plane": "read",
+      "endpointIds": [
+        "service:jellyfin:read",
+        "junction:a-plus:read:service:jellyfin"
+      ],
+      "junctionIds": [
+        "junction:a-plus:read:service:jellyfin"
+      ],
+      "points": [
+        {
+          "x": 760,
+          "y": 410
+        },
+        {
+          "x": 760,
+          "y": 548
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:read:substrate",
+      "plane": "read",
+      "endpointIds": [
+        "junction:a-plus:read:west",
+        "junction:a-plus:read:east"
+      ],
+      "junctionIds": [
+        "junction:a-plus:read:west",
+        "junction:a-plus:read:service:qbittorrent",
+        "junction:a-plus:read:service:jellyfin",
+        "junction:a-plus:read:east",
+        "junction:a-plus:read:orchestration-substrate"
+      ],
+      "points": [
+        {
+          "x": 272,
+          "y": 548
+        },
+        {
+          "x": 1180,
+          "y": 548
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:write:service:qbittorrent:branch",
+      "plane": "write",
+      "endpointIds": [
+        "service:qbittorrent:write",
+        "junction:a-plus:write:service:qbittorrent"
+      ],
+      "junctionIds": [
+        "junction:a-plus:write:service:qbittorrent",
+        "via:a-plus:write:qbittorrent:read-substrate"
+      ],
+      "points": [
+        {
+          "x": 400,
+          "y": 410
+        },
+        {
+          "x": 280,
+          "y": 410
+        },
+        {
+          "x": 280,
+          "y": 574
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:write:substrate",
+      "plane": "write",
+      "endpointIds": [
+        "junction:a-plus:write:west",
+        "junction:a-plus:write:east"
+      ],
+      "junctionIds": [
+        "junction:a-plus:write:west",
+        "junction:a-plus:write:service:qbittorrent",
+        "junction:a-plus:write:east",
+        "junction:a-plus:write:orchestration-substrate"
+      ],
+      "points": [
+        {
+          "x": 260,
+          "y": 574
+        },
+        {
+          "x": 1192,
+          "y": 574
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:control:service:seerr:branch",
+      "plane": "control",
+      "endpointIds": [
+        "service:seerr:control",
+        "junction:a-plus:control:service:seerr"
+      ],
+      "junctionIds": [
+        "junction:a-plus:control:service:seerr"
+      ],
+      "points": [
+        {
+          "x": 500,
+          "y": 222
+        },
+        {
+          "x": 500,
+          "y": 222
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:control:service:sonarr:branch",
+      "plane": "control",
+      "endpointIds": [
+        "service:sonarr:control",
+        "junction:a-plus:control:service:sonarr"
+      ],
+      "junctionIds": [
+        "junction:a-plus:control:service:sonarr"
+      ],
+      "points": [
+        {
+          "x": 804,
+          "y": 222
+        },
+        {
+          "x": 804,
+          "y": 222
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:control:service:radarr:branch",
+      "plane": "control",
+      "endpointIds": [
+        "service:radarr:control",
+        "junction:a-plus:control:service:radarr"
+      ],
+      "junctionIds": [
+        "junction:a-plus:control:service:radarr"
+      ],
+      "points": [
+        {
+          "x": 1108,
+          "y": 222
+        },
+        {
+          "x": 1108,
+          "y": 222
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:control:orchestration-collector",
+      "plane": "control",
+      "endpointIds": [
+        "junction:a-plus:control:orchestration-collector-west",
+        "junction:a-plus:control:orchestration-collector-east"
+      ],
+      "junctionIds": [
+        "junction:a-plus:control:orchestration-collector-west",
+        "junction:a-plus:control:service:seerr",
+        "junction:a-plus:control:service:sonarr",
+        "junction:a-plus:control:service:radarr",
+        "junction:a-plus:control:orchestration-approach-top",
+        "junction:a-plus:control:orchestration-collector-east"
+      ],
+      "points": [
+        {
+          "x": 500,
+          "y": 222
+        },
+        {
+          "x": 1108,
+          "y": 222
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:control:orchestration-approach",
+      "plane": "control",
+      "endpointIds": [
+        "junction:a-plus:control:orchestration-approach-top",
+        "junction:a-plus:control:orchestration-approach-substrate"
+      ],
+      "junctionIds": [
+        "junction:a-plus:control:orchestration-approach-top",
+        "junction:a-plus:control:orchestration-approach-substrate"
+      ],
+      "points": [
+        {
+          "x": 560,
+          "y": 222
+        },
+        {
+          "x": 560,
+          "y": 258
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:write:service:sonarr:branch",
+      "plane": "write",
+      "endpointIds": [
+        "service:sonarr:write",
+        "junction:a-plus:write:service:sonarr"
+      ],
+      "junctionIds": [
+        "junction:a-plus:write:service:sonarr"
+      ],
+      "points": [
+        {
+          "x": 636,
+          "y": 222
+        },
+        {
+          "x": 636,
+          "y": 226
+        },
+        {
+          "x": 1196,
+          "y": 226
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:write:service:radarr:branch",
+      "plane": "write",
+      "endpointIds": [
+        "service:radarr:write",
+        "junction:a-plus:write:service:radarr"
+      ],
+      "junctionIds": [
+        "junction:a-plus:write:service:radarr"
+      ],
+      "points": [
+        {
+          "x": 978,
+          "y": 222
+        },
+        {
+          "x": 978,
+          "y": 226
+        },
+        {
+          "x": 1196,
+          "y": 226
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:write:orchestration-approach",
+      "plane": "write",
+      "endpointIds": [
+        "junction:a-plus:write:service:sonarr",
+        "junction:a-plus:write:orchestration-substrate"
+      ],
+      "junctionIds": [
+        "junction:a-plus:write:service:sonarr",
+        "junction:a-plus:write:service:radarr",
+        "junction:a-plus:write:orchestration-substrate"
+      ],
+      "points": [
+        {
+          "x": 1196,
+          "y": 226
+        },
+        {
+          "x": 1196,
+          "y": 574
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:read:service:sonarr:branch",
+      "plane": "read",
+      "endpointIds": [
+        "service:sonarr:read",
+        "junction:a-plus:read:service:sonarr"
+      ],
+      "junctionIds": [
+        "junction:a-plus:read:service:sonarr"
+      ],
+      "points": [
+        {
+          "x": 616,
+          "y": 222
+        },
+        {
+          "x": 616,
+          "y": 222
+        },
+        {
+          "x": 620,
+          "y": 222
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:read:service:radarr:branch",
+      "plane": "read",
+      "endpointIds": [
+        "service:radarr:read",
+        "junction:a-plus:read:service:radarr"
+      ],
+      "junctionIds": [
+        "junction:a-plus:read:service:radarr"
+      ],
+      "points": [
+        {
+          "x": 966,
+          "y": 222
+        },
+        {
+          "x": 966,
+          "y": 222
+        },
+        {
+          "x": 620,
+          "y": 222
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:read:orchestration-approach",
+      "plane": "read",
+      "endpointIds": [
+        "junction:a-plus:read:service:sonarr",
+        "junction:a-plus:read:orchestration-substrate"
+      ],
+      "junctionIds": [
+        "junction:a-plus:read:service:sonarr",
+        "junction:a-plus:read:service:radarr",
+        "junction:a-plus:read:orchestration-substrate",
+        "via:a-plus:read:orchestration:control-substrate"
+      ],
+      "points": [
+        {
+          "x": 620,
+          "y": 222
+        },
+        {
+          "x": 620,
+          "y": 548
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:read:pool:DataStore:branch",
+      "plane": "read",
+      "endpointIds": [
+        "pool:DataStore:read",
+        "junction:a-plus:read:pool:DataStore"
+      ],
+      "junctionIds": [
+        "junction:a-plus:read:pool:DataStore"
+      ],
+      "points": [
+        {
+          "x": 367.8,
+          "y": 664
+        },
+        {
+          "x": 367.8,
+          "y": 674
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:write:pool:DataStore:branch",
+      "plane": "write",
+      "endpointIds": [
+        "pool:DataStore:write",
+        "junction:a-plus:write:pool:DataStore"
+      ],
+      "junctionIds": [
+        "junction:a-plus:write:pool:DataStore"
+      ],
+      "points": [
+        {
+          "x": 465,
+          "y": 664
+        },
+        {
+          "x": 465,
+          "y": 664
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:read:pool:NVME:branch",
+      "plane": "read",
+      "endpointIds": [
+        "pool:NVME:read",
+        "junction:a-plus:read:pool:NVME"
+      ],
+      "junctionIds": [
+        "junction:a-plus:read:pool:NVME"
+      ],
+      "points": [
+        {
+          "x": 670.8,
+          "y": 664
+        },
+        {
+          "x": 670.8,
+          "y": 674
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:write:pool:NVME:branch",
+      "plane": "write",
+      "endpointIds": [
+        "pool:NVME:write",
+        "junction:a-plus:write:pool:NVME"
+      ],
+      "junctionIds": [
+        "junction:a-plus:write:pool:NVME"
+      ],
+      "points": [
+        {
+          "x": 768,
+          "y": 664
+        },
+        {
+          "x": 768,
+          "y": 664
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:read:pool:eSATA:branch",
+      "plane": "read",
+      "endpointIds": [
+        "pool:eSATA:read",
+        "junction:a-plus:read:pool:eSATA"
+      ],
+      "junctionIds": [
+        "junction:a-plus:read:pool:eSATA"
+      ],
+      "points": [
+        {
+          "x": 1071,
+          "y": 664
+        },
+        {
+          "x": 1071,
+          "y": 674
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:write:pool:eSATA:branch",
+      "plane": "write",
+      "endpointIds": [
+        "pool:eSATA:write",
+        "junction:a-plus:write:pool:eSATA"
+      ],
+      "junctionIds": [
+        "junction:a-plus:write:pool:eSATA"
+      ],
+      "points": [
+        {
+          "x": 973.8,
+          "y": 664
+        },
+        {
+          "x": 973.8,
+          "y": 664
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:read:storage-collector",
+      "plane": "read",
+      "endpointIds": [
+        "junction:a-plus:read:storage-collector-west",
+        "junction:a-plus:read:pool:eSATA"
+      ],
+      "junctionIds": [
+        "junction:a-plus:read:storage-collector-west",
+        "junction:a-plus:read:pool:DataStore",
+        "junction:a-plus:read:pool:NVME",
+        "junction:a-plus:read:pool:eSATA"
+      ],
+      "points": [
+        {
+          "x": 257,
+          "y": 674
+        },
+        {
+          "x": 1071,
+          "y": 674
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:write:storage-collector",
+      "plane": "write",
+      "endpointIds": [
+        "junction:a-plus:write:pool:DataStore",
+        "junction:a-plus:write:storage-collector-east"
+      ],
+      "junctionIds": [
+        "junction:a-plus:write:pool:DataStore",
+        "junction:a-plus:write:pool:NVME",
+        "junction:a-plus:write:pool:eSATA",
+        "junction:a-plus:write:storage-collector-east"
+      ],
+      "points": [
+        {
+          "x": 465,
+          "y": 664
+        },
+        {
+          "x": 1192,
+          "y": 664
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:read:storage-approach",
+      "plane": "read",
+      "endpointIds": [
+        "junction:a-plus:read:storage-collector-west",
+        "junction:a-plus:read:west"
+      ],
+      "junctionIds": [
+        "junction:a-plus:read:storage-collector-west",
+        "junction:a-plus:read:west"
+      ],
+      "points": [
+        {
+          "x": 257,
+          "y": 674
+        },
+        {
+          "x": 257,
+          "y": 548
+        },
+        {
+          "x": 272,
+          "y": 548
+        }
+      ]
+    },
+    {
+      "id": "segment:a-plus:write:storage-approach",
+      "plane": "write",
+      "endpointIds": [
+        "junction:a-plus:write:storage-collector-east",
+        "junction:a-plus:write:east"
+      ],
+      "junctionIds": [
+        "junction:a-plus:write:storage-collector-east",
+        "junction:a-plus:write:east"
+      ],
+      "points": [
+        {
+          "x": 1192,
+          "y": 664
+        },
+        {
+          "x": 1192,
+          "y": 574
+        }
+      ]
+    }
+  ],
+  "primaryStorageCorridors": [
+    {
+      "nodeId": "service:qbittorrent",
+      "bounds": {
+        "x": 388,
+        "y": 410,
+        "width": 154,
+        "height": 164
+      }
+    },
+    {
+      "nodeId": "service:jellyfin",
+      "bounds": {
+        "x": 732,
+        "y": 410,
+        "width": 150,
+        "height": 164
+      }
+    }
+  ]
+}
