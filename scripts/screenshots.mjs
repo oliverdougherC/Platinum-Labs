@@ -150,6 +150,12 @@ const KINETIC_SHOTS = [
     action: "request-hover",
     crop: "observatory-controls",
   },
+  {
+    name: "34-v41-background-copy-stale-1920x1080",
+    scenario: "background-copy-stale",
+    w: 1920,
+    h: 1080,
+  },
 ];
 
 /**

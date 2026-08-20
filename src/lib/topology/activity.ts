@@ -250,22 +250,51 @@ interface NamedPoolFlowCandidate {
   bytesPerSecond: number;
 }
 
-function uniqueNamedPoolCandidate(
+// A pool direction is attributable only when the leading real ZFS pool owns
+// at least four-fifths of all eligible bytes and runs at least 4× the next
+// pool. The share protects against a crowd of smaller contributors; the ratio
+// prevents one genuinely competitive runner-up from being hidden in the sum.
+// The deadband remains only the minimum material rate for the leader.
+const POOL_DIRECTION_DOMINANCE_SHARE = 0.8;
+const POOL_DIRECTION_RUNNER_UP_RATIO = 4;
+
+function dominantNamedPoolCandidate(
   snapshot: DashboardSnapshot,
   field: "readBps" | "writeBps",
   excludedPools: ReadonlySet<string>,
 ): NamedPoolFlowCandidate | null {
   const disk = snapshot.telemetry.disk;
-  if (disk.status !== "available" || !disk.value) return null;
-  const live = disk.value.pools.filter((pool) => {
-    if (excludedPools.has(pool.pool)) return false;
-    const value = rate(pool[field]);
-    return value !== null && value >= FLOW_DEADBAND_BPS;
-  });
-  if (live.length !== 1) return null;
+  if ((disk.status !== "available" && disk.status !== "stale") || !disk.value) {
+    return null;
+  }
+  const realPools = new Set(snapshot.zfs.pools.map((pool) => pool.name));
+  const eligible = disk.value.pools
+    .filter(
+      (pool) =>
+        pool.pool !== "other" &&
+        realPools.has(pool.pool) &&
+        !excludedPools.has(pool.pool),
+    )
+    .map((pool) => ({ pool: pool.pool, bytesPerSecond: rate(pool[field]) ?? 0 }))
+    .sort((a, b) => b.bytesPerSecond - a.bytesPerSecond);
+  const top = eligible[0];
+  if (!top || top.bytesPerSecond < FLOW_DEADBAND_BPS) return null;
+
+  const total = eligible.reduce(
+    (sum, candidate) => sum + candidate.bytesPerSecond,
+    0,
+  );
+  const runnerUp = eligible[1]?.bytesPerSecond ?? 0;
+  const hasStrongShare =
+    top.bytesPerSecond / total >= POOL_DIRECTION_DOMINANCE_SHARE;
+  const clearsRunnerUp =
+    runnerUp === 0 ||
+    top.bytesPerSecond / runnerUp >= POOL_DIRECTION_RUNNER_UP_RATIO;
+  if (!hasStrongShare || !clearsRunnerUp) return null;
+
   return {
-    pool: live[0]!.pool,
-    bytesPerSecond: live[0]![field],
+    pool: top.pool,
+    bytesPerSecond: top.bytesPerSecond,
   };
 }
 
@@ -746,26 +775,43 @@ export function deriveFlows(
 
   // --- generic background storage transfer ---------------------------------
   // A named storage↔storage flow with no explicit controller is only credible
-  // when live disk telemetry shows EXACTLY one remaining named reader pool and
-  // one remaining named writer pool over the deadband. Explicit Arr imports
-  // own their endpoints first; removing those pools prevents a corroborated
-  // import from duplicating itself as a generic copy while still allowing a
-  // separate background pair elsewhere in the topology.
-  const backgroundReader = uniqueNamedPoolCandidate(
+  // when one remaining real ZFS pool overwhelmingly dominates reads and a
+  // different one overwhelmingly dominates writes. Directions already claimed
+  // by download, playback, or explicit-import semantics are removed first so
+  // known activity cannot be reinterpreted as an unrelated copy. A stale disk
+  // domain retains the last supportable pair as a frozen observation.
+  const resolvedPlayback = resolveJellyfinPlayback(snapshot, now);
+  const backgroundReadExcludedPools = new Set(explicitImportPools);
+  const backgroundWriteExcludedPools = new Set(explicitImportPools);
+  if (qb.usable && downloadStorage.kind === "pool") {
+    if (acq.rollup.downloading > 0) {
+      backgroundWriteExcludedPools.add(downloadStorage.name);
+    }
+    if ((acq.rollup.seeding ?? 0) > 0) {
+      backgroundReadExcludedPools.add(downloadStorage.name);
+    }
+  }
+  if (resolvedPlayback && mediaStorage.kind === "pool") {
+    backgroundReadExcludedPools.add(mediaStorage.name);
+  }
+
+  const backgroundReader = dominantNamedPoolCandidate(
     snapshot,
     "readBps",
-    explicitImportPools,
+    backgroundReadExcludedPools,
   );
-  const backgroundWriter = uniqueNamedPoolCandidate(
+  const backgroundWriter = dominantNamedPoolCandidate(
     snapshot,
     "writeBps",
-    explicitImportPools,
+    backgroundWriteExcludedPools,
   );
   if (
     backgroundReader &&
     backgroundWriter &&
     backgroundReader.pool !== backgroundWriter.pool
   ) {
+    const backgroundFreshness: FlowFreshness =
+      snapshot.telemetry.disk.status === "stale" ? "stale" : "live";
     const copyRate = Math.min(
       backgroundReader.bytesPerSecond,
       backgroundWriter.bytesPerSecond,
@@ -778,10 +824,10 @@ export function deriveFlows(
         {
           plane: "data",
           evidence: "derived",
-          freshness: "live",
+          freshness: backgroundFreshness,
           channels: [{ direction: "forward", role: "write", bytesPerSecond: copyRate }],
-          rate: transferRateAggregate([copyRate], "derived", "live"),
-          provenance: `derived from corroborating ${backgroundReader.pool} source reads and ${backgroundWriter.pool} destination writes; no importing controller attributed`,
+          rate: transferRateAggregate([copyRate], "derived", backgroundFreshness),
+          provenance: `derived from dominant ${backgroundReader.pool} source reads and ${backgroundWriter.pool} destination writes; no importing controller attributed`,
           label: "background storage transfer",
           updatedAt: snapshot.telemetry.disk.updatedAt,
         },
@@ -797,7 +843,6 @@ export function deriveFlows(
   // positive mapped-container egress in that state remains visible as
   // measured container activity on the container body, but it is not
   // attributed to playback without corroborating playing sessions.
-  const resolvedPlayback = resolveJellyfinPlayback(snapshot, now);
   if (resolvedPlayback) {
     const playingSessions = resolvedPlayback.playing;
     const { egress, playback, egressFreshness, playbackFreshness } = resolvedPlayback;

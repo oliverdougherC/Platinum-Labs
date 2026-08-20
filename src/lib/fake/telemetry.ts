@@ -82,6 +82,8 @@ interface Profile {
   netTxBps: number;
   /** Per-pool read/write rates in bytes/sec. */
   poolIo: Record<string, { read: number; write: number }>;
+  /** Preserve an evidence replay exactly instead of applying demo-time wobble. */
+  fixedPoolIo?: boolean;
   /**
    * Mapped Jellyfin-container rate overrides. `null` is meaningful: the
    * container's counters were NOT sampled (unknown, never zero) — the
@@ -394,9 +396,9 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
       DataStore: { read: 1_200_000, write: 2_800_000 },
     },
   },
-  // Sanitized replay of the live p910 observation captured for V4.1: one
-  // materially active reader (DataStore) and one different writer (eSATA).
-  // The paired rate is derived downstream and must never exceed either side.
+  // Exact sanitized normalized p910 observation captured for V4.1, including
+  // incidental real-pool traffic and the synthetic unpooled-device bucket.
+  // Keeping this fixed makes the review screenshot an honest evidence replay.
   "background-copy": {
     cpu: 0.1,
     hotCores: 4,
@@ -404,10 +406,12 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
     gpuUtil: 0,
     netRxBps: 180_000,
     netTxBps: 120_000,
+    fixedPoolIo: true,
     poolIo: {
-      DataStore: { read: 53_800_000, write: 0 },
-      eSATA: { read: 0, write: 59_600_000 },
-      NVME: { read: 0, write: 8_000 },
+      DataStore: { read: 53_833_435, write: 0 },
+      eSATA: { read: 0, write: 59_639_172 },
+      NVME: { read: 2_047, write: 888_388 },
+      other: { read: 2_331_506, write: 161_711 },
     },
   },
   "background-copy-reverse": {
@@ -682,11 +686,19 @@ export function makeFakeTelemetry(
       {
         readBps: Object.values(profile.poolIo).reduce((a, io) => a + io.read, 0),
         writeBps: Object.values(profile.poolIo).reduce((a, io) => a + io.write, 0),
-        pools: Object.entries(profile.poolIo).map(([pool, io], i) => ({
-          pool,
-          readBps: io.read * (0.7 + 0.6 * wave(now, 17_000, 17 + i)),
-          writeBps: io.write * (0.7 + 0.6 * wave(now, 19_000, 23 + i)),
-        })),
+        pools: Object.entries(profile.poolIo).map(([pool, io], i) => {
+          const readMultiplier = profile.fixedPoolIo
+            ? 1
+            : 0.7 + 0.6 * wave(now, 17_000, 17 + i);
+          const writeMultiplier = profile.fixedPoolIo
+            ? 1
+            : 0.7 + 0.6 * wave(now, 19_000, 23 + i);
+          return {
+            pool,
+            readBps: io.read * readMultiplier,
+            writeBps: io.write * writeMultiplier,
+          };
+        }),
       },
       now,
     ),

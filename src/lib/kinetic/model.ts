@@ -284,8 +284,8 @@ function buildInstrument(snapshot: DashboardSnapshot, scene: SceneModel): Instru
       primary:
         memory.value?.installedBytes !== null && memory.value?.installedBytes !== undefined
           ? formatBytes(memory.value.installedBytes, { system: "binary", digits: 0 })
-          : scene.core.memUsedBytes !== null
-            ? formatBytes(scene.core.memUsedBytes)
+          : scene.core.memTotalBytes !== null
+            ? formatBytes(scene.core.memTotalBytes, { system: "binary", digits: 0 })
             : null,
       secondary:
         memory.value?.installedBytes !== null &&
@@ -293,7 +293,7 @@ function buildInstrument(snapshot: DashboardSnapshot, scene: SceneModel): Instru
         scene.core.memTotalBytes !== null
           ? `usable ${formatBytes(scene.core.memTotalBytes, { system: "binary", digits: 0 })}`
           : scene.core.memTotalBytes !== null
-            ? `of ${formatBytes(scene.core.memTotalBytes)}`
+            ? "usable memory"
             : null,
     },
     gpu: {

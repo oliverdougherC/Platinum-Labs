@@ -285,7 +285,7 @@ function flowPath(flow: KineticFlow, from: Pt, to: Pt, L: KineticStage): Sampled
       b,
     );
   }
-  if (flow.kind === "import-copy") {
+  if (flow.kind === "import-copy" || flow.kind === "background-transfer") {
     const lift = L.h * 0.075;
     return samplePath(
       from,
@@ -449,14 +449,37 @@ export function buildFlowPaths(
     // shoulder-to-shoulder (clear of the download drop), the download drop
     // lands on the pool's near shoulder, playback leaves from the shoulder
     // facing Jellyfin.
-    const fromAlong =
-      flow.kind === "import-copy" ? 0.74 : flow.kind === "playback" ? 0.72 : 0.5;
-    const toAlong =
-      flow.kind === "import-copy"
+    const poolBridge =
+      (flow.kind === "import-copy" || flow.kind === "background-transfer") &&
+      flow.from.kind === "pool" &&
+      flow.to.kind === "pool";
+    const sourcePoolName = flow.from.kind === "pool" ? flow.from.name : null;
+    const destinationPoolName = flow.to.kind === "pool" ? flow.to.name : null;
+    const sourceStratum = sourcePoolName
+      ? stage.strata.find((stratum) => stratum.name === sourcePoolName)
+      : undefined;
+    const destinationStratum = destinationPoolName
+      ? stage.strata.find((stratum) => stratum.name === destinationPoolName)
+      : undefined;
+    const sourceLeftOfDestination =
+      sourceStratum && destinationStratum
+        ? sourceStratum.x + sourceStratum.w / 2 <
+          destinationStratum.x + destinationStratum.w / 2
+        : true;
+    const fromAlong = poolBridge
+      ? sourceLeftOfDestination
+        ? 0.74
+        : 0.26
+      : flow.kind === "playback"
+        ? 0.72
+        : 0.5;
+    const toAlong = poolBridge
+      ? sourceLeftOfDestination
         ? 0.26
-        : flow.kind === "storage-transfer"
-          ? 0.62
-          : 0.5;
+        : 0.74
+      : flow.kind === "storage-transfer"
+        ? 0.62
+        : 0.5;
     const from = nodePoint(flow.from, stage, fromAlong);
     const to = nodePoint(flow.to, stage, toAlong);
     return {

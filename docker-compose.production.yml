@@ -67,9 +67,9 @@ services:
     volumes:
       # Read-only host procfs for CPU/memory/disk/network counters (PLA-265).
       - /proc:/host/proc:ro
-      # Read-only host CPU-topology sysfs subtree (sockets/cores/threads).
-      # Deliberately NOT all of /sys: the collector only reads
-      # devices/system/cpu, so nothing else is exposed to the container.
+      # Read-only host CPU-topology and memory-block sysfs subtrees.
+      # Deliberately NOT all of /sys: the collector only reads the two narrow
+      # devices/system paths mounted below.
       - /sys/devices/system/cpu:/host/sys/devices/system/cpu:ro
       # Read-only host memory-block sysfs subtree for installed RAM capacity.
       - /sys/devices/system/memory:/host/sys/devices/system/memory:ro
