@@ -18,7 +18,10 @@ import {
   type StorageBodyModel,
 } from "@/lib/scene/model";
 import {
+  flowNetworkBoundary,
+  resolveJellyfinPlayback,
   type FlowKind,
+  type FlowNetworkBoundary,
   type FlowObservation,
   primaryRate,
 } from "@/lib/topology/activity";
@@ -169,6 +172,8 @@ export interface KineticFlow {
   /** Headline rate (max known channel), null for control/state-only. */
   rateBps: number | null;
   channels: KineticFlowChannel[];
+  /** Typed network-boundary truth for flows that touch an external edge. */
+  boundary: FlowNetworkBoundary;
   label: string;
   provenance: string;
 }
@@ -361,11 +366,21 @@ function qbAnchor(snapshot: DashboardSnapshot, scene: SceneModel): AnchorModel {
   };
 }
 
-function jellyfinAnchor(snapshot: DashboardSnapshot, scene: SceneModel): AnchorModel {
+function jellyfinAnchor(
+  snapshot: DashboardSnapshot,
+  scene: SceneModel,
+  now: number,
+): AnchorModel {
   const body = scene.services.find((s) => s.id === "jellyfin");
   const sessions = snapshot.jellyfin.sessions;
-  const playing = sessions.filter((s) => !s.paused);
-  const transcoding = playing.filter((s) => s.method === "transcode").length;
+  // ONE canonical rate resolution shared with the playback/egress flows
+  // (V4 rate-truth blocker): the anchor's throughput line and glow consume
+  // the same headline the kinetic egress ribbon carries, so the wordmark,
+  // ribbon, inspector and accessibility text can never disagree. The anchor
+  // never re-derives a rate from raw sessions.
+  const resolved = resolveJellyfinPlayback(snapshot, now);
+  const playing = resolved?.playing ?? sessions.filter((s) => !s.paused);
+  const transcoding = resolved?.transcodingCount ?? 0;
   const paused = sessions.length - playing.length;
   const parts: string[] = [];
   if (playing.length > 0) {
@@ -373,14 +388,15 @@ function jellyfinAnchor(snapshot: DashboardSnapshot, scene: SceneModel): AnchorM
     if (transcoding > 0) parts.push(`${transcoding} transcoding`);
   }
   if (paused > 0) parts.push(`${paused} paused`);
-  // Real session rates only: sum sessions with a known rate; if any playing
-  // session is unknown the sum is a lower bound and is prefixed accordingly.
-  const known = playing.filter((s) => s.rate !== null);
-  const rateSum = known.reduce((acc, s) => acc + (s.rate?.bytesPerSecond ?? 0), 0);
+  const headlineRate = resolved?.egress.headline ?? null;
+  const knownBps = headlineRate?.knownBytesPerSecond ?? null;
   let rateLine: string | null = null;
-  if (playing.length > 0 && known.length > 0) {
-    const prefix = known.length < playing.length ? "≈ " : "";
-    rateLine = `${prefix}${arrow("up", rateSum)}`;
+  if (headlineRate && knownBps !== null) {
+    // Partial coverage is a lower bound and estimated evidence is an estimate:
+    // both carry the ≈ convention. Unknown stays unknown — no line, no zero.
+    const approximate =
+      headlineRate.coverage === "partial" || headlineRate.evidence === "estimated";
+    rateLine = `${approximate ? "≈ " : ""}${arrow("up", knownBps)}`;
   }
   const active = body?.active ?? false;
   return {
@@ -390,7 +406,10 @@ function jellyfinAnchor(snapshot: DashboardSnapshot, scene: SceneModel): AnchorM
     active,
     headline: parts.length > 0 ? parts.join(" · ") : null,
     rateLine,
-    glow: active ? clamp01(0.35 + rateIntensity(rateSum) * 0.65) : 0,
+    // Glow energy from the SAME canonical headline: an unknown rate keeps the
+    // active baseline (activity exists, magnitude unknown) — never zero-rate
+    // darkness while a session is genuinely playing.
+    glow: active ? clamp01(0.35 + rateIntensity(knownBps ?? 0) * 0.65) : 0,
     ...serviceContainer(snapshot, [snapshot.jellyfinContainer?.toLowerCase() ?? "jellyfin"]),
   };
 }
@@ -591,6 +610,7 @@ function buildFlows(scene: SceneModel): KineticFlow[] {
         direction: c.direction,
         bytesPerSecond: c.bytesPerSecond,
       })),
+      boundary: flowNetworkBoundary(flow),
       label: flow.label,
       provenance: flow.provenance,
     });
@@ -634,15 +654,42 @@ export function buildKineticScene(
   const clientsActive = flows.some(
     (f) => f.treatment === "particles" && f.to.kind === "edge" && f.to.id === "clients",
   );
+  // Typed network-boundary truth (V3 → V4 graduation): the client edge names
+  // ONLY boundaries that a client-terminating flow is actually known to
+  // cross. Without typed evidence the label is the neutral CLIENTS — traffic
+  // existing never implies WAN, and LAN/WAN/TAILSCALE never light together
+  // on speculation. Exact Docker-network identity stays in the model,
+  // invisible in overview.
+  const BOUNDARY_LABELS: Partial<Record<FlowNetworkBoundary, string>> = {
+    lan: "LAN",
+    wan: "WAN",
+    overlay: "TAILSCALE",
+  };
+  const clientLabels = [
+    ...new Set(
+      flows
+        .filter((f) => f.to.kind === "edge" && f.to.id === "clients")
+        .map((f) => BOUNDARY_LABELS[f.boundary])
+        .filter((label): label is string => label !== undefined),
+    ),
+  ];
   return {
     demo: snapshot.mode === "fake",
     hostLabel: scene.core.hostname,
     instrument: buildInstrument(snapshot, scene),
-    anchors: [qbAnchor(snapshot, scene), jellyfinAnchor(snapshot, scene)],
+    anchors: [
+      qbAnchor(snapshot, scene),
+      jellyfinAnchor(snapshot, scene, options.now),
+    ],
     orchestration: orchestration(scene),
     edges: [
       { id: "wan", labels: ["WAN"], side: "left", active: wanActive },
-      { id: "clients", labels: ["LAN", "WAN", "TAILSCALE"], side: "right", active: clientsActive },
+      {
+        id: "clients",
+        labels: clientLabels.length > 0 ? clientLabels : ["CLIENTS"],
+        side: "right",
+        active: clientsActive,
+      },
     ],
     field: buildField(snapshot, scene),
     fieldTotal: scene.docker.total,

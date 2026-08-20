@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
 import { FAKE_CPU_TOPOLOGY } from "@/lib/fake/telemetry";
+import { resolveJellyfinPlayback } from "@/lib/topology/activity";
+import type { DashboardSnapshot } from "@/lib/types";
 import {
   buildKineticScene,
   cpuTopologyLabel,
   physicalCoreCells,
   rateIntensity,
+  type KineticScene,
 } from "./model";
 import { buildKineticLayout } from "./layout";
 import { sceneAnimates } from "./render";
@@ -18,6 +21,39 @@ function scene(scenario: Parameters<typeof makeFakeSnapshot>[0]) {
     seerrConfigured: true,
   });
 }
+
+function sceneOf(snapshot: DashboardSnapshot): KineticScene {
+  return buildKineticScene(snapshot, { now: NOW, seerrConfigured: true });
+}
+
+/** Deep-cloned fake snapshot safe to mutate for targeted evidence cases. */
+function mutableSnapshot(
+  scenario: Parameters<typeof makeFakeSnapshot>[0],
+): DashboardSnapshot {
+  return structuredClone(makeFakeSnapshot(scenario, NOW));
+}
+
+function setJellyfinContainerEgress(
+  snapshot: DashboardSnapshot,
+  netTxBps: number | null,
+): void {
+  const container = snapshot.telemetry.docker.value?.containers.find(
+    (c) => c.name === snapshot.jellyfinContainer,
+  );
+  if (!container) throw new Error("fixture has no mapped Jellyfin container");
+  container.netTxBps = netTxBps;
+}
+
+function egressFlow(s: KineticScene) {
+  const flow = s.flows.find((f) => f.kind === "egress");
+  if (!flow) throw new Error("no egress flow in scene");
+  return flow;
+}
+
+function jellyfin(s: KineticScene) {
+  return s.anchors.find((a) => a.id === "jellyfin")!;
+}
+
 
 describe("buildKineticScene", () => {
   it("keeps a quiet host quiet: no flows, no anchor glow, nothing animates", () => {
@@ -121,6 +157,142 @@ describe("buildKineticScene", () => {
     expect(media.name).toBe("DataStore");
     expect(media.capacityFraction).toBeGreaterThan(0);
     expect(media.capacityFraction).toBeLessThanOrEqual(1);
+  });
+});
+
+/**
+ * V4 rate-truth blocker: the Jellyfin anchor, egress ribbon, glow energy and
+ * inspector must all derive from ONE canonical resolved playback rate
+ * (`resolveJellyfinPlayback`). These cases pin the full V2/V3 precedence:
+ * measured egress wins, reported session output is used when measurement is
+ * absent, estimates stay estimates, measured zero never erases contradictory
+ * session evidence, partial stays partial, unknown stays unknown.
+ */
+describe("canonical Jellyfin rate agreement (anchor == ribbon)", () => {
+  it("transcode: reported session output carries the headline when no container egress is measured", () => {
+    const snapshot = mutableSnapshot("transcode");
+    setJellyfinContainerEgress(snapshot, null);
+    const s = sceneOf(snapshot);
+    const flow = egressFlow(s);
+    expect(flow.rateBps).toBe(1_500_000);
+    const anchor = jellyfin(s);
+    expect(anchor.rateLine).toBe("↑ 1.5 MB/s");
+    expect(anchor.glow).toBeGreaterThan(0.35);
+    const resolved = resolveJellyfinPlayback(snapshot, NOW)!;
+    expect(resolved.egress.headline.basis).toBe("jellyfin-session-output");
+    expect(resolved.egress.headline.knownBytesPerSecond).toBe(flow.rateBps);
+  });
+
+  it("measured fallback: a missing session bitrate uses the mapped container's measured egress everywhere", () => {
+    const snapshot = mutableSnapshot("transcode-fallback");
+    // The genuinely captured case: Jellyfin omits every session bitrate field.
+    snapshot.jellyfin.sessions[0]!.rate = null;
+    setJellyfinContainerEgress(snapshot, 12_000_000);
+    const s = sceneOf(snapshot);
+    const flow = egressFlow(s);
+    expect(flow.rateBps).toBe(12_000_000);
+    expect(flow.treatment).toBe("particles");
+    const anchor = jellyfin(s);
+    // The V2.1 regression this guards: the ribbon knew the measured rate while
+    // the anchor showed nothing and its glow read as zero.
+    expect(anchor.rateLine).toBe("↑ 12.0 MB/s");
+    expect(anchor.glow).toBeGreaterThan(0.35);
+    const resolved = resolveJellyfinPlayback(snapshot, NOW)!;
+    expect(resolved.egress.headline.basis).toBe("container-egress");
+    expect(resolved.egress.headline.evidence).toBe("measured");
+  });
+
+  it("direct play: a source-media estimate stays explicitly estimated (≈)", () => {
+    const snapshot = mutableSnapshot("direct-stream");
+    setJellyfinContainerEgress(snapshot, null);
+    const s = sceneOf(snapshot);
+    const flow = egressFlow(s);
+    expect(flow.rateBps).toBe(4_750_000);
+    const anchor = jellyfin(s);
+    expect(anchor.rateLine).toBe("≈ ↑ 4.8 MB/s");
+    const resolved = resolveJellyfinPlayback(snapshot, NOW)!;
+    expect(resolved.egress.headline.evidence).toBe("estimated");
+    expect(resolved.egress.headline.basis).toBe("source-media");
+  });
+
+  it("mixed sessions: partial coverage reads as a ≈ lower bound, never padded", () => {
+    const snapshot = mutableSnapshot("mixed-session");
+    setJellyfinContainerEgress(snapshot, null);
+    const s = sceneOf(snapshot);
+    const flow = egressFlow(s);
+    const resolved = resolveJellyfinPlayback(snapshot, NOW)!;
+    expect(resolved.egress.headline.coverage).toBe("partial");
+    expect(resolved.egress.headline.unknownContributors).toBe(1);
+    expect(flow.rateBps).toBe(resolved.egress.headline.knownBytesPerSecond);
+    const anchor = jellyfin(s);
+    expect(anchor.rateLine).toMatch(/^≈ ↑ /);
+  });
+
+  it("playing with rate genuinely unknown: no line, no zero, baseline glow, state-only ribbon", () => {
+    const s = scene("transcode-unknown-rate");
+    const flow = egressFlow(s);
+    expect(flow.treatment).toBe("state-only");
+    expect(flow.rateBps).toBeNull();
+    const anchor = jellyfin(s);
+    expect(anchor.headline).toContain("1 stream");
+    expect(anchor.rateLine).toBeNull();
+    expect(anchor.active).toBe(true);
+    // Unknown ≠ zero: the glow keeps the active baseline instead of dimming
+    // as if a zero rate had been measured.
+    expect(anchor.glow).toBeCloseTo(0.35, 5);
+  });
+
+  it("measured container zero never erases a positive session rate; the zero is retained as supporting evidence", () => {
+    const snapshot = mutableSnapshot("transcode");
+    setJellyfinContainerEgress(snapshot, 0);
+    const s = sceneOf(snapshot);
+    const flow = egressFlow(s);
+    expect(flow.rateBps).toBe(1_500_000);
+    const anchor = jellyfin(s);
+    expect(anchor.rateLine).toBe("↑ 1.5 MB/s");
+    const resolved = resolveJellyfinPlayback(snapshot, NOW)!;
+    expect(resolved.egress.headline.basis).toBe("jellyfin-session-output");
+    expect(resolved.egress.supporting).toHaveLength(1);
+    expect(resolved.egress.supporting[0]!.knownBytesPerSecond).toBe(0);
+    expect(resolved.egress.supporting[0]!.basis).toBe("container-egress");
+  });
+
+  it("stale playback evidence freezes: stale ribbon treatment, no anchor glow, last-known line retained", () => {
+    const snapshot = mutableSnapshot("transcode");
+    const health = snapshot.health.find((h) => h.id === "jellyfin")!;
+    health.lastSuccessAt = NOW - 10 * 60_000;
+    const s = sceneOf(snapshot);
+    const flows = s.flows.filter((f) => f.kind === "egress" || f.kind === "playback");
+    expect(flows.length).toBeGreaterThan(0);
+    for (const flow of flows) expect(flow.treatment).toBe("stale");
+    const anchor = jellyfin(s);
+    // Frozen, not erased: the last-known line stays readable while nothing
+    // animates and the glow releases (stale is not live activity).
+    expect(anchor.rateLine).not.toBeNull();
+    expect(anchor.active).toBe(false);
+    expect(anchor.glow).toBe(0);
+    const resolved = resolveJellyfinPlayback(snapshot, NOW)!;
+    expect(resolved.egressFreshness).toBe("stale");
+  });
+});
+
+describe("network boundary truth", () => {
+  it("labels the client edge neutrally when the egress boundary is unknown", () => {
+    for (const scenario of ["idle", "transcode", "direct-play", "active"] as const) {
+      const s = scene(scenario);
+      const clients = s.edges.find((e) => e.id === "clients")!;
+      expect(clients.labels).toEqual(["CLIENTS"]);
+    }
+  });
+
+  it("keeps the WAN edge a WAN claim only for the protocol-justified transfer", () => {
+    const s = scene("downloads");
+    const wan = s.flows.find((f) => f.kind === "wan-transfer")!;
+    expect(wan.boundary).toBe("wan");
+    const egressBoundaries = s.flows
+      .filter((f) => f.to.kind === "edge" && f.to.id === "clients")
+      .map((f) => f.boundary);
+    for (const b of egressBoundaries) expect(b).toBe("unknown");
   });
 });
 

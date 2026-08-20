@@ -364,6 +364,114 @@ export function pickHeadlineRate(
   return { headline: container ?? session, supporting: [] };
 }
 
+/**
+ * THE canonical resolved Jellyfin playback-rate observation (V4 rate-truth
+ * blocker): every consumer — the playback and egress flows, the Jellyfin
+ * wordmark anchor and its glow energy, ribbons, inspectors, and accessibility
+ * text — derives from this single resolution. No renderer may re-derive a
+ * Jellyfin rate from raw sessions; that is how the V2.1 measured-fallback
+ * regression happened.
+ */
+export interface ResolvedJellyfinPlayback {
+  /** Actively playing sessions (paused sessions justify nothing). */
+  playing: JellyfinSession[];
+  pausedCount: number;
+  transcodingCount: number;
+  /** Jellyfin → network leg: headline + retained supporting evidence. */
+  egress: {
+    headline: AggregateRateObservation;
+    supporting: AggregateRateObservation[];
+  };
+  /** storage → Jellyfin leg (storage-attributed): headline + supporting. */
+  playback: {
+    headline: AggregateRateObservation;
+    supporting: AggregateRateObservation[];
+  };
+  egressFreshness: FlowFreshness;
+  playbackFreshness: FlowFreshness;
+  /** Connector-level freshness/updatedAt of the Jellyfin source itself. */
+  connectorFreshness: FlowFreshness;
+  connectorUpdatedAt: number | null;
+}
+
+/**
+ * Resolve the canonical Jellyfin playback rates. Returns null when the
+ * Jellyfin connector cannot justify observations (unavailable/unconfigured)
+ * or when nothing is actively playing — absence of evidence, never zero.
+ */
+export function resolveJellyfinPlayback(
+  snapshot: DashboardSnapshot,
+  now: number,
+): ResolvedJellyfinPlayback | null {
+  const jellyfin = sourceState(snapshot, "jellyfin", now);
+  if (!jellyfin.usable) return null;
+  const sessions = snapshot.jellyfin.sessions;
+  const playing = sessions.filter((s) => !s.paused);
+  if (playing.length === 0) return null;
+  const sessionAggregate = sessionRateAggregate(playing, jellyfin.freshness);
+  const containerEgress = containerRate(snapshot, "netTxBps");
+  const containerReads = containerRate(snapshot, "blockReadBps");
+  const egress = pickHeadlineRate(containerEgress, sessionAggregate);
+  const playback = pickHeadlineRate(
+    containerReads,
+    storageAttribution(sessionAggregate),
+  );
+  const egressFreshness: FlowFreshness =
+    jellyfin.freshness === "stale" || egress.headline.freshness === "stale"
+      ? "stale"
+      : "live";
+  const playbackFreshness: FlowFreshness =
+    jellyfin.freshness === "stale" || playback.headline.freshness === "stale"
+      ? "stale"
+      : "live";
+  return {
+    playing,
+    pausedCount: sessions.length - playing.length,
+    transcodingCount: playing.filter((s) => s.method === "transcode").length,
+    egress: {
+      headline: { ...egress.headline, freshness: egressFreshness },
+      supporting: egress.supporting,
+    },
+    playback: {
+      headline: { ...playback.headline, freshness: playbackFreshness },
+      supporting: playback.supporting,
+    },
+    egressFreshness,
+    playbackFreshness,
+    connectorFreshness: jellyfin.freshness,
+    connectorUpdatedAt: jellyfin.updatedAt,
+  };
+}
+
+/**
+ * The network boundary a flow's external endpoint is KNOWN to cross.
+ * qBittorrent's WAN transfer is a WAN claim by protocol semantics; a playback
+ * egress without typed boundary evidence is `unknown` — the renderer must use
+ * a neutral client treatment, never imply LAN/WAN/overlay simultaneously.
+ * Declared overrides (typed upstream evidence) always win.
+ */
+export type FlowNetworkBoundary =
+  | "wan"
+  | "lan"
+  | "overlay"
+  | "docker-internal"
+  | "host-local"
+  | "unknown";
+
+export function flowNetworkBoundary(
+  flow: FlowObservation,
+  overrides?: Readonly<Record<string, FlowNetworkBoundary>>,
+): FlowNetworkBoundary {
+  const declared = overrides?.[flow.id];
+  if (declared) return declared;
+  if (flow.kind === "wan-transfer") return "wan";
+  if (flow.from.kind === "network" || flow.to.kind === "network") return "unknown";
+  if (flow.plane === "control" && flow.from.kind === "service" && flow.to.kind === "service") {
+    return "docker-internal";
+  }
+  return "host-local";
+}
+
 /** Derive every observable flow from the snapshot. Idle input → empty array. */
 export function deriveFlows(
   snapshot: DashboardSnapshot,
@@ -374,7 +482,6 @@ export function deriveFlows(
   const qb = sourceState(snapshot, "qbittorrent", now);
   const sonarr = sourceState(snapshot, "sonarr", now);
   const radarr = sourceState(snapshot, "radarr", now);
-  const jellyfin = sourceState(snapshot, "jellyfin", now);
   const mediaStorage = mediaStorageEndpoint(snapshot);
   const downloadStorage = downloadStorageEndpoint(snapshot);
 
@@ -557,28 +664,13 @@ export function deriveFlows(
   // positive mapped-container egress in that state remains visible as
   // measured container activity on the container body, but it is not
   // attributed to playback without corroborating playing sessions.
-  const sessions = snapshot.jellyfin.sessions;
-  const playingSessions = sessions.filter((s) => !s.paused);
-  if (jellyfin.usable && playingSessions.length > 0) {
-    const sessionAggregate = sessionRateAggregate(playingSessions, jellyfin.freshness);
-    const containerEgress = containerRate(snapshot, "netTxBps");
-    const containerReads = containerRate(snapshot, "blockReadBps");
-    const egress = pickHeadlineRate(containerEgress, sessionAggregate);
-    const playback = pickHeadlineRate(
-      containerReads,
-      storageAttribution(sessionAggregate),
-    );
+  const resolvedPlayback = resolveJellyfinPlayback(snapshot, now);
+  if (resolvedPlayback) {
+    const playingSessions = resolvedPlayback.playing;
+    const { egress, playback, egressFreshness, playbackFreshness } = resolvedPlayback;
     const egressRate = egress.headline;
     const playbackRate = playback.headline;
-    const egressFreshness: FlowFreshness =
-      jellyfin.freshness === "stale" || egressRate.freshness === "stale"
-        ? "stale"
-        : "live";
-    const playbackFreshness: FlowFreshness =
-      jellyfin.freshness === "stale" || playbackRate.freshness === "stale"
-        ? "stale"
-        : "live";
-    const transcoding = playingSessions.some((s) => s.method === "transcode");
+    const transcoding = resolvedPlayback.transcodingCount > 0;
     const label =
       playingSessions.length > 1
         ? `Jellyfin playback · ${playingSessions.length} sessions`
@@ -615,7 +707,7 @@ export function deriveFlows(
         updatedAt:
           playbackRate.basis === "container-block-read"
             ? snapshot.telemetry.docker.updatedAt
-            : jellyfin.updatedAt,
+            : resolvedPlayback.connectorUpdatedAt,
       }),
     );
     flows.push(
@@ -645,7 +737,7 @@ export function deriveFlows(
         updatedAt:
           egressRate.basis === "container-egress"
             ? snapshot.telemetry.docker.updatedAt
-            : jellyfin.updatedAt,
+            : resolvedPlayback.connectorUpdatedAt,
       }),
     );
   }
