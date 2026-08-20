@@ -129,9 +129,9 @@ describe("HOMELAB_UI_MODE parsing", () => {
     expect(getServerEnv().HOMELAB_UI_MODE).toBe("topology");
   });
 
-  it("accepts the fabric seam flag", () => {
+  it("rejects the retired fabric renderer", () => {
     setEnv({ HOMELAB_UI_MODE: "fabric" });
-    expect(getServerEnv().HOMELAB_UI_MODE).toBe("fabric");
+    expect(() => getServerEnv()).toThrow(/HOMELAB_UI_MODE/);
   });
 
   it("accepts the kinetic V4 flag", () => {

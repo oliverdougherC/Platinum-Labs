@@ -70,12 +70,12 @@ describe("TopologyApp — frozen/reduced-motion and composition", () => {
 
   it("renders one accessible source-owned observatory control cluster", () => {
     const snapshot = makeFakeSnapshot("idle", NOW);
-    render(
+    const { container } = render(
       <TopologyApp
         initial={snapshot}
         seerr={{ search: true, requests: true }}
         quickLinks={[]}
-        uiMode="fabric"
+        uiMode="kinetic"
         frozen
       />,
     );
@@ -89,8 +89,7 @@ describe("TopologyApp — frozen/reduced-motion and composition", () => {
     expect(request).toHaveClass("h-10");
     expect(request.querySelector("svg")).not.toBeNull();
     expect(cluster).not.toHaveTextContent("⌕");
-    expect(screen.getByRole("group", { name: /Server fabric/ })).toBeInTheDocument();
-    expect(screen.getByText("DataStore")).toBeInTheDocument();
+    expect(container.querySelector("[data-kinetic-stage]")).not.toBeNull();
     expect(screen.queryByLabelText("Live telemetry")).not.toBeInTheDocument();
   });
 

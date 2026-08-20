@@ -38,7 +38,7 @@ export default async function HomePage({
   const fake = getDataMode() === "fake";
   const configuredUiMode = getUiMode();
   const uiMode: ServerEnv["HOMELAB_UI_MODE"] =
-    devControls && (queryUiMode === "fabric" || queryUiMode === "kinetic")
+    devControls && queryUiMode === "kinetic"
       ? queryUiMode
       : configuredUiMode;
 

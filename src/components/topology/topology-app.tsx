@@ -8,7 +8,6 @@ import {
   OBSERVATORY_CONTROL_CLASS,
 } from "@/components/ui/icons";
 import { MediaSearch } from "@/components/media-search";
-import { FabricApp } from "@/components/fabric/fabric-app";
 import { KineticApp } from "@/components/kinetic/kinetic-app";
 import { DetailDrawer } from "@/components/topology/detail-drawer";
 import { MetricsRail } from "@/components/topology/metrics-rail";
@@ -44,7 +43,7 @@ export interface InitialPanels {
   drawer?: string | null;
 }
 
-export type TopologyUiMode = "topology" | "fabric" | "kinetic";
+export type TopologyUiMode = "topology" | "kinetic";
 
 function TransportStatus({ state }: { state: ShellTransportState }) {
   if (state === "healthy") return null;
@@ -297,15 +296,6 @@ export function TopologyApp({
             now={referenceNow}
             seerrConfigured={seerr.search}
             frozen={frozen}
-            devControls={devControls}
-          />
-        ) : uiMode === "fabric" ? (
-          <FabricApp
-            snapshot={snapshot}
-            now={referenceNow}
-            seerrConfigured={seerr.search}
-            frozen={frozen}
-            reducedMotion={reducedMotion}
             devControls={devControls}
           />
         ) : (

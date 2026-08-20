@@ -594,6 +594,6 @@ export interface DashboardSnapshot {
   jellyfinContainer?: string | null;
   /** Configured network link capacity in bytes/sec; null means unknown. */
   networkLinkBytesPerSecond?: number | null;
-  /** Operator-declared/control-plane fabric relationships, if any. */
+  /** Operator-declared/control-plane topology relationships, if any. */
   fabricRelationships?: FabricDeclaredRelationship[];
 }

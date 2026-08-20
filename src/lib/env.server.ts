@@ -86,12 +86,11 @@ const envSchema = z.object({
   /** Master switch between deterministic fake data and live connectors. */
   HOMELAB_DATA_MODE: z.enum(["fake", "live"]).default("fake"),
   /**
-   * Front-end surface selector while alternative renderers ship behind a
-   * server flag: `topology` (V2.1, the safe default/rollback surface),
-   * `fabric` (V3 server fabric), `kinetic` (V4 kinetic flow canvas).
+   * Front-end surface selector: `topology` is the safe rollback surface and
+   * `kinetic` is the V4 production canvas.
    */
-  HOMELAB_UI_MODE: z.enum(["topology", "fabric", "kinetic"]).default("topology"),
-  /** Optional operator-declared fabric links for the V3 renderer seam. */
+  HOMELAB_UI_MODE: z.enum(["topology", "kinetic"]).default("topology"),
+  /** Optional operator-declared control/dependency topology links. */
   HOMELAB_FABRIC_RELATIONSHIPS: optionalFabricRelationships,
   /** Deliberate browser-facing host label; never derived from DNS or interfaces. */
   HOMELAB_HOST_LABEL: z
@@ -224,7 +223,7 @@ export function getUiMode(): ServerEnv["HOMELAB_UI_MODE"] {
   return getServerEnv().HOMELAB_UI_MODE;
 }
 
-/** Optional server-only V3 fabric relationship overlay from operator config. */
+/** Optional server-only control/dependency topology overlay from operator config. */
 export function getFabricRelationships(): FabricRelationship[] {
   return getServerEnv().HOMELAB_FABRIC_RELATIONSHIPS ?? [];
 }
