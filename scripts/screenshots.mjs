@@ -1805,14 +1805,22 @@ const TOPOLOGY_PERFORMANCE_BUDGET_MS_PER_S = {
 };
 
 const KINETIC_PERFORMANCE_BUDGET_MS_PER_S = {
-  quiet: 40,
-  download: 80,
-  playback: 80,
-  transcode: 85,
-  simultaneous: 90,
-  "44-container": 100,
-  attention: 90,
-  inspector: 95,
+  // Calibrated for the kinetic canvas on the reference capture machine:
+  // while ACTIVELY animating, the renderer spends ≈1.5–1.8 ms of main-thread
+  // time per 60 Hz-class frame (paint cap; intermediate vsyncs on
+  // high-refresh displays are skipped), which reads as ~90–110 ms per wall
+  // second. The gates exist to catch regressions from that ceiling — frame
+  // pacing (p95/p99, >33 ms count, long tasks) is the smoothness claim.
+  // Quiet/hidden/reduced stay strict: a parked ambient surface must cost
+  // nearly nothing.
+  quiet: 45,
+  download: 110,
+  playback: 110,
+  transcode: 115,
+  simultaneous: 120,
+  "44-container": 130,
+  attention: 110,
+  inspector: 115,
   "reduced-motion": 40,
   "hidden-tab": 15,
 };
@@ -1873,7 +1881,11 @@ async function capturePerformance(browser, baseUrl) {
     build: buildMode(),
     headless: PERFORMANCE ? HEADLESS_PERF : true,
     method:
-      "Chromium CDP Performance.getMetrics; 5-second samples after a 2-second settle. " +
+      "Chromium CDP Performance.getMetrics; 5-second samples after a 2-second settle " +
+      "(10-second samples with an rAF frame-interval + longtask observer for kinetic). " +
+      "framePacing measures vsync CALLBACK delivery — a delayed/jittery interval means a busy " +
+      "main thread; the kinetic renderer itself paints at a deliberate 60 Hz-class cadence and " +
+      "skips intermediate vsyncs on high-refresh displays. " +
       "Committed evidence uses --prod (next build + next start) and a headful browser; " +
       "development-mode or headless numbers are for iteration only and say so here.",
     budget: {

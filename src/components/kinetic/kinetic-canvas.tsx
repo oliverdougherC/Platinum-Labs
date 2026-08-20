@@ -320,7 +320,15 @@ export function KineticCanvas({
 
   // Single rAF loop, ref-guarded: at most one can ever exist, and it parks
   // itself the frame after the engine reports nothing moving.
+  //
+  // The paint cadence is capped at 60 Hz-class: on high-refresh displays
+  // (120 Hz+) an ambient instrument gains nothing from doubling its main-
+  // thread and raster work, so intermediate vsync callbacks are skipped
+  // without advancing visual time. Motion quality is designed for 60 Hz;
+  // energy discipline is part of a 24/7 surface.
+  const MIN_PAINT_INTERVAL_MS = 15;
   const rafRef = useRef(0);
+  const lastPaintAtRef = useRef(0);
   const stopLoop = useCallback(() => {
     if (rafRef.current !== 0) {
       cancelAnimationFrame(rafRef.current);
@@ -331,14 +339,18 @@ export function KineticCanvas({
   const tickRef = useRef<() => void>(() => {});
   tickRef.current = () => {
     const engine = engineRef.current!;
-    const t = engine.frame(performance.now());
-    paint(t, false, false);
-    if (engine.animating()) {
-      rafRef.current = requestAnimationFrame(() => tickRef.current());
-    } else {
-      rafRef.current = 0;
-      setMotionOn(false);
+    const nowMs = performance.now();
+    if (nowMs - lastPaintAtRef.current >= MIN_PAINT_INTERVAL_MS) {
+      lastPaintAtRef.current = nowMs;
+      const t = engine.frame(nowMs);
+      paint(t, false, false);
+      if (!engine.animating()) {
+        rafRef.current = 0;
+        setMotionOn(false);
+        return;
+      }
     }
+    rafRef.current = requestAnimationFrame(() => tickRef.current());
   };
   const startLoop = useCallback(() => {
     if (rafRef.current !== 0) return;
