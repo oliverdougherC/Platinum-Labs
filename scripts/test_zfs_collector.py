@@ -315,8 +315,65 @@ class CpuTopologyTests(unittest.TestCase):
         )
 
 
+class MemoryCapacityTests(unittest.TestCase):
+    def _sysfs(self, block_size_bytes, states):
+        root = tempfile.mkdtemp()
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", root], check=False))
+        base = pathlib.Path(root) / "devices" / "system" / "memory"
+        base.mkdir(parents=True)
+        (base / "block_size_bytes").write_text(f"{block_size_bytes}\n")
+        for block, state in states.items():
+            block_dir = base / f"memory{block}"
+            block_dir.mkdir()
+            if state is not None:
+                (block_dir / "online").write_text(f"{state}\n")
+        return root
+
+    def _procfs(self, meminfo):
+        root = tempfile.mkdtemp()
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", root], check=False))
+        pathlib.Path(root, "meminfo").write_text(meminfo)
+        return root
+
+    def test_installed_memory_counts_memory0_without_an_online_file_and_excludes_offline_blocks(self):
+        root = self._sysfs("0x40000000", {0: None, 1: "1", 2: "0"})
+        with patch.object(zfs_collector, "HOST_SYS", root):
+            self.assertEqual(zfs_collector._read_installed_memory_bytes(), 2 * 1024 ** 3)
+
+    def test_installed_memory_falls_back_to_null_when_nonzero_online_flags_are_missing(self):
+        root = self._sysfs("0x40000000", {0: "1", 1: None})
+        with patch.object(zfs_collector, "HOST_SYS", root):
+            self.assertIsNone(zfs_collector._read_installed_memory_bytes())
+
+    def test_installed_memory_is_null_when_sysfs_memory_tree_is_absent(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", root], check=False))
+        missing = pathlib.Path(root) / "devices" / "system" / "memory"
+        with patch.object(zfs_collector, "_sys_path", return_value=str(missing)):
+            self.assertIsNone(zfs_collector._read_installed_memory_bytes())
+
+    def test_read_memory_keeps_memtotal_usable_and_adds_installed_capacity(self):
+        proc_root = self._procfs(
+            """
+MemTotal:       131900020 kB
+MemAvailable:    67108864 kB
+SwapTotal:        8388608 kB
+SwapFree:         4194304 kB
+""".lstrip()
+        )
+        sys_root = self._sysfs("0x40000000", {0: None, 1: "1", 2: "1", 3: "1"})
+        with patch.object(zfs_collector, "HOST_PROC", proc_root), \
+             patch.object(zfs_collector, "HOST_SYS", sys_root):
+            memory = zfs_collector._read_memory()
+        self.assertEqual(memory["installedBytes"], 4 * 1024 ** 3)
+        self.assertEqual(memory["totalBytes"], 131900020 * 1024)
+        self.assertEqual(memory["availableBytes"], 67108864 * 1024)
+        self.assertEqual(memory["swapTotalBytes"], 8388608 * 1024)
+        self.assertEqual(memory["swapUsedBytes"], (8388608 - 4194304) * 1024)
+
+
 FAKE_CPU = {"total": [1, 2, 3, 4, 5, 6, 7, 8], "cores": [[1, 2, 3, 4, 5, 6, 7, 8]], "load": [0.1, 0.2, 0.3]}
-FAKE_MEMORY = {"totalBytes": 100, "availableBytes": 50, "swapTotalBytes": None, "swapUsedBytes": None}
+FAKE_MEMORY = {"installedBytes": None, "totalBytes": 100, "availableBytes": 50, "swapTotalBytes": None, "swapUsedBytes": None}
 UNAVAILABLE = {"status": "unavailable"}
 
 

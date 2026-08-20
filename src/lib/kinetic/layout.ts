@@ -97,14 +97,20 @@ export interface CellPlacement {
   x: number;
   y: number;
   r: number;
+  slot: number;
 }
 
 export interface GroupPlacement {
   id: string;
   label: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
   cx: number;
   cy: number;
   labelY: number;
+  overflowCount: number;
   cells: CellPlacement[];
 }
 
@@ -172,105 +178,54 @@ export function hash01(text: string, salt: number): number {
   return v - Math.floor(v);
 }
 
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+export const FIELD_GROUP_CAPACITY = 24;
+export const FIELD_MAX_RENDERED_CELLS = FIELD_GROUP_CAPACITY * 4;
+const FIELD_GROUP_COLUMNS = 4;
+const FIELD_SLOT_COLUMNS = 6;
+const FIELD_SLOT_ROWS = 4;
+const GROUP_SLOT_INDEX = new Map<string, number>([
+  ["group:platform", 0],
+  ["group:media-support", 1],
+  ["group:observability", 2],
+  ["group:network-edge", 3],
+]);
 
-interface CellBounds {
-  minX: number;
-  maxX: number;
-  minY: number;
-  maxY: number;
-}
-
-/**
- * Bounded deterministic separation pass over one group's golden-angle seed
- * placement (V4 collision hardening). Not a physics simulation: a fixed
- * number of symmetric pairwise relaxation sweeps in a fixed id order, then a
- * hard clamp to the group's territory. Identical input → identical output,
- * and placement settles once — it never keeps moving between telemetry
- * updates because it is only ever computed when membership/viewport change.
- * Labeled cells claim extra clearance so their name rows cannot sit on a
- * neighbor; attention labels (always visible) get the most.
- */
-function separateCells(
-  placed: CellPlacement[],
-  clearance: Map<string, number>,
-  bounds: CellBounds,
-): void {
-  const ITERATIONS = 28;
-  const clamp = (cell: CellPlacement) => {
-    cell.x = Math.min(Math.max(cell.x, bounds.minX + cell.r), bounds.maxX - cell.r);
-    cell.y = Math.min(Math.max(cell.y, bounds.minY + cell.r), bounds.maxY - cell.r);
-  };
-  for (const cell of placed) clamp(cell);
-  for (let iter = 0; iter < ITERATIONS; iter++) {
-    let moved = false;
-    for (let i = 0; i < placed.length; i++) {
-      for (let j = i + 1; j < placed.length; j++) {
-        const a = placed[i]!;
-        const b = placed[j]!;
-        const need =
-          a.r + b.r + 3 + (clearance.get(a.id) ?? 0) + (clearance.get(b.id) ?? 0);
-        let dx = b.x - a.x;
-        let dy = b.y - a.y;
-        let d = Math.hypot(dx, dy);
-        if (d >= need) continue;
-        if (d < 1e-6) {
-          // Deterministic tie-break for exactly coincident seeds.
-          const angle = hash01(`${a.id}|${b.id}`, 7) * Math.PI * 2;
-          dx = Math.cos(angle);
-          dy = Math.sin(angle);
-          d = 1;
-        }
-        const push = (need - d) / 2;
-        const ux = dx / d;
-        const uy = dy / d;
-        a.x -= ux * push;
-        a.y -= uy * push;
-        b.x += ux * push;
-        b.y += uy * push;
-        clamp(a);
-        clamp(b);
-        moved = true;
-      }
-    }
-    if (!moved) break;
-  }
+interface GroupBounds {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 function placeCells(
   cells: FieldCellModel[],
-  cx: number,
-  cy: number,
-  spread: number,
+  bounds: GroupBounds,
   rMin: number,
   rMax: number,
-  bounds: CellBounds,
-): CellPlacement[] {
-  // Largest bodies gravitate to the cluster core; a stable sort on the id
-  // breaks score ties deterministically.
-  const ordered = [...cells].sort(
-    (a, b) => b.sizeScore - a.sizeScore || a.id.localeCompare(b.id),
-  );
-  const n = Math.max(1, ordered.length);
-  const placed = ordered.map((cell, i) => {
-    const jitterA = (hash01(cell.id, 1) - 0.5) * 0.9;
-    const jitterR = (hash01(cell.id, 2) - 0.5) * 0.3;
-    const angle = i * GOLDEN_ANGLE + jitterA;
-    const radial = spread * (Math.sqrt((i + 0.6) / n) + jitterR);
-    return {
-      id: cell.id,
-      x: cx + Math.cos(angle) * radial * 1.55,
-      y: cy + Math.sin(angle) * radial * 0.72,
-      r: rMin + (rMax - rMin) * Math.pow(cell.sizeScore, 0.9),
-    };
-  });
-  const clearance = new Map<string, number>();
-  for (const cell of cells) {
-    if (cell.attention) clearance.set(cell.id, 9);
-    else if (cell.labelVisible) clearance.set(cell.id, 7);
-  }
-  separateCells(placed, clearance, bounds);
-  return placed;
+): { cells: CellPlacement[]; overflowCount: number } {
+  const insetX = Math.max(8, bounds.w * 0.045);
+  const insetTop = 8;
+  const insetBottom = 8;
+  const usableW = Math.max(bounds.w - insetX * 2, 1);
+  const usableH = Math.max(bounds.h - insetTop - insetBottom, 1);
+  const pitchX = usableW / FIELD_SLOT_COLUMNS;
+  const pitchY = usableH / FIELD_SLOT_ROWS;
+  const slot = Math.max(Math.min(pitchX, pitchY) - 4, 16);
+  const visible = cells.slice(0, FIELD_GROUP_CAPACITY);
+  return {
+    overflowCount: Math.max(0, cells.length - FIELD_GROUP_CAPACITY),
+    cells: visible.map((cell, index) => {
+      const row = Math.floor(index / FIELD_SLOT_COLUMNS);
+      const col = index % FIELD_SLOT_COLUMNS;
+      return {
+        id: cell.id,
+        x: bounds.x + insetX + pitchX * (col + 0.5),
+        y: bounds.y + insetTop + pitchY * (row + 0.5),
+        r: rMin + (rMax - rMin) * Math.pow(cell.sizeScore, 0.9),
+        slot,
+      };
+    }),
+  };
 }
 
 function nodePoint(
@@ -330,7 +285,7 @@ function flowPath(flow: KineticFlow, from: Pt, to: Pt, L: KineticStage): Sampled
       b,
     );
   }
-  if (flow.kind === "import-copy") {
+  if (flow.kind === "import-copy" || flow.kind === "background-transfer") {
     const lift = L.h * 0.075;
     return samplePath(
       from,
@@ -376,9 +331,8 @@ function flowPath(flow: KineticFlow, from: Pt, to: Pt, L: KineticStage): Sampled
 
 /**
  * Stage geometry (no flow paths). Deterministic, and dependent ONLY on the
- * inputs in `stageGeometryKey` plus each cell's sizeScore at build time —
- * callers cache it against the key so telemetry updates can never move the
- * composition.
+ * inputs in `stageGeometryKey` — callers cache it against the key so
+ * telemetry updates can never move the composition.
  */
 export function buildKineticStage(scene: KineticScene, w: number, h: number): KineticStage {
   const bandH = Math.min(Math.max(h * 0.088, 64), 108);
@@ -422,46 +376,44 @@ export function buildKineticStage(scene: KineticScene, w: number, h: number): Ki
     return rect;
   });
 
-  // Workload field: clusters spread between the anchors band and the floor.
+  // Workload field: four reserved group lanes, each with its own deterministic
+  // row-major slot grid. Telemetry changes resize the rounded square inside a
+  // slot, but never repack or reorder the field.
   const fieldTop = bandH + stageH * 0.5;
-  const fieldBottom = storageTop - h * 0.085;
-  const fieldCy = (fieldTop + fieldBottom) / 2;
-  const totalCells = scene.field.reduce((acc, g) => acc + g.cells.length, 0) || 1;
-  const groupWeights = scene.field.map((g) => Math.sqrt(g.cells.length / totalCells));
-  const groupWeightSum = groupWeights.reduce((a, b) => a + b, 0) || 1;
-  const fieldSpanX = w * 0.14;
-  const fieldSpanW = w * 0.72;
-  let gCursor = fieldSpanX;
-  const rMin = Math.max(3, h * 0.0042);
-  const rMax = Math.max(9, h * 0.0125);
-  const groups: GroupPlacement[] = scene.field.map((group, i) => {
-    const gw = fieldSpanW * (groupWeights[i]! / groupWeightSum);
-    const cx = gCursor + gw / 2;
-    const groupLeft = gCursor;
-    gCursor += gw;
-    // Spread scales with population so dense clusters loosen instead of
-    // clumping; the caption hangs just under the cluster's own extent.
-    const spread = Math.min(
-      Math.max(Math.sqrt(group.cells.length) * rMax * 1.7, gw * 0.14),
-      gw * 0.42,
-    );
-    const cy = fieldCy + (hash01(group.id, 3) - 0.5) * h * 0.016;
-    const labelY = Math.min(cy + spread * 0.78 + 26, storageTop - h * 0.032);
+  const labelY = storageTop - Math.max(h * 0.03, 22);
+  const groupTop = fieldTop;
+  const groupH = Math.max(labelY - 18 - groupTop, 1);
+  const fieldSpanX = w * 0.1;
+  const fieldSpanW = w * 0.8;
+  const groupGap = Math.max(12, w * 0.01);
+  const groupW = Math.max(
+    (fieldSpanW - groupGap * (FIELD_GROUP_COLUMNS - 1)) / FIELD_GROUP_COLUMNS,
+    1,
+  );
+  const slotExtent = Math.min(
+    (groupW - Math.max(8, groupW * 0.045) * 2) / FIELD_SLOT_COLUMNS,
+    (groupH - 16) / FIELD_SLOT_ROWS,
+  );
+  const rMax = Math.max(8, Math.min(slotExtent * 0.38, h * 0.0135));
+  const rMin = Math.max(4, Math.min(rMax - 2, slotExtent * 0.22));
+  const groups: GroupPlacement[] = scene.field.map((group, index) => {
+    const slotIndex = GROUP_SLOT_INDEX.get(group.id) ?? Math.min(index, FIELD_GROUP_COLUMNS - 1);
+    const x = fieldSpanX + slotIndex * (groupW + groupGap);
+    const y = groupTop;
+    const bounds = { x, y, w: groupW, h: groupH };
+    const placed = placeCells(group.cells, bounds, rMin, rMax);
     return {
       id: group.id,
       label: group.label,
-      cx,
-      cy,
+      x,
+      y,
+      w: groupW,
+      h: groupH,
+      cx: x + groupW / 2,
+      cy: y + groupH / 2,
       labelY,
-      // Territory clamp: a group's cells stay inside its own span (with a
-      // small margin so adjacent groups keep visible separation) and above
-      // the caption row so a relaxed cell can never sit on the group label.
-      cells: placeCells(group.cells, cx, cy, spread, rMin, rMax, {
-        minX: groupLeft + 3,
-        maxX: groupLeft + gw - 3,
-        minY: fieldTop - h * 0.04,
-        maxY: labelY - 14,
-      }),
+      overflowCount: placed.overflowCount,
+      cells: placed.cells,
     };
   });
 
@@ -497,14 +449,37 @@ export function buildFlowPaths(
     // shoulder-to-shoulder (clear of the download drop), the download drop
     // lands on the pool's near shoulder, playback leaves from the shoulder
     // facing Jellyfin.
-    const fromAlong =
-      flow.kind === "import-copy" ? 0.74 : flow.kind === "playback" ? 0.72 : 0.5;
-    const toAlong =
-      flow.kind === "import-copy"
+    const poolBridge =
+      (flow.kind === "import-copy" || flow.kind === "background-transfer") &&
+      flow.from.kind === "pool" &&
+      flow.to.kind === "pool";
+    const sourcePoolName = flow.from.kind === "pool" ? flow.from.name : null;
+    const destinationPoolName = flow.to.kind === "pool" ? flow.to.name : null;
+    const sourceStratum = sourcePoolName
+      ? stage.strata.find((stratum) => stratum.name === sourcePoolName)
+      : undefined;
+    const destinationStratum = destinationPoolName
+      ? stage.strata.find((stratum) => stratum.name === destinationPoolName)
+      : undefined;
+    const sourceLeftOfDestination =
+      sourceStratum && destinationStratum
+        ? sourceStratum.x + sourceStratum.w / 2 <
+          destinationStratum.x + destinationStratum.w / 2
+        : true;
+    const fromAlong = poolBridge
+      ? sourceLeftOfDestination
+        ? 0.74
+        : 0.26
+      : flow.kind === "playback"
+        ? 0.72
+        : 0.5;
+    const toAlong = poolBridge
+      ? sourceLeftOfDestination
         ? 0.26
-        : flow.kind === "storage-transfer"
-          ? 0.62
-          : 0.5;
+        : 0.74
+      : flow.kind === "storage-transfer"
+        ? 0.62
+        : 0.5;
     const from = nodePoint(flow.from, stage, fromAlong);
     const to = nodePoint(flow.to, stage, toAlong);
     return {

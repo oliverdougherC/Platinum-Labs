@@ -268,7 +268,16 @@ def _read_sys_int(path):
         return None
 
 
+def _read_sys_autobase_int(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip(), 0)
+    except (OSError, ValueError):
+        return None
+
+
 _CPU_DIR = re.compile(r"^cpu(\d+)$")
+_MEMORY_BLOCK_DIR = re.compile(r"^memory(\d+)$")
 
 
 def _read_cpu_topology():
@@ -339,6 +348,47 @@ def _read_cpu():
     return {"total": total, "cores": cores, "load": load, "topology": topology}
 
 
+def _read_installed_memory_bytes():
+    """Installed RAM from sysfs memory blocks, or None when unverifiable.
+
+    The kernel exposes memory block directories under
+    /sys/devices/system/memory with a global block_size_bytes. Installed
+    capacity is the block size times the count of blocks that are explicitly
+    online. Any missing/invalid online state makes the result unknown rather
+    than partially counted.
+    """
+    base = _sys_path("devices/system/memory")
+    try:
+        entries = os.listdir(base)
+    except OSError:
+        return None
+    block_size = _read_sys_autobase_int(os.path.join(base, "block_size_bytes"))
+    if block_size is None or block_size <= 0:
+        return None
+    block_dirs = sorted(e for e in entries if _MEMORY_BLOCK_DIR.match(e))
+    if not block_dirs:
+        return None
+    online = 0
+    for entry in block_dirs:
+        block_id = int(_MEMORY_BLOCK_DIR.match(entry).group(1))
+        path = os.path.join(base, entry, "online")
+        try:
+            with open(path) as f:
+                state = f.read().strip().lower()
+        except OSError:
+            if block_id == 0:
+                online += 1
+                continue
+            return None
+        if state == "1":
+            online += 1
+        elif state == "0":
+            continue
+        else:
+            return None
+    return block_size * online if online > 0 else None
+
+
 def _read_memory():
     fields = {}
     with open(_proc_path("meminfo")) as f:
@@ -354,6 +404,7 @@ def _read_memory():
     if total is None or avail is None:
         raise ValueError("meminfo missing fields")
     return {
+        "installedBytes": _read_installed_memory_bytes(),
         "totalBytes": total,
         "availableBytes": avail,
         "swapTotalBytes": swap_total if swap_total is not None else None,

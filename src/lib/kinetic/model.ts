@@ -282,11 +282,19 @@ function buildInstrument(snapshot: DashboardSnapshot, scene: SceneModel): Instru
       status: memory.status,
       fraction: scene.core.memFraction,
       primary:
-        scene.core.memUsedBytes !== null ? formatBytes(scene.core.memUsedBytes) : null,
+        memory.value?.installedBytes !== null && memory.value?.installedBytes !== undefined
+          ? formatBytes(memory.value.installedBytes, { system: "binary", digits: 0 })
+          : scene.core.memTotalBytes !== null
+            ? formatBytes(scene.core.memTotalBytes, { system: "binary", digits: 0 })
+            : null,
       secondary:
+        memory.value?.installedBytes !== null &&
+        memory.value?.installedBytes !== undefined &&
         scene.core.memTotalBytes !== null
-          ? `of ${formatBytes(scene.core.memTotalBytes)}`
-          : null,
+          ? `usable ${formatBytes(scene.core.memTotalBytes, { system: "binary", digits: 0 })}`
+          : scene.core.memTotalBytes !== null
+            ? "usable memory"
+            : null,
     },
     gpu: {
       status: gpu.status,
@@ -606,7 +614,7 @@ function treatmentOf(flow: FlowObservation): FlowTreatment {
 
 function toneOf(flow: FlowObservation): KineticFlow["tone"] {
   if (flow.plane === "control") return "control";
-  if (flow.kind === "import-copy") return "import";
+  if (flow.kind === "import-copy" || flow.kind === "background-transfer") return "import";
   if (flow.kind === "playback" || flow.kind === "egress") return "out";
   if (flow.kind === "wan-transfer" || flow.kind === "storage-transfer") return "in";
   return "in";

@@ -51,6 +51,45 @@ function fallbackGroup(name: string): string {
   return "Platform";
 }
 
+type FabricGroupLabel = "Platform" | "Media support" | "Observability" | "Network edge";
+
+const GROUP_ORDER = ["Platform", "Media support", "Observability", "Network edge"] as const satisfies readonly FabricGroupLabel[];
+const GROUP_RANK = new Map<FabricGroupLabel, number>(
+  GROUP_ORDER.map((label, index) => [label, index]),
+);
+
+const PROJECT_GROUPS = new Map<string, FabricGroupLabel>([
+  ["platform-stack", "Platform"],
+  ["media-stack", "Media support"],
+  ["observability-stack", "Observability"],
+]);
+
+function matchComposeGroup(container: DockerContainerTelemetry): FabricGroupLabel | null {
+  const project = container.composeProject?.toLowerCase() ?? "";
+  const service = container.composeService?.toLowerCase() ?? "";
+  if (project) {
+    const direct = PROJECT_GROUPS.get(project);
+    if (direct) return direct;
+    if (/observ|monitor|metrics|telemetry/.test(project)) return "Observability";
+    if (/media|arr|jelly|stream|download/.test(project)) return "Media support";
+    if (/edge|proxy|ingress|gateway|network|tailscale|cloudflare|auth|dns/.test(project)) {
+      return "Network edge";
+    }
+  }
+  if (service) {
+    if (/grafana|prometheus|loki|dozzle|uptime|scrutiny|alert/.test(service)) {
+      return "Observability";
+    }
+    if (/prowlarr|bazarr|sabnzbd|unpackerr|flaresolverr|gluetun|overseerr|tautulli|wizarr/.test(service)) {
+      return "Media support";
+    }
+    if (/proxy|nginx|traefik|cloudflare|tailscale|auth|dns/.test(service)) {
+      return "Network edge";
+    }
+  }
+  return null;
+}
+
 function coverage(container: DockerContainerTelemetry): FabricGroupMember["metricCoverage"] {
   const values = [
     container.cpuFraction,
@@ -136,10 +175,21 @@ function member(container: DockerContainerTelemetry): FabricGroupMember {
 }
 
 function groupKey(container: DockerContainerTelemetry): string {
-  return fallbackGroup(`${container.name} ${container.composeService ?? ""}`);
+  return (
+    matchComposeGroup(container) ??
+    fallbackGroup(`${container.name} ${container.composeService ?? ""}`)
+  );
 }
 
 const compareText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+function memberIdentity(container: FabricGroupMember): string {
+  return container.composeService?.toLowerCase() ?? container.name.toLowerCase();
+}
+
+function groupRank(label: string): number {
+  return GROUP_RANK.get(label as FabricGroupLabel) ?? GROUP_ORDER.length;
+}
 
 /** Stable four-bank grouping. Extra projects merge explicitly into Other. */
 export function groupWorkloads(containers: DockerContainerTelemetry[]): FabricWorkloadGroup[] {
@@ -157,16 +207,19 @@ export function groupWorkloads(containers: DockerContainerTelemetry[]): FabricWo
 
   const ordered = [...buckets.entries()]
     .map(([label, members]) => ({ label, members }))
-    .sort((a, b) => b.members.length - a.members.length || compareText(a.label, b.label));
+    .sort((a, b) => {
+      const order = groupRank(a.label) - groupRank(b.label);
+      return order !== 0 ? order : compareText(a.label, b.label);
+    });
   const kept = ordered.slice(0, 4);
   const merged = ordered.slice(4).flatMap((group) => group.members);
   if (merged.length) kept.push({ label: "Other workloads", members: merged });
 
   return kept.map(({ label, members }) => {
     members.sort((a, b) =>
-      Number(b.attention) - Number(a.attention) ||
-      Number(a.metricCoverage === "unknown") - Number(b.metricCoverage === "unknown") ||
-      compareText(a.name, b.name),
+      compareText(memberIdentity(a), memberIdentity(b)) ||
+      compareText(a.name, b.name) ||
+      compareText(a.id, b.id),
     );
     return {
       id: `group:${safeId(label)}`,

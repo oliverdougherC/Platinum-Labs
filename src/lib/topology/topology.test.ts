@@ -157,6 +157,8 @@ const flowsOf = (snap: DashboardSnapshot) => deriveFlows(snap, NOW);
 const ids = (snap: DashboardSnapshot) => flowsOf(snap).map((f) => f.id);
 const byId = (snap: DashboardSnapshot, id: string): FlowObservation | undefined =>
   flowsOf(snap).find((f) => f.id === id);
+const byKind = (snap: DashboardSnapshot, kind: FlowObservation["kind"]) =>
+  flowsOf(snap).filter((f) => f.kind === kind);
 
 describe("deriveFlows — motion only from real state (PLA-267)", () => {
   it("idle scenario produces NO flows", () => {
@@ -439,6 +441,297 @@ describe("deriveFlows — same-pool vs cross-pool imports (PLA-275)", () => {
     ]);
     const copy = byId(snap, "import-copy:pool:NVME->pool:DataStore")!;
     expect(copy.channels[0]!.bytesPerSecond).toBe(18_000_000);
+  });
+});
+
+describe("deriveFlows — generic background storage transfer", () => {
+  it("derives one named reader→writer pair when real ZFS pool telemetry shows a dominant live copy", () => {
+    const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: 28_000_000, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: 34_000_000 },
+      { pool: "NVME", readBps: 0, writeBps: 0 },
+    ]);
+    const flow = byId(snap, "background-transfer:pool:DataStore->pool:eSATA")!;
+    expect(flow.evidence).toBe("derived");
+    expect(flow.freshness).toBe("live");
+    expect(flow.channels).toEqual([
+      expect.objectContaining({
+        direction: "forward",
+        role: "write",
+        bytesPerSecond: 28_000_000,
+      }),
+    ]);
+    expect(flow.rate).toMatchObject({
+      knownBytesPerSecond: 28_000_000,
+      coverage: "complete",
+      evidence: "derived",
+      freshness: "live",
+    });
+  });
+
+  it("reverses the endpoints when the opposite pool is the dominant live reader", () => {
+    const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: 0, writeBps: 21_000_000 },
+      { pool: "eSATA", readBps: 17_000_000, writeBps: 0 },
+    ]);
+    const flow = byKind(snap, "background-transfer")[0]!;
+    expect(flow.from).toEqual({ kind: "pool", name: "eSATA" });
+    expect(flow.to).toEqual({ kind: "pool", name: "DataStore" });
+    expect(flow.channels[0]!.bytesPerSecond).toBe(17_000_000);
+  });
+
+  it("replays the exact sanitized production shape, including NVME and other", () => {
+    const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: 53_833_435, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: 59_639_172 },
+      { pool: "NVME", readBps: 2_047, writeBps: 888_388 },
+      { pool: "other", readBps: 2_331_506, writeBps: 161_711 },
+    ]);
+    const flow = byId(snap, "background-transfer:pool:DataStore->pool:eSATA")!;
+    expect(flow.from).toEqual({ kind: "pool", name: "DataStore" });
+    expect(flow.to).toEqual({ kind: "pool", name: "eSATA" });
+    expect(flow.channels[0]!.bytesPerSecond).toBe(
+      Math.min(53_833_435, 59_639_172),
+    );
+  });
+
+  it("never permits the synthetic other bucket to become an endpoint", () => {
+    const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: 40_000_000, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: 45_000_000 },
+      { pool: "other", readBps: 900_000_000, writeBps: 800_000_000 },
+    ]);
+    const flow = byKind(snap, "background-transfer")[0]!;
+    expect(flow.id).toBe("background-transfer:pool:DataStore->pool:eSATA");
+    expect(flow.from).not.toEqual({ kind: "pool", name: "other" });
+    expect(flow.to).not.toEqual({ kind: "pool", name: "other" });
+  });
+
+  it("pairs an overwhelmingly dominant writer despite small incidental writes", () => {
+    const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: 40_000_000, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: 50_000_000 },
+      { pool: "NVME", readBps: 0, writeBps: 1_000_000 },
+    ]);
+    expect(
+      byId(snap, "background-transfer:pool:DataStore->pool:eSATA"),
+    ).toBeDefined();
+  });
+
+  it("stays ambiguous when writers are genuinely competitive", () => {
+    const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: 40_000_000, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: 30_000_000 },
+      { pool: "NVME", readBps: 0, writeBps: 22_000_000 },
+    ]);
+    expect(byKind(snap, "background-transfer")).toEqual([]);
+  });
+
+  it("stays ambiguous when readers are genuinely competitive", () => {
+    const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: 30_000_000, writeBps: 0 },
+      { pool: "NVME", readBps: 22_000_000, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: 40_000_000 },
+    ]);
+    expect(byKind(snap, "background-transfer")).toEqual([]);
+  });
+
+  it("does not fabricate a cross-pool transfer when one pool dominates both directions", () => {
+    const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: 50_000_000, writeBps: 60_000_000 },
+      { pool: "NVME", readBps: 500_000, writeBps: 700_000 },
+      { pool: "eSATA", readBps: 0, writeBps: 0 },
+    ]);
+    expect(byKind(snap, "background-transfer")).toEqual([]);
+  });
+
+  it("allows an unexplained destination write to pair during playback", () => {
+    const snap = withPoolIo(makeFakeSnapshot("direct-play", NOW), [
+      { pool: "DataStore", readBps: 42_000_000, writeBps: 55_000_000 },
+      { pool: "eSATA", readBps: 50_000_000, writeBps: 0 },
+      { pool: "NVME", readBps: 500_000, writeBps: 200_000 },
+    ]);
+    expect(
+      byId(snap, "background-transfer:pool:eSATA->pool:DataStore"),
+    ).toBeDefined();
+  });
+
+  it("preserves a stale last-known pair with the same identity, endpoints, and rate", () => {
+    const base = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: 28_000_000, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: 34_000_000 },
+    ]);
+    const live = byKind(base, "background-transfer")[0]!;
+    const staleDisk: DashboardSnapshot = {
+      ...base,
+      telemetry: {
+        ...base.telemetry,
+        disk: {
+          ...base.telemetry.disk,
+          status: "stale",
+          updatedAt: NOW - 10 * 60_000,
+        },
+      },
+    };
+    const stale = byKind(staleDisk, "background-transfer")[0]!;
+    expect(stale).toMatchObject({
+      id: live.id,
+      from: live.from,
+      to: live.to,
+      freshness: "stale",
+      channels: live.channels,
+    });
+    expect(stale.rate).toMatchObject({
+      knownBytesPerSecond: 28_000_000,
+      freshness: "stale",
+    });
+  });
+
+  it("suppresses unavailable, not-configured, zero, and under-deadband disk evidence", () => {
+    const base = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: 28_000_000, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: 34_000_000 },
+    ]);
+    const unavailableDisk: DashboardSnapshot = {
+      ...base,
+      telemetry: {
+        ...base.telemetry,
+        disk: { status: "unavailable", updatedAt: null, value: null },
+      },
+    };
+    const notConfiguredDisk: DashboardSnapshot = {
+      ...base,
+      telemetry: {
+        ...base.telemetry,
+        disk: { status: "not-configured", updatedAt: null, value: null },
+      },
+    };
+    const zero = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: 0, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: 0 },
+    ]);
+    const underDeadband = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "DataStore", readBps: FLOW_DEADBAND_BPS - 1, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: FLOW_DEADBAND_BPS - 1 },
+    ]);
+    expect(byKind(unavailableDisk, "background-transfer")).toEqual([]);
+    expect(byKind(notConfiguredDisk, "background-transfer")).toEqual([]);
+    expect(byKind(zero, "background-transfer")).toEqual([]);
+    expect(byKind(underDeadband, "background-transfer")).toEqual([]);
+  });
+
+  it("lets explicit import-copy own its pools while a separate background pair still coexists", () => {
+    const base = makeFakeSnapshot("importing", NOW);
+    const poolTemplate = base.zfs.pools[0]!;
+    const snap = withPoolIo(
+      {
+        ...base,
+        zfs: {
+          pools: [
+            ...base.zfs.pools,
+            { ...poolTemplate, name: "Archive" },
+            { ...poolTemplate, name: "Backup" },
+          ],
+        },
+      },
+      [
+        { pool: "NVME", readBps: 18_000_000, writeBps: 0 },
+        { pool: "DataStore", readBps: 0, writeBps: 31_000_000 },
+        { pool: "Archive", readBps: 14_000_000, writeBps: 0 },
+        { pool: "Backup", readBps: 0, writeBps: 12_000_000 },
+      ],
+    );
+    expect(byKind(snap, "import-copy")).toHaveLength(1);
+    expect(byId(snap, "import-copy:pool:NVME->pool:DataStore")).toBeDefined();
+    expect(byKind(snap, "background-transfer")).toHaveLength(1);
+    expect(
+      byId(snap, "background-transfer:pool:Archive->pool:Backup"),
+    ).toBeDefined();
+    expect(byId(snap, "background-transfer:pool:NVME->pool:DataStore")).toBeUndefined();
+  });
+
+  it("keeps a background copy from the explicit import destination inferable", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 90_000_000, writeBps: 0 },
+      { pool: "DataStore", readBps: 24_000_000, writeBps: 100_000_000 },
+      { pool: "eSATA", readBps: 0, writeBps: 20_000_000 },
+    ]);
+
+    expect(byId(snap, "import-copy:pool:NVME->pool:DataStore")).toBeDefined();
+    expect(
+      byId(snap, "background-transfer:pool:DataStore->pool:eSATA"),
+    ).toBeDefined();
+    expect(byKind(snap, "background-transfer")).toHaveLength(1);
+  });
+
+  it("keeps a background copy into the explicit import source inferable", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 90_000_000, writeBps: 20_000_000 },
+      { pool: "DataStore", readBps: 0, writeBps: 100_000_000 },
+      { pool: "eSATA", readBps: 24_000_000, writeBps: 0 },
+    ]);
+
+    expect(byId(snap, "import-copy:pool:NVME->pool:DataStore")).toBeDefined();
+    expect(
+      byId(snap, "background-transfer:pool:eSATA->pool:NVME"),
+    ).toBeDefined();
+    expect(byKind(snap, "background-transfer")).toHaveLength(1);
+  });
+
+  it("does not reinterpret a stale explicit import as a generic background transfer", () => {
+    const live = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 18_000_000, writeBps: 0 },
+      { pool: "DataStore", readBps: 0, writeBps: 31_000_000 },
+      { pool: "eSATA", readBps: 0, writeBps: 0 },
+    ]);
+    const staleDisk: DashboardSnapshot = {
+      ...live,
+      telemetry: {
+        ...live.telemetry,
+        disk: {
+          ...live.telemetry.disk,
+          status: "stale",
+          updatedAt: NOW - 10 * 60_000,
+        },
+      },
+    };
+    const flows = flowsOf(staleDisk);
+
+    expect(flows.some((flow) => flow.kind === "organize")).toBe(true);
+    expect(flows.some((flow) => flow.kind === "import-copy")).toBe(false);
+    expect(
+      flows.some(
+        (flow) =>
+          flow.id === "background-transfer:pool:NVME->pool:DataStore",
+      ),
+    ).toBe(false);
+    expect(flows.filter((flow) => flow.plane === "data")).toEqual([]);
+  });
+
+  it("never duplicates a live explicit import as a generic transfer", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 18_000_000, writeBps: 0 },
+      { pool: "DataStore", readBps: 0, writeBps: 31_000_000 },
+      { pool: "eSATA", readBps: 0, writeBps: 0 },
+    ]);
+
+    expect(byKind(snap, "import-copy")).toHaveLength(1);
+    expect(byId(snap, "import-copy:pool:NVME->pool:DataStore")).toBeDefined();
+    expect(byKind(snap, "background-transfer")).toEqual([]);
+  });
+
+  it("reserves only the explicit source read and destination write directions", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 80_000_000, writeBps: 18_000_000 },
+      { pool: "DataStore", readBps: 20_000_000, writeBps: 90_000_000 },
+      { pool: "eSATA", readBps: 0, writeBps: 0 },
+    ]);
+
+    expect(byId(snap, "import-copy:pool:NVME->pool:DataStore")).toBeDefined();
+    expect(
+      byId(snap, "background-transfer:pool:DataStore->pool:NVME"),
+    ).toBeDefined();
+    expect(byKind(snap, "background-transfer")).toHaveLength(1);
   });
 });
 

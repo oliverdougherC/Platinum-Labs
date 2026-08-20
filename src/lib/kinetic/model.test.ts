@@ -109,6 +109,37 @@ describe("buildKineticScene", () => {
     expect(s.flows.some((f) => f.kind === "organize")).toBe(true);
   });
 
+  it("renders a generic background pool copy as an import-toned particle flow", () => {
+    const s = scene("background-copy");
+    const flow = s.flows.find((f) => f.kind === "background-transfer");
+    expect(flow).toBeDefined();
+    expect(flow!.tone).toBe("import");
+    expect(flow!.treatment).toBe("particles");
+    expect(flow!.from).toEqual({ kind: "pool", name: "DataStore" });
+    expect(flow!.to).toEqual({ kind: "pool", name: "eSATA" });
+    expect(flow!.rateBps).toBeGreaterThan(0);
+  });
+
+  it("keeps a stale background copy visible with frozen identity and magnitude", () => {
+    const live = scene("background-copy").flows.find(
+      (flow) => flow.kind === "background-transfer",
+    )!;
+    const staleScene = scene("background-copy-stale");
+    const stale = staleScene.flows.find(
+      (flow) => flow.kind === "background-transfer",
+    )!;
+    expect(live.treatment).toBe("particles");
+    expect(stale).toMatchObject({
+      id: live.id,
+      from: live.from,
+      to: live.to,
+      rateBps: live.rateBps,
+      treatment: "stale",
+    });
+    expect(stale.treatment).not.toBe("particles");
+    expect(sceneAnimates(staleScene)).toBe(false);
+  });
+
   it("freezes stale work instead of animating it", () => {
     const snapshot = makeFakeSnapshot("stale", NOW);
     const s = buildKineticScene(snapshot, { now: NOW, seerrConfigured: true });
@@ -176,6 +207,29 @@ describe("buildKineticScene", () => {
     expect(media.name).toBe("DataStore");
     expect(media.capacityFraction).toBeGreaterThan(0);
     expect(media.capacityFraction).toBeLessThanOrEqual(1);
+  });
+
+  it("shows installed RAM in binary units and keeps usable RAM separate when available", () => {
+    const snapshot = mutableSnapshot("idle");
+    if (snapshot.telemetry.memory.value === null) throw new Error("fixture memory missing");
+    snapshot.telemetry.memory.value.installedBytes = 128 * 1024 ** 3;
+    snapshot.telemetry.memory.value.totalBytes = 135_025_201_152;
+    snapshot.telemetry.memory.value.usedBytes = 48 * 1024 ** 3;
+    snapshot.telemetry.memory.value.availableBytes =
+      snapshot.telemetry.memory.value.totalBytes - snapshot.telemetry.memory.value.usedBytes;
+    const s = sceneOf(snapshot);
+    expect(s.instrument.memory.primary).toBe("128 GiB");
+    expect(s.instrument.memory.secondary).toBe("usable 126 GiB");
+  });
+
+  it("labels kernel MemTotal as binary usable memory when installed RAM is unknown", () => {
+    const snapshot = mutableSnapshot("idle");
+    if (snapshot.telemetry.memory.value === null) throw new Error("fixture memory missing");
+    snapshot.telemetry.memory.value.installedBytes = null;
+    snapshot.telemetry.memory.value.totalBytes = 135_025_201_152;
+    const s = sceneOf(snapshot);
+    expect(s.instrument.memory.primary).toBe("126 GiB");
+    expect(s.instrument.memory.secondary).toBe("usable memory");
   });
 });
 
@@ -684,4 +738,40 @@ describe("buildKineticLayout", () => {
       expect(flow.path.total).toBeGreaterThan(40);
     }
   });
+
+  it.each(["background-copy", "background-copy-reverse"] as const)(
+    "uses a directional shoulder-to-shoulder bridge for %s",
+    (scenarioName) => {
+      const s = scene(scenarioName);
+      const semantic = s.flows.find(
+        (flow) => flow.kind === "background-transfer",
+      )!;
+      expect(semantic.from.kind).toBe("pool");
+      expect(semantic.to.kind).toBe("pool");
+      if (semantic.from.kind !== "pool" || semantic.to.kind !== "pool") return;
+
+      const layout = buildKineticLayout(s, 1920, 1080);
+      const placed = layout.flows.find((flow) => flow.id === semantic.id)!;
+      const sourceName = semantic.from.name;
+      const destinationName = semantic.to.name;
+      const source = layout.strata.find((pool) => pool.name === sourceName)!;
+      const destination = layout.strata.find((pool) => pool.name === destinationName)!;
+      const sourceLeftOfDestination =
+        source.x + source.w / 2 < destination.x + destination.w / 2;
+      const sourceAlong = sourceLeftOfDestination ? 0.74 : 0.26;
+      const destinationAlong = sourceLeftOfDestination ? 0.26 : 0.74;
+      const first = placed.path.points[0]!;
+      const last = placed.path.points.at(-1)!;
+
+      expect(first.x).toBeCloseTo(source.x + source.w * sourceAlong, 6);
+      expect(first.y).toBeCloseTo(source.y, 6);
+      expect(last.x).toBeCloseTo(
+        destination.x + destination.w * destinationAlong,
+        6,
+      );
+      expect(last.y).toBeCloseTo(destination.y, 6);
+      expect(placed.path.points.every((point) => point.y <= layout.storageTop)).toBe(true);
+      expect(placed.path.points.some((point) => point.y < layout.storageTop)).toBe(true);
+    },
+  );
 });

@@ -134,6 +134,28 @@ const KINETIC_SHOTS = [
   // qBittorrent producer truth: active downloads keep both semantic
   // relationships visible when the aggregate transfer counter is unavailable.
   { name: "27-v4-download-rate-unknown-1920x1080", scenario: "download-rate-unknown", w: 1920, h: 1080 },
+  // V4.1 workload/storage polish evidence. These extend the original V4
+  // graduation matrix rather than replacing it, so regressions remain easy to
+  // compare against the production baseline.
+  { name: "28-v41-workload-field-44-1280x720", scenario: "container-field-real", w: 1280, h: 720 },
+  { name: "29-v41-workload-field-stress-1920x1080", scenario: "container-field-stress", w: 1920, h: 1080 },
+  { name: "30-v41-background-copy-datastore-esata-1920x1080", scenario: "background-copy", w: 1920, h: 1080 },
+  { name: "31-v41-background-copy-reverse-1920x1080", scenario: "background-copy-reverse", w: 1920, h: 1080 },
+  { name: "32-v41-background-copy-ambiguous-1920x1080", scenario: "background-copy-ambiguous", w: 1920, h: 1080 },
+  {
+    name: "33-v41-request-media-control-closeup",
+    scenario: "idle",
+    w: 1920,
+    h: 1080,
+    action: "request-hover",
+    crop: "observatory-controls",
+  },
+  {
+    name: "34-v41-background-copy-stale-1920x1080",
+    scenario: "background-copy-stale",
+    w: 1920,
+    h: 1080,
+  },
 ];
 
 /**
@@ -554,7 +576,13 @@ async function main() {
           await page.waitForTimeout(250);
           // Preserve the frame even when validation fails so visual review
           // can drive the next iteration.
-          await page.screenshot({ path });
+          if (shot.crop === "observatory-controls") {
+            await page
+              .getByRole("group", { name: "Observatory controls" })
+              .screenshot({ path });
+          } else {
+            await page.screenshot({ path });
+          }
           await validateKineticShot(page, shot);
         } else {
           if (shot.transitionScenario) {
@@ -761,6 +789,7 @@ const KINETIC_PERFORMANCE_BUDGET_MS_PER_S = {
   transcode: 115,
   simultaneous: 120,
   "44-container": 130,
+  "106-container": 155,
   attention: 110,
   inspector: 115,
   "reduced-motion": 40,
@@ -776,6 +805,7 @@ async function capturePerformance(browser, baseUrl) {
         { name: "transcode", scenario: "transcode", reducedMotion: false, hidden: false },
         { name: "simultaneous", scenario: "active", reducedMotion: false, hidden: false },
         { name: "44-container", scenario: "container-field-real", reducedMotion: false, hidden: false },
+        { name: "106-container", scenario: "container-field-stress", reducedMotion: false, hidden: false },
         { name: "attention", scenario: "attention", reducedMotion: false, hidden: false },
         { name: "inspector", scenario: "active", reducedMotion: false, hidden: false, action: "kinetic-anchor:jellyfin" },
         { name: "reduced-motion", scenario: "active", reducedMotion: true, hidden: false },

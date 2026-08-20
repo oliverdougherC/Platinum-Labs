@@ -109,6 +109,7 @@ const FLOW_KIND_WORDS: Record<KineticFlow["kind"], string> = {
   "wan-transfer": "WAN transfer",
   "storage-transfer": "staging I/O",
   "import-copy": "import copy",
+  "background-transfer": "background storage copy",
   playback: "library read",
   egress: "stream egress",
   organize: "import organizing",
@@ -584,7 +585,14 @@ function KineticOverlay({
   // 40+ tiny sequential tab stops would be hostile; this is the grouped
   // pattern the review required.
   const cellOrder = useMemo(
-    () => layout.groups.flatMap((group) => group.cells.map((cell) => cell.id)),
+    () =>
+      [...layout.groups]
+        .sort((a, b) => a.y - b.y || a.x - b.x || a.id.localeCompare(b.id))
+        .flatMap((group) =>
+          [...group.cells]
+            .sort((a, b) => a.y - b.y || a.x - b.x || a.id.localeCompare(b.id))
+            .map((cell) => cell.id),
+        ),
     [layout],
   );
   const [rovingId, setRovingId] = useState<string | null>(null);
@@ -730,6 +738,7 @@ function KineticOverlay({
               style={{ left: group.cx, top: group.labelY }}
             >
               {group.label}
+              {group.overflowCount > 0 ? ` +${group.overflowCount}` : ""}
             </div>
             {group.cells.map((placed) => {
               const info = cellsById.get(placed.id);
@@ -752,12 +761,12 @@ function KineticOverlay({
                   onClick={(event) =>
                     toggle({ kind: "cell", id: placed.id }, event.currentTarget)
                   }
-                  className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full ${FOCUS_RING}`}
+                  className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-[8px] ${FOCUS_RING}`}
                   style={{
                     left: placed.x,
                     top: placed.y,
-                    width: Math.max(placed.r * 2 + 8, 16),
-                    height: Math.max(placed.r * 2 + 8, 16),
+                    width: Math.max(placed.slot, 16),
+                    height: Math.max(placed.slot, 16),
                     pointerEvents: "auto",
                   }}
                 >
@@ -765,7 +774,7 @@ function KineticOverlay({
                 </button>
               );
             })}
-            {group.cells.map((placed) => {
+            {group.cells.map((placed, placedIndex) => {
               const cell = scene.field
                 .flatMap((g) => g.cells)
                 .find((c) => c.id === placed.id);
@@ -776,7 +785,10 @@ function KineticOverlay({
                   className={`absolute -translate-x-1/2 text-[10.5px] tracking-wide ${
                     cell.attention ? "text-warn" : "text-faint"
                   }`}
-                  style={{ left: placed.x, top: placed.y + placed.r + 5 }}
+                  style={{
+                    left: placed.x,
+                    top: placed.y + placed.r + 5 + (placedIndex % 2) * 10,
+                  }}
                 >
                   {cell.name}
                 </div>

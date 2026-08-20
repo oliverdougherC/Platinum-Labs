@@ -34,7 +34,7 @@ export interface AppConfig {
 }
 
 export const appConfig: AppConfig = {
-  appName: "Homelab",
+  appName: "Platinum Labs",
   pollIntervalsMs: {
     jellyfin: 12_000,
     sonarr: 25_000,

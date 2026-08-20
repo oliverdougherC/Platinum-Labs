@@ -74,6 +74,15 @@ describe("required scenario characteristics", () => {
     expect(r.aggregateRateBps).toBeGreaterThan(0);
   });
 
+  it("background-copy exactly replays the sanitized normalized production pool I/O", () => {
+    expect(makeFakeSnapshot("background-copy", NOW).telemetry.disk.value?.pools).toEqual([
+      { pool: "DataStore", readBps: 53_833_435, writeBps: 0 },
+      { pool: "eSATA", readBps: 0, writeBps: 59_639_172 },
+      { pool: "NVME", readBps: 2_047, writeBps: 888_388 },
+      { pool: "other", readBps: 2_331_506, writeBps: 161_711 },
+    ]);
+  });
+
   it("confirmed-zero: active work has a measured zero rate", () => {
     const acquisition = makeFakeSnapshot("confirmed-zero", NOW).acquisition;
     expect(acquisition.rollup.downloading).toBe(1);

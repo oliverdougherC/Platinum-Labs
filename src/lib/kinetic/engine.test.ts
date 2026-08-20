@@ -199,6 +199,31 @@ describe("KineticEngine phase continuity", () => {
     expect(counts.cells).toBeLessThanOrEqual(120);
   });
 
+  it("freezes a live background pool bridge without particles or pool excitation when it becomes stale", () => {
+    const live = sceneAndLayout("background-copy");
+    const stale = sceneAndLayout("background-copy-stale");
+    const engine = new KineticEngine(0);
+    engine.syncTargets(live.scene, live.layout, { snap: true });
+    const before = engine
+      .visualState()
+      .flows.find((flow) => flow.flow.kind === "background-transfer")!;
+    const liveRate = before.rate;
+    expect(before.liveness).toBe(1);
+    expect(before.channels.some((channel) => channel.slotAlphas.some((alpha) => alpha > 0))).toBe(true);
+
+    engine.syncTargets(stale.scene, stale.layout, { snap: true });
+    const frozen = engine
+      .visualState()
+      .flows.find((flow) => flow.flow.kind === "background-transfer")!;
+    expect(frozen).toBe(before);
+    expect(frozen.flow.treatment).toBe("stale");
+    expect(frozen.rate).toBe(liveRate);
+    expect(frozen.liveness).toBe(0);
+    expect(frozen.channels.every((channel) => channel.slotAlphas.every((alpha) => alpha === 0))).toBe(true);
+    expect(engine.visualState().strata.every((pool) => pool.io === 0)).toBe(true);
+    expect(engine.animating()).toBe(false);
+  });
+
   it("settles and parks after transitions complete", () => {
     const engine = new KineticEngine(0);
     const quiet = sceneAndLayout("idle");

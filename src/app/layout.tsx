@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Homelab",
-  description: "Ambient homelab operations homepage.",
+  title: "Platinum Labs",
+  description: "Platinum Labs",
   // No external icons, manifests, or analytics wired in by default.
   robots: { index: false, follow: false },
 };

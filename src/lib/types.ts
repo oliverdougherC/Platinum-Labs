@@ -335,6 +335,9 @@ export interface CpuTelemetry {
 }
 
 export interface MemoryTelemetry {
+  /** Physically installed RAM capacity when sysfs memory blocks were verifiable. */
+  installedBytes?: number | null;
+  /** Usable RAM from MemTotal; may be lower than physically installed RAM. */
   totalBytes: number;
   /** total - available (the kernel's own reclaimable-aware estimate). */
   usedBytes: number;
