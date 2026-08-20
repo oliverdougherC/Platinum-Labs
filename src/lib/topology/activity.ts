@@ -248,6 +248,33 @@ const rate = (bps: number | null | undefined): number | null =>
 interface NamedPoolFlowCandidate {
   pool: string;
   bytesPerSecond: number;
+  explainedBytesPerSecond: number;
+}
+
+interface PoolDirectionClaim {
+  /** Same-unit byte rate already explained by stronger semantic evidence. */
+  explainedBytesPerSecond: number;
+  /** Active semantic ownership exists, but its byte rate cannot be bounded. */
+  hasUnknownContributor: boolean;
+}
+
+type PoolDirectionClaims = Map<string, PoolDirectionClaim>;
+
+function claimPoolDirection(
+  claims: PoolDirectionClaims,
+  pool: string,
+  bytesPerSecond: number | null,
+): void {
+  const existing = claims.get(pool) ?? {
+    explainedBytesPerSecond: 0,
+    hasUnknownContributor: false,
+  };
+  claims.set(pool, {
+    explainedBytesPerSecond:
+      existing.explainedBytesPerSecond + (bytesPerSecond ?? 0),
+    hasUnknownContributor:
+      existing.hasUnknownContributor || bytesPerSecond === null,
+  });
 }
 
 // A pool direction is attributable only when the leading real ZFS pool owns
@@ -257,11 +284,12 @@ interface NamedPoolFlowCandidate {
 // The deadband remains only the minimum material rate for the leader.
 const POOL_DIRECTION_DOMINANCE_SHARE = 0.8;
 const POOL_DIRECTION_RUNNER_UP_RATIO = 4;
+const POOL_TRANSFER_LEG_BALANCE_RATIO = 0.25;
 
 function dominantNamedPoolCandidate(
   snapshot: DashboardSnapshot,
   field: "readBps" | "writeBps",
-  excludedPools: ReadonlySet<string>,
+  claims: ReadonlyMap<string, PoolDirectionClaim>,
 ): NamedPoolFlowCandidate | null {
   const disk = snapshot.telemetry.disk;
   if ((disk.status !== "available" && disk.status !== "stale") || !disk.value) {
@@ -273,9 +301,17 @@ function dominantNamedPoolCandidate(
       (pool) =>
         pool.pool !== "other" &&
         realPools.has(pool.pool) &&
-        !excludedPools.has(pool.pool),
+        !claims.get(pool.pool)?.hasUnknownContributor,
     )
-    .map((pool) => ({ pool: pool.pool, bytesPerSecond: rate(pool[field]) ?? 0 }))
+    .map((pool) => {
+      const measured = rate(pool[field]) ?? 0;
+      const explained = claims.get(pool.pool)?.explainedBytesPerSecond ?? 0;
+      return {
+        pool: pool.pool,
+        bytesPerSecond: Math.max(0, measured - explained),
+        explainedBytesPerSecond: explained,
+      };
+    })
     .sort((a, b) => b.bytesPerSecond - a.bytesPerSecond);
   const top = eligible[0];
   if (!top || top.bytesPerSecond < FLOW_DEADBAND_BPS) return null;
@@ -295,6 +331,7 @@ function dominantNamedPoolCandidate(
   return {
     pool: top.pool,
     bytesPerSecond: top.bytesPerSecond,
+    explainedBytesPerSecond: top.explainedBytesPerSecond,
   };
 }
 
@@ -712,8 +749,8 @@ export function deriveFlows(
     mediaStorage.name !== downloadStorage.name;
 
   let importCopyEmitted = false;
-  const explicitImportReadPools = new Set<string>();
-  const explicitImportWritePools = new Set<string>();
+  let crossPoolImportActive = false;
+  let explicitImportCopyRate: number | null = null;
   for (const arr of ["sonarr", "radarr"] as const) {
     const src = arr === "sonarr" ? sonarr : radarr;
     if (!src.usable) continue;
@@ -723,14 +760,7 @@ export function deriveFlows(
     if (!importing) continue;
     const arrName = arr === "sonarr" ? "Sonarr" : "Radarr";
 
-    // Arr's cross-pool import state owns the source read and destination write
-    // directions semantically, whether or not fresh disk telemetry can render
-    // the explicit byte-carrying tunnel. The opposite directions remain
-    // eligible for unrelated background-copy inference.
-    if (crossPool) {
-      explicitImportReadPools.add(downloadStorage.name);
-      explicitImportWritePools.add(mediaStorage.name);
-    }
+    if (crossPool) crossPoolImportActive = true;
 
     // The organizing signal is always present while importing: the Arr is
     // doing real work whose byte rate is not measured on this lane.
@@ -761,6 +791,7 @@ export function deriveFlows(
       ) {
         const copyRate = Math.min(sourceRead, destWrite);
         importCopyEmitted = true;
+        explicitImportCopyRate = copyRate;
         flows.push(
           makeFlow("import-copy", downloadStorage, mediaStorage, {
             plane: "data",
@@ -785,38 +816,83 @@ export function deriveFlows(
   // A named storage↔storage flow with no explicit controller is only credible
   // when one remaining real ZFS pool overwhelmingly dominates reads and a
   // different one overwhelmingly dominates writes. Directions already claimed
-  // by download, playback, or explicit-import semantics are removed first so
-  // known activity cannot be reinterpreted as an unrelated copy. A stale disk
-  // domain retains the last supportable pair as a frozen observation.
+  // by download, playback, or explicit-import semantics are accounted for so
+  // known activity cannot be reinterpreted as an unrelated copy. Known,
+  // same-unit semantic rates are subtracted from measured pool directions;
+  // an unknown semantic rate keeps that direction ineligible rather than
+  // pretending the residual is exact. A stale disk domain retains the last
+  // supportable unclaimed pair as a frozen observation.
   const resolvedPlayback = resolveJellyfinPlayback(snapshot, now);
-  const backgroundReadExcludedPools = new Set(explicitImportReadPools);
-  const backgroundWriteExcludedPools = new Set(explicitImportWritePools);
+  const backgroundReadClaims: PoolDirectionClaims = new Map();
+  const backgroundWriteClaims: PoolDirectionClaims = new Map();
+  if (crossPool && crossPoolImportActive) {
+    claimPoolDirection(
+      backgroundReadClaims,
+      downloadStorage.name,
+      explicitImportCopyRate,
+    );
+    claimPoolDirection(
+      backgroundWriteClaims,
+      mediaStorage.name,
+      explicitImportCopyRate,
+    );
+  }
   if (qb.usable && downloadStorage.kind === "pool") {
     if (acq.rollup.downloading > 0) {
-      backgroundWriteExcludedPools.add(downloadStorage.name);
+      claimPoolDirection(
+        backgroundWriteClaims,
+        downloadStorage.name,
+        qb.freshness === "live" && snapshot.telemetry.disk.status === "available"
+          ? rate(acq.rollup.aggregateRateBps)
+          : null,
+      );
     }
     if ((acq.rollup.seeding ?? 0) > 0) {
-      backgroundReadExcludedPools.add(downloadStorage.name);
+      claimPoolDirection(
+        backgroundReadClaims,
+        downloadStorage.name,
+        qb.freshness === "live" && snapshot.telemetry.disk.status === "available"
+          ? rate(acq.rollup.uploadRateBps ?? null)
+          : null,
+      );
     }
   }
   if (resolvedPlayback && mediaStorage.kind === "pool") {
-    backgroundReadExcludedPools.add(mediaStorage.name);
+    const playbackRate = resolvedPlayback.playback.headline;
+    claimPoolDirection(
+      backgroundReadClaims,
+      mediaStorage.name,
+      resolvedPlayback.playbackFreshness === "live" &&
+        snapshot.telemetry.disk.status === "available" &&
+        playbackRate.unknownContributors === 0
+        ? playbackRate.knownBytesPerSecond
+        : null,
+    );
   }
 
   const backgroundReader = dominantNamedPoolCandidate(
     snapshot,
     "readBps",
-    backgroundReadExcludedPools,
+    backgroundReadClaims,
   );
   const backgroundWriter = dominantNamedPoolCandidate(
     snapshot,
     "writeBps",
-    backgroundWriteExcludedPools,
+    backgroundWriteClaims,
   );
   if (
     backgroundReader &&
     backgroundWriter &&
-    backgroundReader.pool !== backgroundWriter.pool
+    backgroundReader.pool !== backgroundWriter.pool &&
+    Math.min(
+      backgroundReader.bytesPerSecond,
+      backgroundWriter.bytesPerSecond,
+    ) /
+      Math.max(
+        backgroundReader.bytesPerSecond,
+        backgroundWriter.bytesPerSecond,
+      ) >=
+      POOL_TRANSFER_LEG_BALANCE_RATIO
   ) {
     const backgroundFreshness: FlowFreshness =
       snapshot.telemetry.disk.status === "stale" ? "stale" : "live";
@@ -835,7 +911,11 @@ export function deriveFlows(
           freshness: backgroundFreshness,
           channels: [{ direction: "forward", role: "write", bytesPerSecond: copyRate }],
           rate: transferRateAggregate([copyRate], "derived", backgroundFreshness),
-          provenance: `derived from dominant ${backgroundReader.pool} source reads and ${backgroundWriter.pool} destination writes; no importing controller attributed`,
+          provenance:
+            backgroundReader.explainedBytesPerSecond > 0 ||
+            backgroundWriter.explainedBytesPerSecond > 0
+              ? `derived from dominant residual ${backgroundReader.pool} source reads and ${backgroundWriter.pool} destination writes after accounting for known semantic activity; no importing controller attributed`
+              : `derived from dominant ${backgroundReader.pool} source reads and ${backgroundWriter.pool} destination writes; no importing controller attributed`,
           label: "background storage transfer",
           updatedAt: snapshot.telemetry.disk.updatedAt,
         },

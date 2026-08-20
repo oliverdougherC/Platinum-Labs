@@ -62,6 +62,7 @@ export type TelemetryProfileName =
   | "background-copy-reverse"
   | "background-copy-ambiguous"
   | "background-copy-under-deadband"
+  | "background-copy-live-rollup"
   | "gpu-workload"
   | "active"
   | "container-mixed"
@@ -452,6 +453,25 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
     poolIo: {
       DataStore: { read: 8_000, write: 0 },
       eSATA: { read: 0, write: 7_000 },
+    },
+  },
+  // Sanitized replay of the 2026-08-20 live production failure: background
+  // storage movement from DataStore to eSATA while the acquisition plane is
+  // busy. Pool I/O stays exact so the review screenshot remains evidence, not
+  // a stylized approximation.
+  "background-copy-live-rollup": {
+    cpu: 0.11,
+    hotCores: 4,
+    memFraction: 0.42,
+    gpuUtil: 0,
+    netRxBps: 4_592_792,
+    netTxBps: 404_164,
+    fixedPoolIo: true,
+    poolIo: {
+      DataStore: { read: 39_898_150, write: 0 },
+      NVME: { read: 6_138, write: 1_231_664 },
+      eSATA: { read: 1_636_763, write: 49_927_161 },
+      other: { read: 0, write: 198_458 },
     },
   },
   "gpu-workload": {

@@ -495,6 +495,90 @@ describe("deriveFlows — generic background storage transfer", () => {
     );
   });
 
+  it("preserves the live DataStore to eSATA copy after accounting for known seeding reads", () => {
+    const liveSequence = [
+      {
+        pools: [
+          { pool: "DataStore", readBps: 39_898_150, writeBps: 0 },
+          { pool: "NVME", readBps: 6_138, writeBps: 1_231_664 },
+          { pool: "eSATA", readBps: 1_636_763, writeBps: 49_927_161 },
+          { pool: "other", readBps: 0, writeBps: 198_458 },
+        ],
+        downloadBps: 4_592_792,
+        seedBps: 404_164,
+      },
+      {
+        pools: [
+          { pool: "DataStore", readBps: 41_125_557, writeBps: 0 },
+          { pool: "NVME", readBps: 0, writeBps: 1_058_747 },
+          { pool: "eSATA", readBps: 1_775_393, writeBps: 44_665_102 },
+          { pool: "other", readBps: 0, writeBps: 77_669 },
+        ],
+        downloadBps: 3_400_934,
+        seedBps: 319_937,
+      },
+      {
+        pools: [
+          { pool: "DataStore", readBps: 40_800_256, writeBps: 0 },
+          { pool: "NVME", readBps: 2_048, writeBps: 7_016_448 },
+          { pool: "eSATA", readBps: 1_638_400, writeBps: 38_708_224 },
+          { pool: "other", readBps: 2_048, writeBps: 30_720 },
+        ],
+        downloadBps: 4_582_255,
+        seedBps: 392_409,
+      },
+      {
+        pools: [
+          { pool: "DataStore", readBps: 37_672_152, writeBps: 0 },
+          { pool: "NVME", readBps: 2_046, writeBps: 969_782 },
+          { pool: "eSATA", readBps: 2_104_264, writeBps: 42_435_644 },
+          { pool: "other", readBps: 0, writeBps: 87_976 },
+        ],
+        downloadBps: 2_114_099,
+        seedBps: 269_168,
+      },
+    ] satisfies Array<{
+      pools: PoolIoTelemetry[];
+      downloadBps: number;
+      seedBps: number;
+    }>;
+
+    for (const sample of liveSequence) {
+      const base = makeFakeSnapshot("idle", NOW);
+      const snap = withPoolIo(
+        {
+          ...base,
+          mediaPool: "DataStore",
+          downloadPool: "DataStore",
+          acquisition: {
+            items: [],
+            rollup: {
+              downloading: 2,
+              importing: 14,
+              failedOrStalled: 2,
+              aggregateRateBps: sample.downloadBps,
+              uploadRateBps: sample.seedBps,
+              seeding: 20,
+            },
+          },
+        },
+        sample.pools,
+      );
+
+      const flow = byId(
+        snap,
+        "background-transfer:pool:DataStore->pool:eSATA",
+      );
+      expect(flow).toBeDefined();
+      expect(flow!.channels[0]!.bytesPerSecond).toBe(
+        Math.min(
+          sample.pools[0]!.readBps - sample.seedBps,
+          sample.pools[2]!.writeBps,
+        ),
+      );
+    }
+  });
+
   it("never permits the synthetic other bucket to become an endpoint", () => {
     const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
       { pool: "DataStore", readBps: 40_000_000, writeBps: 0 },
@@ -554,6 +638,50 @@ describe("deriveFlows — generic background storage transfer", () => {
     expect(
       byId(snap, "background-transfer:pool:eSATA->pool:DataStore"),
     ).toBeDefined();
+  });
+
+  it("keeps playback and a much larger residual media-pool copy truthful together", () => {
+    const snap = withPoolIo(
+      { ...makeFakeSnapshot("direct-play", NOW), jellyfinContainer: null },
+      [
+        { pool: "DataStore", readBps: 55_000_000, writeBps: 0 },
+        { pool: "eSATA", readBps: 0, writeBps: 50_000_000 },
+        { pool: "NVME", readBps: 500_000, writeBps: 200_000 },
+      ],
+    );
+
+    expect(byKind(snap, "playback")).toHaveLength(1);
+    const copy = byId(
+      snap,
+      "background-transfer:pool:DataStore->pool:eSATA",
+    );
+    expect(copy).toBeDefined();
+    expect(copy!.channels[0]!.bytesPerSecond).toBe(50_000_000);
+    expect(copy!.provenance).toContain("residual");
+  });
+
+  it("preserves uncertainty when active seeding has no usable byte rate", () => {
+    const base = makeFakeSnapshot("idle", NOW);
+    const snap = withPoolIo(
+      {
+        ...base,
+        downloadPool: "DataStore",
+        acquisition: {
+          items: [],
+          rollup: {
+            ...base.acquisition.rollup,
+            seeding: 1,
+            uploadRateBps: null,
+          },
+        },
+      },
+      [
+        { pool: "DataStore", readBps: 40_000_000, writeBps: 0 },
+        { pool: "eSATA", readBps: 0, writeBps: 45_000_000 },
+      ],
+    );
+
+    expect(byKind(snap, "background-transfer")).toEqual([]);
   });
 
   it("preserves a stale last-known pair with the same identity, endpoints, and rate", () => {
@@ -636,7 +764,7 @@ describe("deriveFlows — generic background storage transfer", () => {
       },
       [
         { pool: "NVME", readBps: 18_000_000, writeBps: 0 },
-        { pool: "DataStore", readBps: 0, writeBps: 31_000_000 },
+        { pool: "DataStore", readBps: 0, writeBps: 18_000_000 },
         { pool: "Archive", readBps: 14_000_000, writeBps: 0 },
         { pool: "Backup", readBps: 0, writeBps: 12_000_000 },
       ],
@@ -654,7 +782,7 @@ describe("deriveFlows — generic background storage transfer", () => {
     const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
       { pool: "NVME", readBps: 90_000_000, writeBps: 0 },
       { pool: "DataStore", readBps: 24_000_000, writeBps: 100_000_000 },
-      { pool: "eSATA", readBps: 0, writeBps: 20_000_000 },
+      { pool: "eSATA", readBps: 0, writeBps: 50_000_000 },
     ]);
 
     expect(byId(snap, "import-copy:pool:NVME->pool:DataStore")).toBeDefined();
@@ -666,7 +794,7 @@ describe("deriveFlows — generic background storage transfer", () => {
 
   it("keeps a background copy into the explicit import source inferable", () => {
     const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
-      { pool: "NVME", readBps: 90_000_000, writeBps: 20_000_000 },
+      { pool: "NVME", readBps: 90_000_000, writeBps: 60_000_000 },
       { pool: "DataStore", readBps: 0, writeBps: 100_000_000 },
       { pool: "eSATA", readBps: 24_000_000, writeBps: 0 },
     ]);
@@ -723,7 +851,7 @@ describe("deriveFlows — generic background storage transfer", () => {
   it("reserves only the explicit source read and destination write directions", () => {
     const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
       { pool: "NVME", readBps: 80_000_000, writeBps: 18_000_000 },
-      { pool: "DataStore", readBps: 20_000_000, writeBps: 90_000_000 },
+      { pool: "DataStore", readBps: 20_000_000, writeBps: 80_000_000 },
       { pool: "eSATA", readBps: 0, writeBps: 0 },
     ]);
 
