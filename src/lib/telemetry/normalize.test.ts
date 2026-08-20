@@ -26,7 +26,8 @@ function sample(at: number, overrides: Partial<RawHostSample> = {}): RawHostSamp
     },
     memory: {
       status: "ok",
-      totalBytes: 135_050_678_272,
+      installedBytes: 137_438_953_472,
+      totalBytes: 135_025_201_152,
       availableBytes: 81_880_268_800,
       swapTotalBytes: 68_719_472_640,
       swapUsedBytes: 258_473_984,
@@ -592,6 +593,26 @@ describe("normalizeHostTelemetry", () => {
     expect(snap.memory.value!.swapUsedBytes).toBeNull();
   });
 
+  it("keeps installed RAM distinct from usable MemTotal when the collector reports both", () => {
+    const snap = normalizeHostTelemetry(null, sample(1000));
+    expect(snap.memory.value!.installedBytes).toBe(137_438_953_472);
+    expect(snap.memory.value!.totalBytes).toBe(135_025_201_152);
+  });
+
+  it("drops contradictory installed RAM values instead of reporting impossible hardware", () => {
+    const snap = normalizeHostTelemetry(null, sample(1000, {
+      memory: {
+        status: "ok",
+        installedBytes: 120,
+        totalBytes: 1000,
+        availableBytes: 400,
+        swapTotalBytes: null,
+        swapUsedBytes: null,
+      },
+    } as Partial<RawHostSample>));
+    expect(snap.memory.value!.installedBytes).toBeNull();
+  });
+
   it("keeps a missing ARC target null instead of echoing size (PLA-273)", () => {
     const noTarget = sample(1000, {
       arc: { status: "ok", sizeBytes: 42, targetBytes: null, hits: null, misses: null },
@@ -604,7 +625,7 @@ describe("normalizeHostTelemetry", () => {
 
   it("computes memory used from total - available and ARC hit ratio", () => {
     const snap = normalizeHostTelemetry(null, sample(1000));
-    expect(snap.memory.value!.usedBytes).toBe(135_050_678_272 - 81_880_268_800);
+    expect(snap.memory.value!.usedBytes).toBe(135_025_201_152 - 81_880_268_800);
     expect(snap.arc.value!.hitRatio).toBeCloseTo(0.9, 5);
   });
 

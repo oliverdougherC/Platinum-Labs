@@ -71,6 +71,8 @@ services:
       # Deliberately NOT all of /sys: the collector only reads
       # devices/system/cpu, so nothing else is exposed to the container.
       - /sys/devices/system/cpu:/host/sys/devices/system/cpu:ro
+      # Read-only host memory-block sysfs subtree for installed RAM capacity.
+      - /sys/devices/system/memory:/host/sys/devices/system/memory:ro
     expose:
       - "9797"
     hostname: zfs-collector

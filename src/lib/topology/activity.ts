@@ -68,6 +68,7 @@ export type FlowKind =
   | "wan-transfer" // network ↔ downloader (download + seed upload channels)
   | "storage-transfer" // downloader ↔ download storage (write + seed-read)
   | "import-copy" // cross-pool import: source storage → destination storage
+  | "background-transfer" // corroborated pool-to-pool copy with no named controller
   | "playback" // media storage → Jellyfin
   | "egress" // Jellyfin → network
   | "control" // Arr ↔ downloader orchestration
@@ -243,6 +244,30 @@ function earliestUpdatedAt(...times: Array<number | null | undefined>): number |
 
 const rate = (bps: number | null | undefined): number | null =>
   typeof bps === "number" && Number.isFinite(bps) ? Math.max(0, bps) : null;
+
+interface NamedPoolFlowCandidate {
+  pool: string;
+  bytesPerSecond: number;
+}
+
+function uniqueNamedPoolCandidate(
+  snapshot: DashboardSnapshot,
+  field: "readBps" | "writeBps",
+  excludedPools: ReadonlySet<string>,
+): NamedPoolFlowCandidate | null {
+  const disk = snapshot.telemetry.disk;
+  if (disk.status !== "available" || !disk.value) return null;
+  const live = disk.value.pools.filter((pool) => {
+    if (excludedPools.has(pool.pool)) return false;
+    const value = rate(pool[field]);
+    return value !== null && value >= FLOW_DEADBAND_BPS;
+  });
+  if (live.length !== 1) return null;
+  return {
+    pool: live[0]!.pool,
+    bytesPerSecond: live[0]![field],
+  };
+}
 
 /**
  * Aggregate for a transfer conduit whose per-direction rates come from one
@@ -658,6 +683,7 @@ export function deriveFlows(
     mediaStorage.name !== downloadStorage.name;
 
   let importCopyEmitted = false;
+  const explicitImportPools = new Set<string>();
   for (const arr of ["sonarr", "radarr"] as const) {
     const src = arr === "sonarr" ? sonarr : radarr;
     if (!src.usable) continue;
@@ -712,8 +738,55 @@ export function deriveFlows(
             controllerServiceId: arr,
           }),
         );
+        explicitImportPools.add(downloadStorage.name);
+        explicitImportPools.add(mediaStorage.name);
       }
     }
+  }
+
+  // --- generic background storage transfer ---------------------------------
+  // A named storage↔storage flow with no explicit controller is only credible
+  // when live disk telemetry shows EXACTLY one remaining named reader pool and
+  // one remaining named writer pool over the deadband. Explicit Arr imports
+  // own their endpoints first; removing those pools prevents a corroborated
+  // import from duplicating itself as a generic copy while still allowing a
+  // separate background pair elsewhere in the topology.
+  const backgroundReader = uniqueNamedPoolCandidate(
+    snapshot,
+    "readBps",
+    explicitImportPools,
+  );
+  const backgroundWriter = uniqueNamedPoolCandidate(
+    snapshot,
+    "writeBps",
+    explicitImportPools,
+  );
+  if (
+    backgroundReader &&
+    backgroundWriter &&
+    backgroundReader.pool !== backgroundWriter.pool
+  ) {
+    const copyRate = Math.min(
+      backgroundReader.bytesPerSecond,
+      backgroundWriter.bytesPerSecond,
+    );
+    flows.push(
+      makeFlow(
+        "background-transfer",
+        { kind: "pool", name: backgroundReader.pool },
+        { kind: "pool", name: backgroundWriter.pool },
+        {
+          plane: "data",
+          evidence: "derived",
+          freshness: "live",
+          channels: [{ direction: "forward", role: "write", bytesPerSecond: copyRate }],
+          rate: transferRateAggregate([copyRate], "derived", "live"),
+          provenance: `derived from corroborating ${backgroundReader.pool} source reads and ${backgroundWriter.pool} destination writes; no importing controller attributed`,
+          label: "background storage transfer",
+          updatedAt: snapshot.telemetry.disk.updatedAt,
+        },
+      ),
+    );
   }
 
   // --- playback: media storage → Jellyfin → network --------------------------

@@ -63,6 +63,7 @@ const rawCpuSchema = z.object({
 
 const rawMemorySchema = z.object({
   status: sectionStatus,
+  installedBytes: z.number().nullish(),
   totalBytes: z.number().nullish(),
   availableBytes: z.number().nullish(),
   swapTotalBytes: z.number().nullish(),
@@ -334,6 +335,12 @@ function normalizeMemory(curr: RawHostSample): TelemetryDomain<MemoryTelemetry> 
   return domain(
     "available",
     {
+      installedBytes:
+        typeof raw.installedBytes === "number" &&
+        Number.isFinite(raw.installedBytes) &&
+        raw.installedBytes >= raw.totalBytes
+          ? raw.installedBytes
+          : null,
       totalBytes: raw.totalBytes,
       availableBytes: raw.availableBytes,
       usedBytes: Math.max(0, raw.totalBytes - raw.availableBytes),

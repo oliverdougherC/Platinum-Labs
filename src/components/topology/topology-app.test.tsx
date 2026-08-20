@@ -50,6 +50,13 @@ describe("TopologyApp — frozen/reduced-motion and composition", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
+  it("renders Platinum Labs as the only top-left product branding", () => {
+    renderApp("idle");
+    expect(
+      screen.getByRole("heading", { name: "Platinum Labs" }),
+    ).toBeInTheDocument();
+  });
+
   it("renders every pool as a storage body with LOGICAL capacity", () => {
     renderApp("idle");
     expect(screen.getByText("DataStore")).toBeInTheDocument();

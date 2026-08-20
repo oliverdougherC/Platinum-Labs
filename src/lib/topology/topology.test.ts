@@ -157,6 +157,8 @@ const flowsOf = (snap: DashboardSnapshot) => deriveFlows(snap, NOW);
 const ids = (snap: DashboardSnapshot) => flowsOf(snap).map((f) => f.id);
 const byId = (snap: DashboardSnapshot, id: string): FlowObservation | undefined =>
   flowsOf(snap).find((f) => f.id === id);
+const byKind = (snap: DashboardSnapshot, kind: FlowObservation["kind"]) =>
+  flowsOf(snap).filter((f) => f.kind === kind);
 
 describe("deriveFlows — motion only from real state (PLA-267)", () => {
   it("idle scenario produces NO flows", () => {
@@ -439,6 +441,103 @@ describe("deriveFlows — same-pool vs cross-pool imports (PLA-275)", () => {
     ]);
     const copy = byId(snap, "import-copy:pool:NVME->pool:DataStore")!;
     expect(copy.channels[0]!.bytesPerSecond).toBe(18_000_000);
+  });
+});
+
+describe("deriveFlows — generic background storage transfer", () => {
+  it("derives one named reader→writer pair when disk telemetry shows a unique live copy", () => {
+    const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "Archive", readBps: 28_000_000, writeBps: 0 },
+      { pool: "Backup", readBps: 0, writeBps: 34_000_000 },
+      { pool: "NVME", readBps: 0, writeBps: 0 },
+    ]);
+    const flow = byId(snap, "background-transfer:pool:Archive->pool:Backup")!;
+    expect(flow.evidence).toBe("derived");
+    expect(flow.freshness).toBe("live");
+    expect(flow.channels).toEqual([
+      expect.objectContaining({
+        direction: "forward",
+        role: "write",
+        bytesPerSecond: 28_000_000,
+      }),
+    ]);
+    expect(flow.rate).toMatchObject({
+      knownBytesPerSecond: 28_000_000,
+      coverage: "complete",
+      evidence: "derived",
+      freshness: "live",
+    });
+  });
+
+  it("reverses the endpoints when the opposite pool is the unique live reader", () => {
+    const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "Archive", readBps: 0, writeBps: 21_000_000 },
+      { pool: "Backup", readBps: 17_000_000, writeBps: 0 },
+    ]);
+    const flow = byKind(snap, "background-transfer")[0]!;
+    expect(flow.from).toEqual({ kind: "pool", name: "Backup" });
+    expect(flow.to).toEqual({ kind: "pool", name: "Archive" });
+    expect(flow.channels[0]!.bytesPerSecond).toBe(17_000_000);
+  });
+
+  it("stays quiet when the live reader/writer pair is ambiguous", () => {
+    const snap = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "Archive", readBps: 28_000_000, writeBps: 0 },
+      { pool: "Scratch", readBps: 19_000_000, writeBps: 0 },
+      { pool: "Backup", readBps: 0, writeBps: 34_000_000 },
+    ]);
+    expect(byKind(snap, "background-transfer")).toEqual([]);
+  });
+
+  it("does not animate for stale, unavailable, zero, or under-deadband disk telemetry", () => {
+    const base = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "Archive", readBps: 28_000_000, writeBps: 0 },
+      { pool: "Backup", readBps: 0, writeBps: 34_000_000 },
+    ]);
+    const staleDisk: DashboardSnapshot = {
+      ...base,
+      telemetry: {
+        ...base.telemetry,
+        disk: {
+          ...base.telemetry.disk,
+          status: "stale",
+          updatedAt: NOW - 10 * 60_000,
+        },
+      },
+    };
+    const unavailableDisk: DashboardSnapshot = {
+      ...base,
+      telemetry: {
+        ...base.telemetry,
+        disk: { status: "unavailable", updatedAt: null, value: null },
+      },
+    };
+    const zero = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "Archive", readBps: 0, writeBps: 0 },
+      { pool: "Backup", readBps: 0, writeBps: 0 },
+    ]);
+    const underDeadband = withPoolIo(makeFakeSnapshot("idle", NOW), [
+      { pool: "Archive", readBps: FLOW_DEADBAND_BPS - 1, writeBps: 0 },
+      { pool: "Backup", readBps: 0, writeBps: FLOW_DEADBAND_BPS - 1 },
+    ]);
+    expect(byKind(staleDisk, "background-transfer")).toEqual([]);
+    expect(byKind(unavailableDisk, "background-transfer")).toEqual([]);
+    expect(byKind(zero, "background-transfer")).toEqual([]);
+    expect(byKind(underDeadband, "background-transfer")).toEqual([]);
+  });
+
+  it("lets explicit import-copy own its pools while a separate background pair still coexists", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 18_000_000, writeBps: 0 },
+      { pool: "DataStore", readBps: 0, writeBps: 31_000_000 },
+      { pool: "Archive", readBps: 14_000_000, writeBps: 0 },
+      { pool: "Backup", readBps: 0, writeBps: 12_000_000 },
+    ]);
+    expect(byKind(snap, "import-copy")).toHaveLength(1);
+    expect(byId(snap, "import-copy:pool:NVME->pool:DataStore")).toBeDefined();
+    expect(byKind(snap, "background-transfer")).toHaveLength(1);
+    expect(byId(snap, "background-transfer:pool:Archive->pool:Backup")).toBeDefined();
+    expect(byId(snap, "background-transfer:pool:NVME->pool:DataStore")).toBeUndefined();
   });
 });
 

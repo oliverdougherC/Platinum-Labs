@@ -7,7 +7,8 @@
  * frame — the property the screenshot harness (PLA-270) depends on.
  *
  * The simulated machine mirrors the real p910 host after the 2026 CPU upgrade:
- * two sockets, 44 physical cores, SMT on (88 logical CPUs), 126 GiB RAM, a
+ * two sockets, 44 physical cores, SMT on (88 logical CPUs), 128 GiB installed
+ * RAM with a smaller kernel-usable MemTotal, a
  * GTX 1070, three pools (DataStore / NVME / eSATA).
  */
 
@@ -42,7 +43,10 @@ export const FAKE_CPU_TOPOLOGY: CpuTopology = {
 };
 export const FAKE_CORE_COUNT = FAKE_CPU_TOPOLOGY.logicalCpus;
 const GiB = 1024 ** 3;
-const MEM_TOTAL = 126 * GiB;
+const MEM_INSTALLED = 128 * GiB;
+// Sanitized p910 MemTotal captured read-only on 2026-08-20. This remains
+// distinct from installed capacity so fake mode exercises the real semantics.
+const MEM_TOTAL = 135_025_201_152;
 const SWAP_TOTAL = 64 * GiB;
 
 export type TelemetryProfileName =
@@ -54,6 +58,10 @@ export type TelemetryProfileName =
   | "seeding"
   | "importing"
   | "same-pool-import"
+  | "background-copy"
+  | "background-copy-reverse"
+  | "background-copy-ambiguous"
+  | "background-copy-under-deadband"
   | "gpu-workload"
   | "active"
   | "container-mixed"
@@ -386,6 +394,62 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
       DataStore: { read: 1_200_000, write: 2_800_000 },
     },
   },
+  // Sanitized replay of the live p910 observation captured for V4.1: one
+  // materially active reader (DataStore) and one different writer (eSATA).
+  // The paired rate is derived downstream and must never exceed either side.
+  "background-copy": {
+    cpu: 0.1,
+    hotCores: 4,
+    memFraction: 0.42,
+    gpuUtil: 0,
+    netRxBps: 180_000,
+    netTxBps: 120_000,
+    poolIo: {
+      DataStore: { read: 53_800_000, write: 0 },
+      eSATA: { read: 0, write: 59_600_000 },
+      NVME: { read: 0, write: 8_000 },
+    },
+  },
+  "background-copy-reverse": {
+    cpu: 0.1,
+    hotCores: 4,
+    memFraction: 0.42,
+    gpuUtil: 0,
+    netRxBps: 180_000,
+    netTxBps: 120_000,
+    poolIo: {
+      DataStore: { read: 0, write: 41_000_000 },
+      eSATA: { read: 44_000_000, write: 0 },
+      NVME: { read: 0, write: 8_000 },
+    },
+  },
+  // Two plausible source pools: the UI may show local pool activity, but it
+  // must not fabricate either direct arrow to eSATA.
+  "background-copy-ambiguous": {
+    cpu: 0.12,
+    hotCores: 5,
+    memFraction: 0.43,
+    gpuUtil: 0,
+    netRxBps: 180_000,
+    netTxBps: 120_000,
+    poolIo: {
+      DataStore: { read: 52_000_000, write: 0 },
+      NVME: { read: 18_000_000, write: 0 },
+      eSATA: { read: 0, write: 58_000_000 },
+    },
+  },
+  "background-copy-under-deadband": {
+    cpu: 0.06,
+    hotCores: 2,
+    memFraction: 0.39,
+    gpuUtil: 0,
+    netRxBps: 40_000,
+    netTxBps: 30_000,
+    poolIo: {
+      DataStore: { read: 8_000, write: 0 },
+      eSATA: { read: 0, write: 7_000 },
+    },
+  },
   "gpu-workload": {
     cpu: 0.18,
     hotCores: 6,
@@ -580,6 +644,7 @@ export function makeFakeTelemetry(
     ),
     memory: available(
       {
+        installedBytes: MEM_INSTALLED,
         totalBytes: MEM_TOTAL,
         usedBytes: Math.round(MEM_TOTAL * (profile.memFraction + 0.02 * breathing)),
         availableBytes: Math.round(

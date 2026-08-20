@@ -336,21 +336,19 @@ function drawCell(
     const amber = KINETIC_TONES.attention!;
     const a = dim * visual.attentionW;
     const pulse = still ? 0.75 : 0.65 + 0.35 * Math.sin(t * 2.1 + x * 0.05);
-    ctx.beginPath();
-    ctx.arc(x, y, r + 3.4, 0, Math.PI * 2);
+    roundedRectPath(ctx, x - (r + 3.4), y - (r + 3.4), (r + 3.4) * 2, (r + 3.4) * 2, 6);
     ctx.strokeStyle = rgba(amber, 0.55 * pulse * a);
     ctx.lineWidth = 1.2;
     ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
+    roundedRectPath(ctx, x - r, y - r, r * 2, r * 2, 5);
     ctx.fillStyle = rgba(amber, 0.5 * a);
     ctx.fill();
   }
 
   if (visual.unknownW > 0.01) {
     // Unknown ≠ proven quiet: hollow dashed ring, never a dim confirmed dot.
-    ctx.beginPath();
-    ctx.arc(x, y, Math.max(r - 0.5, 1.6), 0, Math.PI * 2);
+    const inner = Math.max(r - 0.5, 1.6);
+    roundedRectPath(ctx, x - inner, y - inner, inner * 2, inner * 2, 4);
     ctx.strokeStyle = rgba(neutral, 0.22 * dim * visual.unknownW);
     ctx.lineWidth = 1;
     ctx.setLineDash([2, 3]);
@@ -372,8 +370,7 @@ function drawCell(
       );
     }
     const glow = 0.16 + visual.intensity * 0.72;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
+    roundedRectPath(ctx, x - r, y - r, r * 2, r * 2, 5);
     ctx.fillStyle = rgba(neutral, glow * dim * knownW);
     ctx.fill();
   }

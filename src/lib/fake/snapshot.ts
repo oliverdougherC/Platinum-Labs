@@ -485,6 +485,12 @@ export const SCENARIOS = [
   "radarr-import",
   "same-pool-import",
   "cross-pool-import",
+  "background-copy",
+  "background-copy-reverse",
+  "background-copy-ambiguous",
+  "background-copy-stale",
+  "background-copy-under-deadband",
+  "background-copy-with-import",
   "gpu-workload",
   "pool-scrub",
   "docker-unavailable",
@@ -537,6 +543,12 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "radarr-import": "Radarr import",
   "same-pool-import": "Same-pool import (organizing)",
   "cross-pool-import": "Cross-pool import (copy)",
+  "background-copy": "Background copy — DataStore to eSATA",
+  "background-copy-reverse": "Background copy — eSATA to DataStore",
+  "background-copy-ambiguous": "Background storage — ambiguous pools",
+  "background-copy-stale": "Background storage — stale observation",
+  "background-copy-under-deadband": "Background storage — below deadband",
+  "background-copy-with-import": "Background copy + explicit import",
   "gpu-workload": "GPU-heavy workload",
   "pool-scrub": "DataStore scrub in progress",
   "docker-unavailable": "Docker inventory unavailable",
@@ -1033,6 +1045,61 @@ const BUILDERS: Record<FakeScenario, Builder> = {
   },
 
   "cross-pool-import": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionImporting(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "importing",
+    }),
+
+  "background-copy": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "background-copy",
+    }),
+
+  "background-copy-reverse": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "background-copy-reverse",
+    }),
+
+  "background-copy-ambiguous": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "background-copy-ambiguous",
+    }),
+
+  "background-copy-stale": (now) => {
+    const snapshot = compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "background-copy",
+    });
+    snapshot.telemetry.disk = {
+      ...snapshot.telemetry.disk,
+      status: "stale",
+      updatedAt: now - 8 * MINUTE,
+    };
+    return snapshot;
+  },
+
+  "background-copy-under-deadband": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "background-copy-under-deadband",
+    }),
+
+  "background-copy-with-import": (now) =>
     compose(now, {
       jellyfin: jellyfinIdle(now),
       acquisition: acquisitionImporting(),

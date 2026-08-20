@@ -58,6 +58,27 @@ function jellyfin(s: KineticScene) {
   return s.anchors.find((a) => a.id === "jellyfin")!;
 }
 
+function withPoolIo(
+  snapshot: DashboardSnapshot,
+  pools: Array<{ pool: string; readBps: number; writeBps: number }>,
+): DashboardSnapshot {
+  return {
+    ...snapshot,
+    telemetry: {
+      ...snapshot.telemetry,
+      disk: {
+        status: "available",
+        updatedAt: NOW,
+        value: {
+          readBps: pools.reduce((sum, pool) => sum + pool.readBps, 0),
+          writeBps: pools.reduce((sum, pool) => sum + pool.writeBps, 0),
+          pools,
+        },
+      },
+    },
+  };
+}
+
 
 describe("buildKineticScene", () => {
   it("keeps a quiet host quiet: no flows, no anchor glow, nothing animates", () => {
@@ -107,6 +128,21 @@ describe("buildKineticScene", () => {
     const s = scene("same-pool-import");
     expect(s.flows.some((f) => f.kind === "import-copy")).toBe(false);
     expect(s.flows.some((f) => f.kind === "organize")).toBe(true);
+  });
+
+  it("renders a generic background pool copy as an import-toned particle flow", () => {
+    const snapshot = withPoolIo(mutableSnapshot("idle"), [
+      { pool: "Archive", readBps: 28_000_000, writeBps: 0 },
+      { pool: "Backup", readBps: 0, writeBps: 34_000_000 },
+    ]);
+    const s = sceneOf(snapshot);
+    const flow = s.flows.find((f) => f.kind === "background-transfer");
+    expect(flow).toBeDefined();
+    expect(flow!.tone).toBe("import");
+    expect(flow!.treatment).toBe("particles");
+    expect(flow!.from).toEqual({ kind: "pool", name: "Archive" });
+    expect(flow!.to).toEqual({ kind: "pool", name: "Backup" });
+    expect(flow!.rateBps).toBe(28_000_000);
   });
 
   it("freezes stale work instead of animating it", () => {
@@ -176,6 +212,19 @@ describe("buildKineticScene", () => {
     expect(media.name).toBe("DataStore");
     expect(media.capacityFraction).toBeGreaterThan(0);
     expect(media.capacityFraction).toBeLessThanOrEqual(1);
+  });
+
+  it("shows installed RAM in binary units and keeps usable RAM separate when available", () => {
+    const snapshot = mutableSnapshot("idle");
+    if (snapshot.telemetry.memory.value === null) throw new Error("fixture memory missing");
+    snapshot.telemetry.memory.value.installedBytes = 128 * 1024 ** 3;
+    snapshot.telemetry.memory.value.totalBytes = 135_025_201_152;
+    snapshot.telemetry.memory.value.usedBytes = 48 * 1024 ** 3;
+    snapshot.telemetry.memory.value.availableBytes =
+      snapshot.telemetry.memory.value.totalBytes - snapshot.telemetry.memory.value.usedBytes;
+    const s = sceneOf(snapshot);
+    expect(s.instrument.memory.primary).toBe("128 GiB");
+    expect(s.instrument.memory.secondary).toBe("usable 126 GiB");
   });
 });
 
