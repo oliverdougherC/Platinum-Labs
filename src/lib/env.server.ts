@@ -85,8 +85,12 @@ const optionalBoundedInt = (min: number, max: number) =>
 const envSchema = z.object({
   /** Master switch between deterministic fake data and live connectors. */
   HOMELAB_DATA_MODE: z.enum(["fake", "live"]).default("fake"),
-  /** Front-end surface selector while V3 fabric ships behind a server flag. */
-  HOMELAB_UI_MODE: z.enum(["topology", "fabric"]).default("topology"),
+  /**
+   * Front-end surface selector while alternative renderers ship behind a
+   * server flag: `topology` (V2.1, the safe default/rollback surface),
+   * `fabric` (V3 server fabric), `kinetic` (V4 kinetic flow canvas).
+   */
+  HOMELAB_UI_MODE: z.enum(["topology", "fabric", "kinetic"]).default("topology"),
   /** Optional operator-declared fabric links for the V3 renderer seam. */
   HOMELAB_FABRIC_RELATIONSHIPS: optionalFabricRelationships,
   /** Deliberate browser-facing host label; never derived from DNS or interfaces. */

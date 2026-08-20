@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/icons";
 import { MediaSearch } from "@/components/media-search";
 import { FabricApp } from "@/components/fabric/fabric-app";
+import { KineticApp } from "@/components/kinetic/kinetic-app";
 import { DetailDrawer } from "@/components/topology/detail-drawer";
 import { MetricsRail } from "@/components/topology/metrics-rail";
 import {
@@ -43,7 +44,7 @@ export interface InitialPanels {
   drawer?: string | null;
 }
 
-export type TopologyUiMode = "topology" | "fabric";
+export type TopologyUiMode = "topology" | "fabric" | "kinetic";
 
 function TransportStatus({ state }: { state: ShellTransportState }) {
   if (state === "healthy") return null;
@@ -290,7 +291,15 @@ export function TopologyApp({
       </header>
 
       <main className="relative min-h-0 flex-1">
-        {uiMode === "fabric" ? (
+        {uiMode === "kinetic" ? (
+          <KineticApp
+            snapshot={snapshot}
+            now={referenceNow}
+            seerrConfigured={seerr.search}
+            frozen={frozen}
+            devControls={devControls}
+          />
+        ) : uiMode === "fabric" ? (
           <FabricApp
             snapshot={snapshot}
             now={referenceNow}

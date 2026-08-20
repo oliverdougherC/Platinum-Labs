@@ -38,7 +38,9 @@ export default async function HomePage({
   const fake = getDataMode() === "fake";
   const configuredUiMode = getUiMode();
   const uiMode: ServerEnv["HOMELAB_UI_MODE"] =
-    devControls && queryUiMode === "fabric" ? "fabric" : configuredUiMode;
+    devControls && (queryUiMode === "fabric" || queryUiMode === "kinetic")
+      ? queryUiMode
+      : configuredUiMode;
 
   // Freeze is a dev/screenshot affordance: fake mode + dev controls only.
   const freezeRaw = devControls && fake ? Number(one(params.freeze)) : Number.NaN;

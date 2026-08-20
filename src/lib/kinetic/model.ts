@@ -692,8 +692,19 @@ export function buildKineticScene(
       },
     ],
     field: buildField(snapshot, scene),
-    fieldTotal: scene.docker.total,
-    fieldRunning: scene.docker.running,
+    // A running/total claim is only made while Docker telemetry is usable;
+    // retained last-known identity keeps the field visible but must not
+    // assert a live workload count.
+    fieldTotal:
+      snapshot.telemetry.docker.status === "available" ||
+      snapshot.telemetry.docker.status === "stale"
+        ? scene.docker.total
+        : null,
+    fieldRunning:
+      snapshot.telemetry.docker.status === "available" ||
+      snapshot.telemetry.docker.status === "stale"
+        ? scene.docker.running
+        : null,
     storage: buildStorage(scene),
     flows,
     attention: buildAttention(snapshot),

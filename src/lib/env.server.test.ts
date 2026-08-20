@@ -134,6 +134,11 @@ describe("HOMELAB_UI_MODE parsing", () => {
     expect(getServerEnv().HOMELAB_UI_MODE).toBe("fabric");
   });
 
+  it("accepts the kinetic V4 flag", () => {
+    setEnv({ HOMELAB_UI_MODE: "kinetic" });
+    expect(getServerEnv().HOMELAB_UI_MODE).toBe("kinetic");
+  });
+
   it("rejects unknown UI modes", () => {
     setEnv({ HOMELAB_UI_MODE: "v4" });
     expect(() => getServerEnv()).toThrow(/HOMELAB_UI_MODE/);
