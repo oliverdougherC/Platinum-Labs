@@ -175,6 +175,9 @@ const KINETIC_SHOTS = [
   // total rate is unknown — state-only breathing, no particles, no 0 B/s
   // claim. Must visibly differ from 22-v4-confirmed-zero.
   { name: "26-v4-partial-zero-unknown-1920x1080", scenario: "partial-zero", w: 1920, h: 1080 },
+  // qBittorrent producer truth: active downloads keep both semantic
+  // relationships visible when the aggregate transfer counter is unavailable.
+  { name: "27-v4-download-rate-unknown-1920x1080", scenario: "download-rate-unknown", w: 1920, h: 1080 },
 ];
 
 const A_PLUS_ACTIVITY_SIGNATURES = new Map();
@@ -297,6 +300,23 @@ async function validateKineticShot(page, shot) {
   const bandText = await page.locator("[data-kinetic-stage] header").innerText();
   if (!bandText.includes("44C / 88T")) {
     throw new Error(`instrument band lacks the detected CPU topology (${shot.name})`);
+  }
+  if (shot.scenario === "download-rate-unknown") {
+    const anchorLabel =
+      (await page.locator('[data-kinetic-anchor="qbittorrent"]').getAttribute("aria-label")) ?? "";
+    const flowCopy =
+      (await page.locator('[aria-label="Active data flows"]').textContent()) ?? "";
+    if (!anchorLabel.includes("2 downloading") || anchorLabel.includes("B/s")) {
+      throw new Error(`unknown-rate qBittorrent anchor is untruthful (${shot.name})`);
+    }
+    if (
+      !flowCopy.includes("WAN transfer") ||
+      !flowCopy.includes("staging I/O") ||
+      !flowCopy.includes("rate unknown") ||
+      flowCopy.includes("0 B/s")
+    ) {
+      throw new Error(`unknown-rate qBittorrent flow copy is untruthful (${shot.name})`);
+    }
   }
   if (shot.action?.startsWith("kinetic-anchor:") || shot.action?.startsWith("kinetic-cell:")) {
     if ((await page.locator("[data-kinetic-inspector]").count()) !== 1) {

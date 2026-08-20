@@ -372,62 +372,148 @@ describe("partial known zero is never a confirmed zero", () => {
   });
 });
 
-describe("active download with unknown rate (final producer audit)", () => {
-  it("keeps the WAN and storage conduits alive as state-only instead of disappearing", () => {
-    // qBittorrent truthfully reports active downloads while its transfer
-    // counters are unavailable: known work + unknown magnitude must be a
-    // state-only path, never absence.
-    const snapshot = mutableSnapshot("downloads");
-    snapshot.acquisition.rollup.aggregateRateBps = null;
-    snapshot.acquisition.rollup.uploadRateBps = 0;
-    snapshot.acquisition.rollup.seeding = 0;
-    expect(snapshot.acquisition.rollup.downloading).toBeGreaterThan(0);
-
-    const observations = deriveFlows(snapshot, NOW);
-    const wan = observations.find((f) => f.kind === "wan-transfer");
-    const storage = observations.find((f) => f.kind === "storage-transfer");
+describe("qBittorrent active-direction rate truth (final producer audit)", () => {
+  function observations(snapshot: DashboardSnapshot) {
+    const flows = deriveFlows(snapshot, NOW);
+    const wan = flows.find((flow) => flow.kind === "wan-transfer");
+    const storage = flows.find((flow) => flow.kind === "storage-transfer");
     expect(wan).toBeDefined();
     expect(storage).toBeDefined();
-    for (const obs of [wan!, storage!]) {
-      expect(obs.evidence).toBe("state-only");
-      expect(obs.rate).toMatchObject({
+    return [wan!, storage!] as const;
+  }
+
+  function kineticTransfers(snapshot: DashboardSnapshot) {
+    const flows = sceneOf(snapshot).flows.filter(
+      (flow) => flow.kind === "wan-transfer" || flow.kind === "storage-transfer",
+    );
+    expect(flows).toHaveLength(2);
+    return flows;
+  }
+
+  it("1. download active + rate unknown keeps WAN/storage state-only and the anchor active", () => {
+    const snapshot = makeFakeSnapshot("download-rate-unknown", NOW);
+    for (const flow of observations(snapshot)) {
+      expect(flow.evidence).toBe("state-only");
+      expect(flow.rate).toMatchObject({
         knownBytesPerSecond: null,
         unknownContributors: 1,
         coverage: "unknown",
       });
-      expect(obs.channels).toHaveLength(1);
-      expect(obs.channels[0]!.bytesPerSecond).toBeNull();
-      expect(classifyFlowRate(obs)).toBe("unknown");
+      expect(flow.channels).toEqual([
+        expect.objectContaining({ direction: "forward", bytesPerSecond: null }),
+      ]);
+      expect(classifyFlowRate(flow)).toBe("unknown");
     }
-
-    const s = sceneOf(snapshot);
-    const kineticWan = s.flows.find((f) => f.kind === "wan-transfer")!;
-    const kineticStorage = s.flows.find((f) => f.kind === "storage-transfer")!;
-    for (const flow of [kineticWan, kineticStorage]) {
-      // State-only: breathing hairline, no particles, no throughput width,
-      // and no numeric claim anywhere downstream.
+    for (const flow of kineticTransfers(snapshot)) {
       expect(flow.treatment).toBe("state-only");
+      expect(flow.treatment).not.toBe("particles");
       expect(flow.rateBps).toBeNull();
     }
-    // qBittorrent still reads as downloading — without a fabricated rate.
-    const qb = s.anchors.find((a) => a.id === "qbittorrent")!;
+    const qb = sceneOf(snapshot).anchors.find((anchor) => anchor.id === "qbittorrent")!;
     expect(qb.active).toBe(true);
-    expect(qb.headline).toContain("downloading");
+    expect(qb.headline).toBe("2 downloading");
     expect(qb.rateLine).toBeNull();
     expect(qb.glow).toBeCloseTo(0.35, 5);
   });
 
-  it("keeps an unknown active direction as a nullable channel beside a known one", () => {
+  it("2. seed active + upload rate unknown keeps both reverse relationships state-only", () => {
+    const snapshot = mutableSnapshot("seed-only");
+    snapshot.acquisition.rollup.uploadRateBps = null;
+    for (const flow of observations(snapshot)) {
+      expect(flow.rate).toMatchObject({
+        knownBytesPerSecond: null,
+        unknownContributors: 1,
+        coverage: "unknown",
+      });
+      expect(flow.channels).toEqual([
+        expect.objectContaining({ direction: "reverse", bytesPerSecond: null }),
+      ]);
+      expect(classifyFlowRate(flow)).toBe("unknown");
+    }
+    for (const flow of kineticTransfers(snapshot)) {
+      expect(flow.treatment).toBe("state-only");
+      expect(flow.rateBps).toBeNull();
+    }
+    const qb = sceneOf(snapshot).anchors.find((anchor) => anchor.id === "qbittorrent")!;
+    expect(qb.headline).toBe("4 seeding");
+    expect(qb.rateLine).toBeNull();
+  });
+
+  it("3. known positive download + unknown seed stays partial and live", () => {
     const snapshot = mutableSnapshot("seeding");
-    snapshot.acquisition.rollup.aggregateRateBps = null; // download rate lost
-    const wan = deriveFlows(snapshot, NOW).find((f) => f.kind === "wan-transfer")!;
-    // Both directions participate: the seed carries its measured rate, the
-    // download rides as an explicit unknown — partial, never complete.
-    expect(wan.channels).toHaveLength(2);
-    expect(wan.channels.find((c) => c.direction === "forward")!.bytesPerSecond).toBeNull();
-    expect(wan.channels.find((c) => c.direction === "reverse")!.bytesPerSecond).toBeGreaterThan(0);
-    expect(wan.rate).toMatchObject({ coverage: "partial", unknownContributors: 1 });
-    expect(classifyFlowRate(wan)).toBe("positive");
+    snapshot.acquisition.rollup.uploadRateBps = null;
+    for (const flow of observations(snapshot)) {
+      expect(flow.channels).toEqual([
+        expect.objectContaining({ direction: "forward", bytesPerSecond: 7_500_000 }),
+        expect.objectContaining({ direction: "reverse", bytesPerSecond: null }),
+      ]);
+      expect(flow.rate).toMatchObject({
+        knownBytesPerSecond: 7_500_000,
+        unknownContributors: 1,
+        coverage: "partial",
+      });
+      expect(classifyFlowRate(flow)).toBe("positive");
+    }
+    for (const flow of kineticTransfers(snapshot)) {
+      expect(flow.treatment).toBe("particles");
+      expect(flow.rateBps).toBe(7_500_000);
+    }
+  });
+
+  it("4. unknown download + confirmed-zero seed is partial unknown, never confirmed-zero", () => {
+    const snapshot = mutableSnapshot("download-rate-unknown");
+    snapshot.acquisition.rollup.seeding = 2;
+    snapshot.acquisition.rollup.uploadRateBps = 0;
+    for (const flow of observations(snapshot)) {
+      expect(flow.channels).toEqual([
+        expect.objectContaining({ direction: "forward", bytesPerSecond: null }),
+        expect.objectContaining({ direction: "reverse", bytesPerSecond: 0 }),
+      ]);
+      expect(flow.rate).toMatchObject({
+        knownBytesPerSecond: 0,
+        unknownContributors: 1,
+        coverage: "partial",
+      });
+      expect(classifyFlowRate(flow)).toBe("unknown");
+    }
+    for (const flow of kineticTransfers(snapshot)) {
+      expect(flow.treatment).toBe("state-only");
+      expect(flow.treatment).not.toBe("confirmed-zero");
+      expect(flow.rateBps).toBeNull();
+    }
+  });
+
+  it("5. complete authoritative zero remains confirmed-zero and motionless", () => {
+    const snapshot = makeFakeSnapshot("confirmed-zero", NOW);
+    for (const flow of observations(snapshot)) {
+      expect(flow.rate).toMatchObject({
+        knownBytesPerSecond: 0,
+        unknownContributors: 0,
+        coverage: "complete",
+        freshness: "live",
+      });
+      expect(classifyFlowRate(flow)).toBe("confirmed-zero");
+    }
+    for (const flow of kineticTransfers(snapshot)) {
+      expect(flow.treatment).toBe("confirmed-zero");
+      expect(flow.rateBps).toBe(0);
+    }
+    expect(sceneAnimates(sceneOf(snapshot))).toBe(false);
+  });
+
+  it("6. stale qBittorrent wins over an active unknown rate", () => {
+    const snapshot = mutableSnapshot("download-rate-unknown");
+    const qbHealth = snapshot.health.find((health) => health.id === "qbittorrent")!;
+    qbHealth.lastSuccessAt = NOW - 10 * 60_000;
+    for (const flow of observations(snapshot)) {
+      expect(flow.freshness).toBe("stale");
+      expect(flow.rate?.coverage).toBe("unknown");
+      expect(classifyFlowRate(flow)).toBe("stale");
+    }
+    for (const flow of kineticTransfers(snapshot)) {
+      expect(flow.treatment).toBe("stale");
+      expect(flow.treatment).not.toBe("particles");
+    }
   });
 });
 

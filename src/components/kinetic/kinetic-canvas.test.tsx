@@ -146,6 +146,25 @@ describe("KineticCanvas continuity", () => {
     expect(inspector.textContent).not.toContain("0 B/s");
   });
 
+  it("keeps active qBittorrent unknown-rate flows and copy visible without a zero claim", () => {
+    const snapshot = makeFakeSnapshot("download-rate-unknown", NOW);
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    const flowList = container.querySelector('[aria-label="Active data flows"]')!;
+    expect(flowList.textContent).toContain("WAN transfer — qBittorrent download · rate unknown");
+    expect(flowList.textContent).toContain("staging I/O — download landing on storage · rate unknown");
+    expect(flowList.textContent).not.toContain("0 B/s");
+
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="qbittorrent"]',
+    )!;
+    expect(anchor.getAttribute("aria-label")).toContain("2 downloading");
+    expect(anchor.getAttribute("aria-label")).not.toContain("B/s");
+    fireEvent.click(anchor);
+    const inspector = container.querySelector("[data-kinetic-inspector]")!;
+    expect(inspector.textContent).toContain("rate unknown");
+    expect(inspector.textContent).not.toContain("0 B/s");
+  });
+
   it("restores focus to the initiating element when the inspector closes", () => {
     const snapshot = makeFakeSnapshot("active", NOW);
     const { container } = render(<KineticCanvas {...props(snapshot)} />);

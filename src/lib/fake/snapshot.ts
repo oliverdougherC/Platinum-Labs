@@ -206,6 +206,24 @@ function acquisitionConfirmedZero(): AcquisitionSnapshot {
   return { items, rollup: rollup(items) };
 }
 
+/** Active qBittorrent downloads whose aggregate transfer counter is unavailable. */
+function acquisitionDownloadRateUnknown(): AcquisitionSnapshot {
+  const items = acquisitionActive().items
+    .filter((item) => item.state === "downloading")
+    .map((item) => ({ ...item, rateBps: null, etaSeconds: null }));
+  return {
+    items,
+    rollup: {
+      downloading: items.length,
+      importing: 0,
+      failedOrStalled: 0,
+      aggregateRateBps: null,
+      uploadRateBps: 0,
+      seeding: 0,
+    },
+  };
+}
+
 /** Simultaneous download + seed-upload (the bidirectional WAN conduit demo). */
 function acquisitionSeeding(): AcquisitionSnapshot {
   const items: AcquisitionItem[] = [
@@ -456,6 +474,7 @@ export const SCENARIOS = [
   "direct-stream",
   "paused",
   "confirmed-zero",
+  "download-rate-unknown",
   "multi-session",
   "mixed-session",
   "partial-zero",
@@ -507,6 +526,7 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "direct-stream": "Jellyfin — direct stream (estimated)",
   paused: "Jellyfin — paused session",
   "confirmed-zero": "Active download — confirmed zero rate",
+  "download-rate-unknown": "Active downloads — rate unknown",
   "multi-session": "Multiple sessions",
   "mixed-session": "Mixed known / unknown sessions",
   "partial-zero": "Jellyfin — partial zero (total unknown)",
@@ -830,6 +850,14 @@ const BUILDERS: Record<FakeScenario, Builder> = {
     compose(now, {
       jellyfin: jellyfinIdle(now),
       acquisition: acquisitionConfirmedZero(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "idle",
+    }),
+
+  "download-rate-unknown": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionDownloadRateUnknown(),
       zfs: zfsHealthy(now),
       telemetryProfile: "idle",
     }),
