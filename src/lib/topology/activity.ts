@@ -712,7 +712,8 @@ export function deriveFlows(
     mediaStorage.name !== downloadStorage.name;
 
   let importCopyEmitted = false;
-  const explicitImportPools = new Set<string>();
+  const explicitImportReadPools = new Set<string>();
+  const explicitImportWritePools = new Set<string>();
   for (const arr of ["sonarr", "radarr"] as const) {
     const src = arr === "sonarr" ? sonarr : radarr;
     if (!src.usable) continue;
@@ -721,6 +722,15 @@ export function deriveFlows(
     );
     if (!importing) continue;
     const arrName = arr === "sonarr" ? "Sonarr" : "Radarr";
+
+    // Arr's cross-pool import state owns the source read and destination write
+    // directions semantically, whether or not fresh disk telemetry can render
+    // the explicit byte-carrying tunnel. The opposite directions remain
+    // eligible for unrelated background-copy inference.
+    if (crossPool) {
+      explicitImportReadPools.add(downloadStorage.name);
+      explicitImportWritePools.add(mediaStorage.name);
+    }
 
     // The organizing signal is always present while importing: the Arr is
     // doing real work whose byte rate is not measured on this lane.
@@ -767,8 +777,6 @@ export function deriveFlows(
             controllerServiceId: arr,
           }),
         );
-        explicitImportPools.add(downloadStorage.name);
-        explicitImportPools.add(mediaStorage.name);
       }
     }
   }
@@ -781,8 +789,8 @@ export function deriveFlows(
   // known activity cannot be reinterpreted as an unrelated copy. A stale disk
   // domain retains the last supportable pair as a frozen observation.
   const resolvedPlayback = resolveJellyfinPlayback(snapshot, now);
-  const backgroundReadExcludedPools = new Set(explicitImportPools);
-  const backgroundWriteExcludedPools = new Set(explicitImportPools);
+  const backgroundReadExcludedPools = new Set(explicitImportReadPools);
+  const backgroundWriteExcludedPools = new Set(explicitImportWritePools);
   if (qb.usable && downloadStorage.kind === "pool") {
     if (acq.rollup.downloading > 0) {
       backgroundWriteExcludedPools.add(downloadStorage.name);

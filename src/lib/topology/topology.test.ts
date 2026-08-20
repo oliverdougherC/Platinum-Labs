@@ -649,6 +649,90 @@ describe("deriveFlows — generic background storage transfer", () => {
     ).toBeDefined();
     expect(byId(snap, "background-transfer:pool:NVME->pool:DataStore")).toBeUndefined();
   });
+
+  it("keeps a background copy from the explicit import destination inferable", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 90_000_000, writeBps: 0 },
+      { pool: "DataStore", readBps: 24_000_000, writeBps: 100_000_000 },
+      { pool: "eSATA", readBps: 0, writeBps: 20_000_000 },
+    ]);
+
+    expect(byId(snap, "import-copy:pool:NVME->pool:DataStore")).toBeDefined();
+    expect(
+      byId(snap, "background-transfer:pool:DataStore->pool:eSATA"),
+    ).toBeDefined();
+    expect(byKind(snap, "background-transfer")).toHaveLength(1);
+  });
+
+  it("keeps a background copy into the explicit import source inferable", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 90_000_000, writeBps: 20_000_000 },
+      { pool: "DataStore", readBps: 0, writeBps: 100_000_000 },
+      { pool: "eSATA", readBps: 24_000_000, writeBps: 0 },
+    ]);
+
+    expect(byId(snap, "import-copy:pool:NVME->pool:DataStore")).toBeDefined();
+    expect(
+      byId(snap, "background-transfer:pool:eSATA->pool:NVME"),
+    ).toBeDefined();
+    expect(byKind(snap, "background-transfer")).toHaveLength(1);
+  });
+
+  it("does not reinterpret a stale explicit import as a generic background transfer", () => {
+    const live = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 18_000_000, writeBps: 0 },
+      { pool: "DataStore", readBps: 0, writeBps: 31_000_000 },
+      { pool: "eSATA", readBps: 0, writeBps: 0 },
+    ]);
+    const staleDisk: DashboardSnapshot = {
+      ...live,
+      telemetry: {
+        ...live.telemetry,
+        disk: {
+          ...live.telemetry.disk,
+          status: "stale",
+          updatedAt: NOW - 10 * 60_000,
+        },
+      },
+    };
+    const flows = flowsOf(staleDisk);
+
+    expect(flows.some((flow) => flow.kind === "organize")).toBe(true);
+    expect(flows.some((flow) => flow.kind === "import-copy")).toBe(false);
+    expect(
+      flows.some(
+        (flow) =>
+          flow.id === "background-transfer:pool:NVME->pool:DataStore",
+      ),
+    ).toBe(false);
+    expect(flows.filter((flow) => flow.plane === "data")).toEqual([]);
+  });
+
+  it("never duplicates a live explicit import as a generic transfer", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 18_000_000, writeBps: 0 },
+      { pool: "DataStore", readBps: 0, writeBps: 31_000_000 },
+      { pool: "eSATA", readBps: 0, writeBps: 0 },
+    ]);
+
+    expect(byKind(snap, "import-copy")).toHaveLength(1);
+    expect(byId(snap, "import-copy:pool:NVME->pool:DataStore")).toBeDefined();
+    expect(byKind(snap, "background-transfer")).toEqual([]);
+  });
+
+  it("reserves only the explicit source read and destination write directions", () => {
+    const snap = withPoolIo(makeFakeSnapshot("importing", NOW), [
+      { pool: "NVME", readBps: 80_000_000, writeBps: 18_000_000 },
+      { pool: "DataStore", readBps: 20_000_000, writeBps: 90_000_000 },
+      { pool: "eSATA", readBps: 0, writeBps: 0 },
+    ]);
+
+    expect(byId(snap, "import-copy:pool:NVME->pool:DataStore")).toBeDefined();
+    expect(
+      byId(snap, "background-transfer:pool:DataStore->pool:NVME"),
+    ).toBeDefined();
+    expect(byKind(snap, "background-transfer")).toHaveLength(1);
+  });
 });
 
 describe("deriveFlows — staleness and unavailability (PLA-273)", () => {
