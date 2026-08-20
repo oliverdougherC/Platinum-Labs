@@ -24,6 +24,7 @@ import {
 import { buildSceneModel, type BodyStatus, type ServiceId } from "@/lib/scene/model";
 import {
   downloadStorageEndpoint,
+  flowNetworkBoundary,
   mediaStorageEndpoint,
   primaryRate,
   type FlowControllerServiceId,
@@ -525,14 +526,10 @@ function networkBoundaryOf(
   flow: FlowObservation,
   overrides: FabricModelOptions["networkBoundaryByFlowId"],
 ): FabricNetworkBoundary {
-  const declared = overrides?.[flow.id];
-  if (declared) return declared;
-  if (flow.kind === "wan-transfer") return "wan";
-  if (flow.from.kind === "network" || flow.to.kind === "network") return "unknown";
-  if (flow.plane === "control" && flow.from.kind === "service" && flow.to.kind === "service") {
-    return "docker-internal";
-  }
-  return "host-local";
+  // One typed boundary-truth implementation, shared with the V4 kinetic
+  // renderer: the semantics live in the activity layer, next to the flow
+  // derivation they describe.
+  return flowNetworkBoundary(flow, overrides);
 }
 
 interface FabricRouteContext {

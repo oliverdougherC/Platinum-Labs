@@ -4,6 +4,7 @@ import {
   emptyTelemetry,
   gradeTelemetryFreshness,
   hostCollectorSchema,
+  normalizeCpuTopology,
   normalizeHostTelemetry,
   notConfiguredTelemetry,
   type RawHostSample,
@@ -184,6 +185,24 @@ describe("normalizeHostTelemetry", () => {
     expect(snap.cpu.value!.perCore[0]).toBeCloseTo(0.8, 5);
     expect(snap.cpu.value!.perCore[1]).toBeCloseTo(0.2, 5);
     expect(snap.cpu.value!.load1).toBe(2.0);
+  });
+
+  it("passes detected CPU topology through and leaves it null when absent", () => {
+    const withoutTopology = normalizeHostTelemetry(sample(1000), advance(3000));
+    expect(withoutTopology.cpu.value!.topology).toBeNull();
+
+    const topology = {
+      logicalCpus: 88,
+      sockets: 2,
+      physicalCores: 44,
+      coreSiblings: Array.from({ length: 44 }, (_, core) => [core, core + 44]),
+    };
+    const second = advance(3000);
+    const withTopology = normalizeHostTelemetry(sample(1000), {
+      ...second,
+      cpu: { ...second.cpu, topology },
+    });
+    expect(withTopology.cpu.value!.topology).toEqual(topology);
   });
 
   it("computes network and per-pool disk rates", () => {
@@ -652,5 +671,82 @@ describe("empty snapshots", () => {
     for (const domain of Object.values(notConfiguredTelemetry())) {
       expect(domain.status).toBe("not-configured");
     }
+  });
+});
+
+describe("normalizeCpuTopology", () => {
+  const full = {
+    logicalCpus: 8,
+    sockets: 2,
+    physicalCores: 4,
+    coreSiblings: [
+      [0, 4],
+      [1, 5],
+      [2, 6],
+      [3, 7],
+    ],
+  };
+
+  it("keeps a consistent full topology", () => {
+    expect(normalizeCpuTopology(full)).toEqual(full);
+  });
+
+  it("keeps SMT-off topology where physical equals logical", () => {
+    const smtOff = {
+      logicalCpus: 4,
+      sockets: 1,
+      physicalCores: 4,
+      coreSiblings: [[0], [1], [2], [3]],
+    };
+    expect(normalizeCpuTopology(smtOff)).toEqual(smtOff);
+  });
+
+  it("is null when topology is absent or has no logical count", () => {
+    expect(normalizeCpuTopology(null)).toBeNull();
+    expect(normalizeCpuTopology(undefined)).toBeNull();
+    expect(normalizeCpuTopology({ ...full, logicalCpus: null })).toBeNull();
+    expect(normalizeCpuTopology({ ...full, logicalCpus: 0 })).toBeNull();
+  });
+
+  it("keeps the logical count but nulls partial physical claims", () => {
+    expect(
+      normalizeCpuTopology({
+        logicalCpus: 4,
+        sockets: null,
+        physicalCores: null,
+        coreSiblings: null,
+      }),
+    ).toEqual({
+      logicalCpus: 4,
+      sockets: null,
+      physicalCores: null,
+      coreSiblings: null,
+    });
+  });
+
+  it("never repairs contradictory physical claims (no logical/2 guessing)", () => {
+    const nulled = {
+      logicalCpus: 8,
+      sockets: null,
+      physicalCores: null,
+      coreSiblings: null,
+    };
+    // More physical cores than logical CPUs.
+    expect(normalizeCpuTopology({ ...full, physicalCores: 16 })).toEqual(nulled);
+    // More sockets than cores.
+    expect(
+      normalizeCpuTopology({ ...full, sockets: 5, physicalCores: 4 }),
+    ).toEqual(nulled);
+    // Sibling groups disagreeing with the physical-core count.
+    expect(
+      normalizeCpuTopology({ ...full, coreSiblings: [[0, 4], [1, 5]] }),
+    ).toEqual(nulled);
+    // A sibling group with a non-integer or negative CPU id.
+    expect(
+      normalizeCpuTopology({
+        ...full,
+        coreSiblings: [[0, 4], [1, 5], [2, 6], [3, -7]],
+      }),
+    ).toEqual(nulled);
   });
 });

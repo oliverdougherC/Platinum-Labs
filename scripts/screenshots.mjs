@@ -136,6 +136,50 @@ const FABRIC_STUDY_SHOTS = [
   { study: "A+", artifactDir: "A-plus", state: "reduced-motion", name: "15-reduced-motion-1920x1080", scenario: "container-mixed", reducedMotion: true, w: 1920, h: 1080 },
 ];
 
+// V4 Kinetic Flow Canvas evidence — captured from the PRODUCTION renderer
+// (`/` with the kinetic UI mode), not the dev reference surface, against the
+// deterministic fake simulator at the frozen clock. This is the full spec
+// §22 graduation matrix.
+const KINETIC_SHOTS = [
+  { name: "01-v4-quiet-1280x720", scenario: "idle", w: 1280, h: 720 },
+  { name: "02-v4-quiet-1920x1080", scenario: "idle", w: 1920, h: 1080 },
+  { name: "03-v4-quiet-2560x1440", scenario: "idle", w: 2560, h: 1440 },
+  { name: "04-v4-quiet-ultrawide-2560x1080", scenario: "idle", w: 2560, h: 1080 },
+  { name: "05-v4-download-1920x1080", scenario: "downloads", w: 1920, h: 1080 },
+  { name: "06-v4-seeding-1920x1080", scenario: "seeding", w: 1920, h: 1080 },
+  { name: "07-v4-direct-play-1920x1080", scenario: "direct-play", w: 1920, h: 1080 },
+  { name: "08-v4-transcode-reported-1920x1080", scenario: "transcode-reported", w: 1920, h: 1080 },
+  { name: "09-v4-transcode-measured-fallback-1920x1080", scenario: "transcode-fallback", w: 1920, h: 1080 },
+  { name: "10-v4-transcode-unknown-rate-1920x1080", scenario: "transcode-unknown-rate", w: 1920, h: 1080 },
+  { name: "11-v4-simultaneous-1920x1080", scenario: "active", w: 1920, h: 1080 },
+  { name: "12-v4-same-pool-import-1920x1080", scenario: "same-pool-import", w: 1920, h: 1080 },
+  { name: "13-v4-cross-pool-import-1920x1080", scenario: "cross-pool-import", w: 1920, h: 1080 },
+  { name: "14-v4-workload-field-44-1920x1080", scenario: "container-field-real", w: 1920, h: 1080 },
+  { name: "15-v4-attention-1920x1080", scenario: "attention", w: 1920, h: 1080 },
+  { name: "16-v4-cpu-gpu-load-1920x1080", scenario: "gpu-workload", w: 1920, h: 1080 },
+  { name: "17-v4-jellyfin-inspector-1920x1080", scenario: "active", w: 1920, h: 1080, action: "kinetic-anchor:jellyfin" },
+  { name: "18-v4-qbittorrent-inspector-1920x1080", scenario: "downloads", w: 1920, h: 1080, action: "kinetic-anchor:qbittorrent" },
+  { name: "19-v4-workload-inspector-1920x1080", scenario: "container-field-real", w: 1920, h: 1080, action: "kinetic-cell:unpackerr" },
+  { name: "20-v4-reduced-motion-1920x1080", scenario: "active", w: 1920, h: 1080, reducedMotion: true },
+  { name: "21-v4-stale-1920x1080", scenario: "stale", w: 1920, h: 1080 },
+  { name: "22-v4-confirmed-zero-1920x1080", scenario: "confirmed-zero", w: 1920, h: 1080 },
+  // LIVE capture (no freeze): the retained-identity contract only exists
+  // across a real transport transition, which frozen mode deliberately never
+  // performs. The harness waits for the stage to park before the frame.
+  { name: "23-v4-docker-unavailable-retained-1920x1080", scenario: "container-field-real", w: 1920, h: 1080, transitionScenario: "docker-unavailable", live: true },
+  // Equivalent zoom emulation: CSS viewport = physical 1920×1080 divided by
+  // the requested browser zoom (same convention as the topology matrix).
+  { name: "24-v4-zoom-150", scenario: "idle", w: 1280, h: 720, zoom: 1.5 },
+  { name: "25-v4-zoom-200", scenario: "idle", w: 960, h: 540, zoom: 2 },
+  // Partial known-zero truth (V4 final review blocker): activity exists, the
+  // total rate is unknown — state-only breathing, no particles, no 0 B/s
+  // claim. Must visibly differ from 22-v4-confirmed-zero.
+  { name: "26-v4-partial-zero-unknown-1920x1080", scenario: "partial-zero", w: 1920, h: 1080 },
+  // qBittorrent producer truth: active downloads keep both semantic
+  // relationships visible when the aggregate transfer counter is unavailable.
+  { name: "27-v4-download-rate-unknown-1920x1080", scenario: "download-rate-unknown", w: 1920, h: 1080 },
+];
+
 const A_PLUS_ACTIVITY_SIGNATURES = new Map();
 const FABRIC_FRAME_DIAGNOSTICS = [];
 const FABRIC_STUDY_DIAGNOSTICS = [];
@@ -168,10 +212,11 @@ function arg(flag, fallback = null) {
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
-const FABRIC_STUDIES = process.argv.includes("--fabric-studies");
-const FABRIC = !FABRIC_STUDIES && process.argv.includes("--fabric");
-const SHOTS = FABRIC_STUDIES ? FABRIC_STUDY_SHOTS : FABRIC ? FABRIC_SHOTS : TOPOLOGY_SHOTS;
-const OUT_DIR = arg("--out", FABRIC_STUDIES ? "docs/review/v3-server-fabric-compositions" : FABRIC ? "docs/review/v3-server-fabric" : "docs/review/v21-living-topology");
+const KINETIC = process.argv.includes("--kinetic");
+const FABRIC_STUDIES = !KINETIC && process.argv.includes("--fabric-studies");
+const FABRIC = !KINETIC && !FABRIC_STUDIES && process.argv.includes("--fabric");
+const SHOTS = KINETIC ? KINETIC_SHOTS : FABRIC_STUDIES ? FABRIC_STUDY_SHOTS : FABRIC ? FABRIC_SHOTS : TOPOLOGY_SHOTS;
+const OUT_DIR = arg("--out", KINETIC ? "docs/review/v4-kinetic-flow" : FABRIC_STUDIES ? "docs/review/v3-server-fabric-compositions" : FABRIC ? "docs/review/v3-server-fabric" : "docs/review/v21-living-topology");
 const ONLY = arg("--only");
 const MOTION = process.argv.includes("--motion");
 const PERFORMANCE = process.argv.includes("--performance");
@@ -235,7 +280,86 @@ async function focusFlow(page, needles) {
   throw new Error(`no flow focus target matched: ${needles.join(" + ")}`);
 }
 
+async function validateKineticShot(page, shot) {
+  const stage = page.locator("[data-kinetic-stage]");
+  if ((await stage.count()) !== 1) {
+    throw new Error(`kinetic stage missing (${shot.name})`);
+  }
+  // Frozen frames must not run an animation loop; a live quiet scene must
+  // have PARKED its loop by capture time (the harness waited for decay).
+  const motion = await stage.getAttribute("data-motion");
+  if (motion !== "off") {
+    throw new Error(
+      `${shot.live ? "parked live" : "frozen"} kinetic frame reports data-motion=${motion} (${shot.name})`,
+    );
+  }
+  if ((await page.locator("[data-kinetic-stage] canvas").count()) !== 1) {
+    throw new Error(`kinetic canvas missing (${shot.name})`);
+  }
+  // The upgraded CPU topology must be visible on the instrument band.
+  const bandText = await page.locator("[data-kinetic-stage] header").innerText();
+  if (!bandText.includes("44C / 88T")) {
+    throw new Error(`instrument band lacks the detected CPU topology (${shot.name})`);
+  }
+  if (shot.scenario === "download-rate-unknown") {
+    const anchorLabel =
+      (await page.locator('[data-kinetic-anchor="qbittorrent"]').getAttribute("aria-label")) ?? "";
+    const flowCopy =
+      (await page.locator('[aria-label="Active data flows"]').textContent()) ?? "";
+    if (!anchorLabel.includes("2 downloading") || anchorLabel.includes("B/s")) {
+      throw new Error(`unknown-rate qBittorrent anchor is untruthful (${shot.name})`);
+    }
+    if (
+      !flowCopy.includes("WAN transfer") ||
+      !flowCopy.includes("staging I/O") ||
+      !flowCopy.includes("rate unknown") ||
+      flowCopy.includes("0 B/s")
+    ) {
+      throw new Error(`unknown-rate qBittorrent flow copy is untruthful (${shot.name})`);
+    }
+  }
+  if (shot.action?.startsWith("kinetic-anchor:") || shot.action?.startsWith("kinetic-cell:")) {
+    if ((await page.locator("[data-kinetic-inspector]").count()) !== 1) {
+      throw new Error(`kinetic inspector did not open (${shot.name})`);
+    }
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(80);
+    if (await page.locator("[data-kinetic-inspector]").count()) {
+      throw new Error(`Escape did not close the kinetic inspector (${shot.name})`);
+    }
+  }
+  if (shot.transitionScenario === "docker-unavailable") {
+    // Retained-identity contract: the field must persist as explicit
+    // unknowns, with no live workload count asserted.
+    if ((await page.locator("[data-kinetic-cell]").count()) === 0) {
+      throw new Error(`retained topology lost the workload field (${shot.name})`);
+    }
+    const band = await page.locator("[data-kinetic-stage] header").innerText();
+    if (/\d+\/\d+ workloads/i.test(band)) {
+      throw new Error(`unavailable Docker telemetry still claims a workload count (${shot.name})`);
+    }
+  }
+}
+
 async function performShotAction(page, action) {
+  if (action?.startsWith("kinetic-anchor:")) {
+    const anchorId = action.slice("kinetic-anchor:".length);
+    await page.locator(`[data-kinetic-anchor="${anchorId}"]`).click();
+    await page.waitForTimeout(200);
+    return;
+  }
+  if (action?.startsWith("kinetic-cell:")) {
+    const cellName = action.slice("kinetic-cell:".length);
+    // Cells are keyed by container id; target them by accessible name so the
+    // evidence exercises exactly what a keyboard/screen-reader user gets.
+    await page
+      .locator("[data-kinetic-cell]")
+      .filter({ has: page.locator(`text="${cellName}"`) })
+      .first()
+      .click();
+    await page.waitForTimeout(200);
+    return;
+  }
   if (action?.startsWith("fabric-focus:")) {
     const targetId = action.slice("fabric-focus:".length);
     const target = page.locator(`[data-fabric-node="${targetId}"]`);
@@ -1438,16 +1562,33 @@ async function main() {
           if (shot.mode) params.set("mode", shot.mode);
           if (shot.inspector) params.set("inspector", "1");
         }
-        const route = FABRIC_STUDIES ? "/dev/fabric-compositions" : "/";
-        const url = FABRIC_STUDIES ? `${baseUrl}${route}?${params}` : `${homeShotUrl(baseUrl, shot)}&freeze=${FREEZE_AT}`;
-        await page.goto(url, { waitUntil: "networkidle" });
+        // KINETIC evidence targets the PRODUCTION homepage renderer
+        // (ui=kinetic), never the dev reference surface. Live shots skip the
+        // frozen clock because they exercise real transport transitions.
+        const url = FABRIC_STUDIES
+          ? `${baseUrl}/dev/fabric-compositions?${params}`
+          : `${homeShotUrl(baseUrl, KINETIC ? { ...shot, ui: "kinetic" } : shot)}${shot.live ? "" : `&freeze=${FREEZE_AT}`}`;
+        await page.goto(url, { waitUntil: shot.live ? "domcontentloaded" : "networkidle" });
         // Fonts + SSR hydration settle; frozen mode has no further changes.
         await page.waitForTimeout(1_200);
         const beforeActionBox = await pageBox(page);
         assertNoPageScroll(beforeActionBox, shot);
         if (FABRIC_STUDIES) mkdirSync(`${OUT_DIR}/${shot.artifactDir ?? shot.study}`, { recursive: true });
         const path = FABRIC_STUDIES ? `${OUT_DIR}/${shot.artifactDir ?? shot.study}/${shot.name}.png` : `${OUT_DIR}/${shot.name}.png`;
-        if (FABRIC_STUDIES) {
+        if (KINETIC) {
+          if (shot.transitionScenario) {
+            await page.evaluate((nextScenario) => window.__homelabSetScenario(nextScenario), shot.transitionScenario);
+            // Live transitions ride the real transport: allow the new
+            // snapshot to arrive and the departed flows to finish decaying.
+            await page.waitForTimeout(shot.live ? 6_000 : 900);
+          }
+          await performShotAction(page, shot.action);
+          await page.waitForTimeout(250);
+          // Preserve the frame even when validation fails so visual review
+          // can drive the next iteration.
+          await page.screenshot({ path });
+          await validateKineticShot(page, shot);
+        } else if (FABRIC_STUDIES) {
           // Preserve the rendered frame even when a diagnostic fails so visual
           // review can drive the next geometry iteration.
           await page.screenshot({ path });
@@ -1526,7 +1667,7 @@ function homeShotUrl(baseUrl, shotLike) {
     scenario: shotLike.scenario,
     switcher: "off",
   });
-  if (shotLike.ui === "fabric") params.set("ui", "fabric");
+  if (shotLike.ui === "fabric" || shotLike.ui === "kinetic") params.set("ui", shotLike.ui);
   if (shotLike.relationships) params.set("relationships", "1");
   if (shotLike.transport) params.set("transport", shotLike.transport);
   if (shotLike.debug) params.set("debug", "geometry");
@@ -1537,11 +1678,14 @@ async function measurePerformanceProfile(browser, baseUrl, profile) {
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1080 },
     reducedMotion: profile.reducedMotion ? "reduce" : "no-preference",
+    // The frame-interval sampler below is injected page script; the
+    // production CSP would block it, and it only exists in this harness.
+    bypassCSP: KINETIC,
   });
   const page = await context.newPage();
   await page.goto(homeShotUrl(baseUrl, {
     scenario: profile.scenario,
-    ui: FABRIC ? "fabric" : undefined,
+    ui: KINETIC ? "kinetic" : FABRIC ? "fabric" : undefined,
     relationships: profile.relationships,
     transport: profile.transport,
     debug: profile.debug,
@@ -1580,9 +1724,60 @@ async function measurePerformanceProfile(browser, baseUrl, profile) {
     }
   }
 
+  // Kinetic frame-pacing evidence: sample real rAF intervals and long tasks
+  // over the measurement window. The sampler is a passive observer — one rAF
+  // subscription and a PerformanceObserver — so it costs what any animated
+  // page already pays for scheduling.
+  const sampleFrames = KINETIC && !profile.hidden;
+  if (sampleFrames) {
+    await page.evaluate(() => {
+      const state = { frames: [], longTasks: 0, last: null, raf: 0 };
+      window.__kineticPerfSampler = state;
+      try {
+        const observer = new PerformanceObserver((list) => {
+          state.longTasks += list.getEntries().length;
+        });
+        observer.observe({ entryTypes: ["longtask"] });
+        state.observer = observer;
+      } catch {
+        state.longTasks = null;
+      }
+      const loop = (t) => {
+        if (state.last !== null) state.frames.push(t - state.last);
+        state.last = t;
+        state.raf = requestAnimationFrame(loop);
+      };
+      state.raf = requestAnimationFrame(loop);
+    });
+  }
+
   const start = metricMap((await client.send("Performance.getMetrics")).metrics);
-  await page.waitForTimeout(5_000);
+  const sampleMs = KINETIC ? 10_000 : 5_000;
+  await page.waitForTimeout(sampleMs);
   const end = metricMap((await client.send("Performance.getMetrics")).metrics);
+
+  let framePacing = null;
+  if (sampleFrames) {
+    const sampled = await page.evaluate(() => {
+      const state = window.__kineticPerfSampler;
+      cancelAnimationFrame(state.raf);
+      state.observer?.disconnect();
+      return { frames: state.frames, longTasks: state.longTasks };
+    });
+    const frames = sampled.frames.slice(3); // discard sampler warm-up
+    frames.sort((a, b) => a - b);
+    const pct = (p) => frames.length ? Number(frames[Math.min(frames.length - 1, Math.floor((frames.length * p) / 100))].toFixed(2)) : null;
+    framePacing = {
+      sampledFrames: frames.length,
+      p50Ms: pct(50),
+      p95Ms: pct(95),
+      p99Ms: pct(99),
+      maxMs: frames.length ? Number(frames[frames.length - 1].toFixed(2)) : null,
+      framesOver33Ms: frames.filter((f) => f > 33).length,
+      framesOver100Ms: frames.filter((f) => f > 100).length,
+      longTasks: sampled.longTasks,
+    };
+  }
   const wallSeconds = Math.max(0.001, end.Timestamp - start.Timestamp);
   const deltaMsPerSecond = (name) =>
     Number((((end[name] - start[name]) * 1_000) / wallSeconds).toFixed(2));
@@ -1601,6 +1796,7 @@ async function measurePerformanceProfile(browser, baseUrl, profile) {
     jsHeapUsedMiB: Number((end.JSHeapUsedSize / 1024 / 1024).toFixed(2)),
     domNodes: end.Nodes,
     documents: end.Documents,
+    framePacing,
     appMotionState: await page.locator("[data-app-shell]").getAttribute("data-motion"),
   };
   await context.close();
@@ -1632,8 +1828,42 @@ const TOPOLOGY_PERFORMANCE_BUDGET_MS_PER_S = {
   "hidden-tab": 15,
 };
 
+const KINETIC_PERFORMANCE_BUDGET_MS_PER_S = {
+  // Calibrated for the kinetic canvas on the reference capture machine:
+  // while ACTIVELY animating, the renderer spends ≈1.5–1.8 ms of main-thread
+  // time per 60 Hz-class frame (paint cap; intermediate vsyncs on
+  // high-refresh displays are skipped), which reads as ~90–110 ms per wall
+  // second. The gates exist to catch regressions from that ceiling — frame
+  // pacing (p95/p99, >33 ms count, long tasks) is the smoothness claim.
+  // Quiet/hidden/reduced stay strict: a parked ambient surface must cost
+  // nearly nothing.
+  quiet: 45,
+  download: 110,
+  playback: 110,
+  transcode: 115,
+  simultaneous: 120,
+  "44-container": 130,
+  attention: 110,
+  inspector: 115,
+  "reduced-motion": 40,
+  "hidden-tab": 15,
+};
+
 async function capturePerformance(browser, baseUrl) {
-  const profiles = FABRIC
+  const profiles = KINETIC
+    ? [
+        { name: "quiet", scenario: "idle", reducedMotion: false, hidden: false },
+        { name: "download", scenario: "downloads", reducedMotion: false, hidden: false },
+        { name: "playback", scenario: "direct-play", reducedMotion: false, hidden: false },
+        { name: "transcode", scenario: "transcode", reducedMotion: false, hidden: false },
+        { name: "simultaneous", scenario: "active", reducedMotion: false, hidden: false },
+        { name: "44-container", scenario: "container-field-real", reducedMotion: false, hidden: false },
+        { name: "attention", scenario: "attention", reducedMotion: false, hidden: false },
+        { name: "inspector", scenario: "active", reducedMotion: false, hidden: false, action: "kinetic-anchor:jellyfin" },
+        { name: "reduced-motion", scenario: "active", reducedMotion: true, hidden: false },
+        { name: "hidden-tab", scenario: "active", reducedMotion: false, hidden: true },
+      ]
+    : FABRIC
     ? [
         { name: "idle", scenario: "idle", reducedMotion: false, hidden: false },
         { name: "active", scenario: "active", reducedMotion: false, hidden: false },
@@ -1650,7 +1880,11 @@ async function capturePerformance(browser, baseUrl) {
         { name: "reduced-motion", scenario: "active", reducedMotion: true, hidden: false },
         { name: "hidden-tab", scenario: "active", reducedMotion: false, hidden: true },
       ];
-  const budgets = FABRIC ? FABRIC_PERFORMANCE_BUDGET_MS_PER_S : TOPOLOGY_PERFORMANCE_BUDGET_MS_PER_S;
+  const budgets = KINETIC
+    ? KINETIC_PERFORMANCE_BUDGET_MS_PER_S
+    : FABRIC
+      ? FABRIC_PERFORMANCE_BUDGET_MS_PER_S
+      : TOPOLOGY_PERFORMANCE_BUDGET_MS_PER_S;
   const measurements = [];
   for (const profile of profiles) {
     console.log(`measuring browser cost: ${profile.name}…`);
@@ -1671,7 +1905,11 @@ async function capturePerformance(browser, baseUrl) {
     build: buildMode(),
     headless: PERFORMANCE ? HEADLESS_PERF : true,
     method:
-      "Chromium CDP Performance.getMetrics; 5-second samples after a 2-second settle. " +
+      "Chromium CDP Performance.getMetrics; 5-second samples after a 2-second settle " +
+      "(10-second samples with an rAF frame-interval + longtask observer for kinetic). " +
+      "framePacing measures vsync CALLBACK delivery — a delayed/jittery interval means a busy " +
+      "main thread; the kinetic renderer itself paints at a deliberate 60 Hz-class cadence and " +
+      "skips intermediate vsyncs on high-refresh displays. " +
       "Committed evidence uses --prod (next build + next start) and a headful browser; " +
       "development-mode or headless numbers are for iteration only and say so here.",
     budget: {
@@ -1719,6 +1957,14 @@ async function captureDeterminism(browser, baseUrl) {
       params.set("ui", "fabric");
       params.delete("panel");
     }
+    if (KINETIC) {
+      // The strongest kinetic determinism claim: a live-looking active scene
+      // (particle field, ribbons, glow) placed purely by the frozen clock.
+      params.set("ui", "kinetic");
+      params.set("scenario", "active");
+      params.set("switcher", "off");
+      params.delete("panel");
+    }
     await page.goto(`${baseUrl}/?${params}`, { waitUntil: "networkidle" });
     await page.waitForTimeout(1_200);
     const png = await page.screenshot();
@@ -1740,6 +1986,79 @@ async function captureDeterminism(browser, baseUrl) {
   );
 }
 
+async function saveMotionClip(webmSourcePath, basename, outDir = OUT_DIR) {
+  mkdirSync(outDir, { recursive: true });
+  const target = `${outDir}/${basename}.webm`;
+  execFileSync("mv", [webmSourcePath, target]);
+  console.log(`captured ${target}`);
+  try {
+    execFileSync("ffmpeg", [
+      "-y", "-ss", "0.5", "-i", target,
+      "-vf", "fps=10,scale=960:-1:flags=lanczos",
+      "-loop", "0",
+      `${outDir}/${basename}.gif`,
+    ], { stdio: "ignore" });
+    console.log(`captured ${outDir}/${basename}.gif`);
+  } catch {
+    console.warn("ffmpeg unavailable — skipped GIF; the webm is authoritative");
+  }
+}
+
+/**
+ * Continuity stress clip (spec §23): ONE flow identity, several magnitudes,
+ * then decay interrupted by reappearance, then a final stop. Uses the dev
+ * reference surface (which shares every kinetic primitive with production)
+ * because only it exposes the rate-scale hook — the point of this clip is
+ * that phase never resets, particles never teleport, width/density ease, and
+ * mid-decay reappearance reverses cleanly.
+ */
+async function captureKineticContinuityStress(browser, baseUrl) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+    recordVideo: { dir: OUT_DIR, size: { width: 1280, height: 720 } },
+    bypassCSP: true,
+  });
+  const page = await context.newPage();
+  console.log("recording continuity stress (same mounted canvas): low → medium → high → medium → low → stop → reappear → stop…");
+  await page.goto(`${baseUrl}/dev/kinetic-flow?scenario=downloads`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(
+    () => typeof window.__homelabSetScenario === "function" && typeof window.__homelabSetRateScale === "function",
+    { timeout: 15_000 },
+  );
+  const url0 = page.url();
+  const mountedStage = await page.locator("[data-kinetic-stage]").elementHandle();
+  const scale = (value) => page.evaluate((s) => window.__homelabSetRateScale(s), value);
+  await page.waitForTimeout(2_500);
+  await scale(0.2); // low
+  await page.waitForTimeout(3_500);
+  await scale(1); // medium
+  await page.waitForTimeout(3_500);
+  await scale(6); // high
+  await page.waitForTimeout(3_500);
+  await scale(1); // medium
+  await page.waitForTimeout(3_000);
+  await scale(0.2); // low
+  await page.waitForTimeout(3_000);
+  // Flow stops → decay begins → the SAME flow returns 300 ms later.
+  await page.evaluate(() => window.__homelabSetScenario("idle"));
+  await page.waitForTimeout(300);
+  await page.evaluate(() => window.__homelabSetScenario("downloads"));
+  await page.waitForTimeout(3_500);
+  // Final stop: the decay completes undisturbed.
+  await page.evaluate(() => window.__homelabSetScenario("idle"));
+  await page.waitForTimeout(2_500);
+  if (page.url() !== url0) {
+    throw new Error("continuity capture navigated — the same-page contract is broken");
+  }
+  if (mountedStage && !(await mountedStage.evaluate((stage) => stage === document.querySelector("[data-kinetic-stage]")))) {
+    throw new Error("continuity capture remounted the kinetic stage — the same-mounted contract is broken");
+  }
+  const video = page.video();
+  await page.close();
+  await context.close();
+  await saveMotionClip(await video.path(), "motion-continuity-stress");
+}
+
 /**
  * Motion capture (PLA-270): ONE mounted renderer, telemetry changing in
  * place. The scenario switches through the dev fixture hook
@@ -1758,14 +2077,18 @@ async function captureMotion(browser, baseUrl) {
     bypassCSP: true,
   });
   const page = await context.newPage();
-  const targetRoute = FABRIC_STUDIES
-    ? `${baseUrl}/dev/fabric-compositions?scenario=idle&freeze=${FREEZE_AT}`
-    : `${baseUrl}/?scenario=idle&switcher=off${FABRIC ? "&ui=fabric" : ""}`;
-  console.log(FABRIC_STUDIES
-    ? "recording motion (same mounted A+ study): quiet → mixed → Jellyfin focus → release → quiet…"
-    : FABRIC
-      ? "recording motion (same mounted fabric homepage): quiet → active → Jellyfin focus → release → quiet…"
-      : "recording motion (same mounted scene): 7s idle → 13s active → 6s easing…");
+  const targetRoute = KINETIC
+    ? `${baseUrl}/?ui=kinetic&scenario=idle&switcher=off`
+    : FABRIC_STUDIES
+      ? `${baseUrl}/dev/fabric-compositions?scenario=idle&freeze=${FREEZE_AT}`
+      : `${baseUrl}/?scenario=idle&switcher=off${FABRIC ? "&ui=fabric" : ""}`;
+  console.log(KINETIC
+    ? "recording motion (same mounted PRODUCTION kinetic canvas): quiet → download → playback → simultaneous → quiet…"
+    : FABRIC_STUDIES
+      ? "recording motion (same mounted A+ study): quiet → mixed → Jellyfin focus → release → quiet…"
+      : FABRIC
+        ? "recording motion (same mounted fabric homepage): quiet → active → Jellyfin focus → release → quiet…"
+        : "recording motion (same mounted scene): 7s idle → 13s active → 6s easing…");
   // NOT networkidle: the live page holds an SSE stream open, so the network
   // never idles. The fixture-hook wait below is the real readiness signal.
   await page.goto(targetRoute, { waitUntil: "domcontentloaded" });
@@ -1774,6 +2097,32 @@ async function captureMotion(browser, baseUrl) {
   });
   const url0 = page.url();
   const mountedStudyStage = FABRIC_STUDIES ? await page.locator("[data-study-stage]").elementHandle() : null;
+  const mountedKineticStage = KINETIC ? await page.locator("[data-kinetic-stage]").elementHandle() : null;
+  if (KINETIC) {
+    // Story clip — the required same-mounted V4 sequence, no reloads:
+    // quiet → qBittorrent download → Jellyfin playback → simultaneous → quiet.
+    await page.waitForTimeout(3_500);
+    await page.evaluate(() => window.__homelabSetScenario("downloads"));
+    await page.waitForTimeout(4_500);
+    await page.evaluate(() => window.__homelabSetScenario("direct-play"));
+    await page.waitForTimeout(4_500);
+    await page.evaluate(() => window.__homelabSetScenario("active"));
+    await page.waitForTimeout(4_500);
+    await page.evaluate(() => window.__homelabSetScenario("idle"));
+    await page.waitForTimeout(4_000);
+    if (page.url() !== url0) {
+      throw new Error("motion capture navigated — the same-page contract is broken");
+    }
+    if (mountedKineticStage && !(await mountedKineticStage.evaluate((stage) => stage === document.querySelector("[data-kinetic-stage]")))) {
+      throw new Error("motion capture remounted the kinetic stage — the same-mounted contract is broken");
+    }
+    const kineticVideo = page.video();
+    await page.close();
+    await context.close();
+    await saveMotionClip(await kineticVideo.path(), "motion-quiet-download-playback-simultaneous-quiet");
+    await captureKineticContinuityStress(browser, baseUrl);
+    return;
+  }
   await page.waitForTimeout(3_000);
   await page.evaluate((nextScenario) => window.__homelabSetScenario(nextScenario), FABRIC_STUDIES ? "container-mixed" : "active");
   await page.waitForTimeout(4_000);

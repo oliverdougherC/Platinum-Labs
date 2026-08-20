@@ -112,3 +112,25 @@ node -e '
 The harness is committed and smoke-testable in development. The actual 24-hour
 acceptance run must still be executed on a persistent host against a real
 deployment before PLA-197 is closed.
+
+## V4 Kinetic Canvas renderer soak (client-side)
+
+The server soak above proves the backend; the V4 kinetic renderer has its own
+client-side soak because its risk profile is different: a canvas surface that
+must animate continuously for hours without heap growth, listener
+accumulation, ghost-flow buildup, duplicate animation loops, or degrading
+frames.
+
+```bash
+npm run soak:kinetic          # 90-minute headful production soak (the gate)
+node scripts/soak-kinetic.mjs --minutes 5 --headless   # smoke iteration
+```
+
+The harness keeps ONE mounted production kinetic stage (`/?ui=kinetic`) alive
+with no reloads, cycles realistic operational states through the fixture hook
+(downloads, seeding, playback, transcode, simultaneous activity, imports,
+attention, quiet) including inspector open/close, and samples CDP metrics plus
+bounded engine counters every 5 minutes. It forces GC at the baseline and end
+and FAILS on retained-heap growth, listener/DOM accumulation, unbounded
+flow/ghost/particle state, a stage remount, or a monotonic heap climb. The
+committed report lives at `docs/review/v4-kinetic-flow/soak-90min.json`.

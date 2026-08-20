@@ -83,6 +83,15 @@ describe("required scenario characteristics", () => {
     ]);
   });
 
+  it("download-rate-unknown: active work has no fabricated aggregate or item rate", () => {
+    const acquisition = makeFakeSnapshot("download-rate-unknown", NOW).acquisition;
+    expect(acquisition.rollup.downloading).toBe(2);
+    expect(acquisition.rollup.aggregateRateBps).toBeNull();
+    expect(acquisition.rollup.seeding).toBe(0);
+    expect(acquisition.items).toHaveLength(2);
+    expect(acquisition.items.every((item) => item.rateBps === null)).toBe(true);
+  });
+
   it("stalled: a stalled/failed transfer is present", () => {
     expect(
       makeFakeSnapshot("stalled", NOW).acquisition.rollup.failedOrStalled,

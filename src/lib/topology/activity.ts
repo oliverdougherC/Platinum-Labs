@@ -244,6 +244,35 @@ function earliestUpdatedAt(...times: Array<number | null | undefined>): number |
 const rate = (bps: number | null | undefined): number | null =>
   typeof bps === "number" && Number.isFinite(bps) ? Math.max(0, bps) : null;
 
+/**
+ * Aggregate for a transfer conduit whose per-direction rates come from one
+ * measured source (qBittorrent counters, or those counters attributed to the
+ * storage hop). `contributors` holds one entry per ACTIVE direction — null
+ * when that direction's rate is unknown — so a known-zero direction next to
+ * an unknown active direction is honestly partial, never a confirmed zero.
+ */
+function transferRateAggregate(
+  contributors: ReadonlyArray<number | null>,
+  evidence: RateEvidence,
+  freshness: FlowFreshness,
+): AggregateRateObservation {
+  const known = contributors.filter((value): value is number => value !== null);
+  return {
+    knownBytesPerSecond:
+      known.length > 0 ? known.reduce((sum, value) => sum + value, 0) : null,
+    unknownContributors: contributors.length - known.length,
+    coverage:
+      known.length === 0
+        ? "unknown"
+        : known.length < contributors.length
+          ? "partial"
+          : "complete",
+    basis: null,
+    evidence: known.length > 0 ? evidence : null,
+    freshness,
+  };
+}
+
 function weakestEvidence(values: RateEvidence[]): RateEvidence {
   if (values.includes("estimated")) return "estimated";
   if (values.includes("derived")) return "derived";
@@ -364,6 +393,114 @@ export function pickHeadlineRate(
   return { headline: container ?? session, supporting: [] };
 }
 
+/**
+ * THE canonical resolved Jellyfin playback-rate observation (V4 rate-truth
+ * blocker): every consumer — the playback and egress flows, the Jellyfin
+ * wordmark anchor and its glow energy, ribbons, inspectors, and accessibility
+ * text — derives from this single resolution. No renderer may re-derive a
+ * Jellyfin rate from raw sessions; that is how the V2.1 measured-fallback
+ * regression happened.
+ */
+export interface ResolvedJellyfinPlayback {
+  /** Actively playing sessions (paused sessions justify nothing). */
+  playing: JellyfinSession[];
+  pausedCount: number;
+  transcodingCount: number;
+  /** Jellyfin → network leg: headline + retained supporting evidence. */
+  egress: {
+    headline: AggregateRateObservation;
+    supporting: AggregateRateObservation[];
+  };
+  /** storage → Jellyfin leg (storage-attributed): headline + supporting. */
+  playback: {
+    headline: AggregateRateObservation;
+    supporting: AggregateRateObservation[];
+  };
+  egressFreshness: FlowFreshness;
+  playbackFreshness: FlowFreshness;
+  /** Connector-level freshness/updatedAt of the Jellyfin source itself. */
+  connectorFreshness: FlowFreshness;
+  connectorUpdatedAt: number | null;
+}
+
+/**
+ * Resolve the canonical Jellyfin playback rates. Returns null when the
+ * Jellyfin connector cannot justify observations (unavailable/unconfigured)
+ * or when nothing is actively playing — absence of evidence, never zero.
+ */
+export function resolveJellyfinPlayback(
+  snapshot: DashboardSnapshot,
+  now: number,
+): ResolvedJellyfinPlayback | null {
+  const jellyfin = sourceState(snapshot, "jellyfin", now);
+  if (!jellyfin.usable) return null;
+  const sessions = snapshot.jellyfin.sessions;
+  const playing = sessions.filter((s) => !s.paused);
+  if (playing.length === 0) return null;
+  const sessionAggregate = sessionRateAggregate(playing, jellyfin.freshness);
+  const containerEgress = containerRate(snapshot, "netTxBps");
+  const containerReads = containerRate(snapshot, "blockReadBps");
+  const egress = pickHeadlineRate(containerEgress, sessionAggregate);
+  const playback = pickHeadlineRate(
+    containerReads,
+    storageAttribution(sessionAggregate),
+  );
+  const egressFreshness: FlowFreshness =
+    jellyfin.freshness === "stale" || egress.headline.freshness === "stale"
+      ? "stale"
+      : "live";
+  const playbackFreshness: FlowFreshness =
+    jellyfin.freshness === "stale" || playback.headline.freshness === "stale"
+      ? "stale"
+      : "live";
+  return {
+    playing,
+    pausedCount: sessions.length - playing.length,
+    transcodingCount: playing.filter((s) => s.method === "transcode").length,
+    egress: {
+      headline: { ...egress.headline, freshness: egressFreshness },
+      supporting: egress.supporting,
+    },
+    playback: {
+      headline: { ...playback.headline, freshness: playbackFreshness },
+      supporting: playback.supporting,
+    },
+    egressFreshness,
+    playbackFreshness,
+    connectorFreshness: jellyfin.freshness,
+    connectorUpdatedAt: jellyfin.updatedAt,
+  };
+}
+
+/**
+ * The network boundary a flow's external endpoint is KNOWN to cross.
+ * qBittorrent's WAN transfer is a WAN claim by protocol semantics; a playback
+ * egress without typed boundary evidence is `unknown` — the renderer must use
+ * a neutral client treatment, never imply LAN/WAN/overlay simultaneously.
+ * Declared overrides (typed upstream evidence) always win.
+ */
+export type FlowNetworkBoundary =
+  | "wan"
+  | "lan"
+  | "overlay"
+  | "docker-internal"
+  | "host-local"
+  | "unknown";
+
+export function flowNetworkBoundary(
+  flow: FlowObservation,
+  overrides?: Readonly<Record<string, FlowNetworkBoundary>>,
+): FlowNetworkBoundary {
+  const declared = overrides?.[flow.id];
+  if (declared) return declared;
+  if (flow.kind === "wan-transfer") return "wan";
+  if (flow.from.kind === "network" || flow.to.kind === "network") return "unknown";
+  if (flow.plane === "control" && flow.from.kind === "service" && flow.to.kind === "service") {
+    return "docker-internal";
+  }
+  return "host-local";
+}
+
 /** Derive every observable flow from the snapshot. Idle input → empty array. */
 export function deriveFlows(
   snapshot: DashboardSnapshot,
@@ -374,7 +511,6 @@ export function deriveFlows(
   const qb = sourceState(snapshot, "qbittorrent", now);
   const sonarr = sourceState(snapshot, "sonarr", now);
   const radarr = sourceState(snapshot, "radarr", now);
-  const jellyfin = sourceState(snapshot, "jellyfin", now);
   const mediaStorage = mediaStorageEndpoint(snapshot);
   const downloadStorage = downloadStorageEndpoint(snapshot);
 
@@ -384,40 +520,55 @@ export function deriveFlows(
     const uploadBps = rate(acq.rollup.uploadRateBps ?? null);
     const downloadingActive = acq.rollup.downloading > 0;
     const seedingActive = (acq.rollup.seeding ?? 0) > 0;
-    const downloading =
-      downloadingActive &&
-      downloadBps !== null &&
-      (downloadBps === 0 || downloadBps >= FLOW_DEADBAND_BPS);
-    const seeding =
-      seedingActive &&
-      uploadBps !== null &&
-      (uploadBps === 0 || uploadBps >= FLOW_DEADBAND_BPS);
     const controllerServiceId = controllerForItems(
       acq.items,
       ["downloading", "searching", "importing"],
     );
 
-    if (downloading || seeding) {
+    if (downloadingActive || seedingActive) {
+      // Activity state establishes that the semantic relationship exists;
+      // the nullable counters establish only its magnitude. Keeping one
+      // contributor and channel per ACTIVE direction lets the shared rate
+      // classifier distinguish positive, complete zero, partial, and unknown
+      // truth without turning null into zero or hiding known work. Rendering
+      // still applies its existing deadband to small positive rates.
+      const contributors: Array<number | null> = [
+        ...(downloadingActive ? [downloadBps] : []),
+        ...(seedingActive ? [uploadBps] : []),
+      ];
       // One shared WAN conduit; download and seed-upload are opposite
-      // channels on it, each carrying its own measured rate.
+      // channels on it, each carrying its own measured rate — or null when
+      // the direction is active but its rate is unknown.
+      const anyKnown = contributors.some((value) => value !== null);
       const channels: FlowChannel[] = [];
-      if (downloading) {
-        channels.push({ direction: "forward", role: "ingress", bytesPerSecond: downloadBps });
+      if (downloadingActive) {
+        channels.push({
+          direction: "forward",
+          role: "ingress",
+          bytesPerSecond: downloadBps,
+        });
       }
-      if (seeding) {
-        channels.push({ direction: "reverse", role: "egress", bytesPerSecond: uploadBps });
+      if (seedingActive) {
+        channels.push({
+          direction: "reverse",
+          role: "egress",
+          bytesPerSecond: uploadBps,
+        });
       }
       flows.push(
         makeFlow("wan-transfer", { kind: "network" }, { kind: "service", id: "qbittorrent" }, {
           plane: "data",
-          evidence: "measured",
+          evidence: anyKnown ? "measured" : "state-only",
           freshness: qb.freshness,
           channels,
-          provenance: "measured by qBittorrent transfer counters",
+          rate: transferRateAggregate(contributors, "measured", qb.freshness),
+          provenance: anyKnown
+            ? "measured by qBittorrent transfer counters"
+            : "activity reported by qBittorrent; transfer rate unavailable",
           label:
-            downloading && seeding
+            downloadingActive && seedingActive
               ? "qBittorrent download + seed"
-              : downloading
+              : downloadingActive
                 ? "qBittorrent download"
                 : "qBittorrent seeding",
           updatedAt: qb.updatedAt,
@@ -429,23 +580,38 @@ export function deriveFlows(
       // are qBittorrent's transfer counters ATTRIBUTED to the storage hop, so
       // this is derived, not measured — ARC/page cache may absorb part of it.
       const storageChannels: FlowChannel[] = [];
-      if (downloading) {
-        storageChannels.push({ direction: "forward", role: "write", bytesPerSecond: downloadBps });
+      if (downloadingActive) {
+        storageChannels.push({
+          direction: "forward",
+          role: "write",
+          bytesPerSecond: downloadBps,
+        });
       }
-      if (seeding) {
-        storageChannels.push({ direction: "reverse", role: "read", bytesPerSecond: uploadBps });
+      if (seedingActive) {
+        storageChannels.push({
+          direction: "reverse",
+          role: "read",
+          bytesPerSecond: uploadBps,
+        });
       }
       flows.push(
         makeFlow("storage-transfer", { kind: "service", id: "qbittorrent" }, downloadStorage, {
           plane: "data",
-          evidence: "derived",
+          evidence: anyKnown ? "derived" : "state-only",
           freshness: qb.freshness,
           channels: storageChannels,
+          rate: transferRateAggregate(contributors, "derived", qb.freshness),
           provenance:
-            downloadStorage.kind === "pool"
+            anyKnown && downloadStorage.kind === "pool"
               ? "derived from qBittorrent rates; destination declared by HOMELAB_DOWNLOAD_POOL"
-              : "derived from qBittorrent rates; storage destination not declared",
-          label: downloading ? "download landing on storage" : "seeding from storage",
+              : anyKnown
+                ? "derived from qBittorrent rates; storage destination not declared"
+                : downloadStorage.kind === "pool"
+                  ? "activity reported by qBittorrent; destination declared by HOMELAB_DOWNLOAD_POOL; transfer rate unavailable"
+                  : "activity reported by qBittorrent; storage destination and transfer rate unavailable",
+          label: downloadingActive
+            ? "download landing on storage"
+            : "seeding from storage",
           updatedAt: qb.updatedAt,
           controllerServiceId,
         }),
@@ -536,6 +702,7 @@ export function deriveFlows(
             evidence: "derived",
             freshness: "live",
             channels: [{ direction: "forward", role: "write", bytesPerSecond: copyRate }],
+            rate: transferRateAggregate([copyRate], "derived", "live"),
             provenance: `import in progress (${arrName}); rate derived from corroborating ${downloadStorage.name} source reads and ${mediaStorage.name} destination writes`,
             label: "import copy between pools",
             updatedAt: earliestUpdatedAt(
@@ -557,28 +724,13 @@ export function deriveFlows(
   // positive mapped-container egress in that state remains visible as
   // measured container activity on the container body, but it is not
   // attributed to playback without corroborating playing sessions.
-  const sessions = snapshot.jellyfin.sessions;
-  const playingSessions = sessions.filter((s) => !s.paused);
-  if (jellyfin.usable && playingSessions.length > 0) {
-    const sessionAggregate = sessionRateAggregate(playingSessions, jellyfin.freshness);
-    const containerEgress = containerRate(snapshot, "netTxBps");
-    const containerReads = containerRate(snapshot, "blockReadBps");
-    const egress = pickHeadlineRate(containerEgress, sessionAggregate);
-    const playback = pickHeadlineRate(
-      containerReads,
-      storageAttribution(sessionAggregate),
-    );
+  const resolvedPlayback = resolveJellyfinPlayback(snapshot, now);
+  if (resolvedPlayback) {
+    const playingSessions = resolvedPlayback.playing;
+    const { egress, playback, egressFreshness, playbackFreshness } = resolvedPlayback;
     const egressRate = egress.headline;
     const playbackRate = playback.headline;
-    const egressFreshness: FlowFreshness =
-      jellyfin.freshness === "stale" || egressRate.freshness === "stale"
-        ? "stale"
-        : "live";
-    const playbackFreshness: FlowFreshness =
-      jellyfin.freshness === "stale" || playbackRate.freshness === "stale"
-        ? "stale"
-        : "live";
-    const transcoding = playingSessions.some((s) => s.method === "transcode");
+    const transcoding = resolvedPlayback.transcodingCount > 0;
     const label =
       playingSessions.length > 1
         ? `Jellyfin playback · ${playingSessions.length} sessions`
@@ -615,7 +767,7 @@ export function deriveFlows(
         updatedAt:
           playbackRate.basis === "container-block-read"
             ? snapshot.telemetry.docker.updatedAt
-            : jellyfin.updatedAt,
+            : resolvedPlayback.connectorUpdatedAt,
       }),
     );
     flows.push(
@@ -645,7 +797,7 @@ export function deriveFlows(
         updatedAt:
           egressRate.basis === "container-egress"
             ? snapshot.telemetry.docker.updatedAt
-            : jellyfin.updatedAt,
+            : resolvedPlayback.connectorUpdatedAt,
       }),
     );
   }
@@ -666,4 +818,55 @@ export function primaryRate(obs: FlowObservation): number | null {
     if (max === null || ch.bytesPerSecond > max) max = ch.bytesPerSecond;
   }
   return max;
+}
+
+/**
+ * Whether a numerically-zero aggregate is an AUTHORITATIVE zero: every
+ * contributor is accounted for (complete coverage, no unknown contributors)
+ * and real evidence backs the value. A known zero under partial/unknown
+ * coverage is a LOWER BOUND — "at least 0 B/s" — which says nothing about the
+ * total rate and must never be rendered as a confirmed zero.
+ */
+export function isAuthoritativeZero(rate: AggregateRateObservation): boolean {
+  return (
+    rate.knownBytesPerSecond === 0 &&
+    rate.unknownContributors === 0 &&
+    rate.coverage === "complete" &&
+    rate.evidence !== null
+  );
+}
+
+/**
+ * The truth classification every renderer's rate treatment must derive from.
+ * No renderer may re-infer these semantics from the numeric rate alone —
+ * the number loses coverage information (a partial known-zero and a complete
+ * measured zero are both `0`).
+ */
+export type FlowRateClass =
+  /** The justifying source is stale: freeze, regardless of numeric value. */
+  | "stale"
+  /** A known positive rate (a lower bound when coverage is partial). */
+  | "positive"
+  /** An authoritative zero: complete coverage, live, evidence-backed. */
+  | "confirmed-zero"
+  /** Work may exist but the total rate is unknown (includes partial zeros). */
+  | "unknown";
+
+/** Classify a flow's rate semantics from its authoritative aggregate. */
+export function classifyFlowRate(flow: FlowObservation): FlowRateClass {
+  if (flow.freshness === "stale") return "stale";
+  if (flow.plane !== "data") return "unknown";
+  const rate = primaryRate(flow);
+  if (rate !== null && rate > 0) return "positive";
+  if (
+    rate === 0 &&
+    flow.rate !== undefined &&
+    flow.rate.freshness === "live" &&
+    isAuthoritativeZero(flow.rate)
+  ) {
+    return "confirmed-zero";
+  }
+  // A numeric zero WITHOUT an aggregate proving completeness is never
+  // promoted to confirmed-zero — completeness is declared, not inferred.
+  return "unknown";
 }

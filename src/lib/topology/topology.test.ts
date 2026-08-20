@@ -263,7 +263,11 @@ describe("deriveFlows — bidirectional seeding (PLA-267 v2)", () => {
     ]);
   });
 
-  it("an UNKNOWN upload rate never creates a seed flow (unknown ≠ zero ≠ rate)", () => {
+  it("an UNKNOWN upload rate rides as an explicit nullable channel, never a fabricated rate", () => {
+    // V4 final producer audit: active work with an unknown magnitude keeps
+    // its direction alive as a null-rate channel with partial aggregate
+    // coverage — the earlier behavior (omitting the direction entirely)
+    // hid known activity, and rendering any number would fabricate one.
     const snap = makeFakeSnapshot("seeding", NOW);
     const unknownUpload = {
       ...snap,
@@ -273,7 +277,10 @@ describe("deriveFlows — bidirectional seeding (PLA-267 v2)", () => {
       },
     };
     const wan = byId(unknownUpload, "wan-transfer:network->qbittorrent")!;
-    expect(wan.channels.some((c) => c.direction === "reverse")).toBe(false);
+    const reverse = wan.channels.find((c) => c.direction === "reverse");
+    expect(reverse).toBeDefined();
+    expect(reverse!.bytesPerSecond).toBeNull();
+    expect(wan.rate).toMatchObject({ coverage: "partial", unknownContributors: 1 });
   });
 
   it("seeding with zero seeding count does not invent an upload channel", () => {
