@@ -372,6 +372,65 @@ describe("partial known zero is never a confirmed zero", () => {
   });
 });
 
+describe("active download with unknown rate (final producer audit)", () => {
+  it("keeps the WAN and storage conduits alive as state-only instead of disappearing", () => {
+    // qBittorrent truthfully reports active downloads while its transfer
+    // counters are unavailable: known work + unknown magnitude must be a
+    // state-only path, never absence.
+    const snapshot = mutableSnapshot("downloads");
+    snapshot.acquisition.rollup.aggregateRateBps = null;
+    snapshot.acquisition.rollup.uploadRateBps = 0;
+    snapshot.acquisition.rollup.seeding = 0;
+    expect(snapshot.acquisition.rollup.downloading).toBeGreaterThan(0);
+
+    const observations = deriveFlows(snapshot, NOW);
+    const wan = observations.find((f) => f.kind === "wan-transfer");
+    const storage = observations.find((f) => f.kind === "storage-transfer");
+    expect(wan).toBeDefined();
+    expect(storage).toBeDefined();
+    for (const obs of [wan!, storage!]) {
+      expect(obs.evidence).toBe("state-only");
+      expect(obs.rate).toMatchObject({
+        knownBytesPerSecond: null,
+        unknownContributors: 1,
+        coverage: "unknown",
+      });
+      expect(obs.channels).toHaveLength(1);
+      expect(obs.channels[0]!.bytesPerSecond).toBeNull();
+      expect(classifyFlowRate(obs)).toBe("unknown");
+    }
+
+    const s = sceneOf(snapshot);
+    const kineticWan = s.flows.find((f) => f.kind === "wan-transfer")!;
+    const kineticStorage = s.flows.find((f) => f.kind === "storage-transfer")!;
+    for (const flow of [kineticWan, kineticStorage]) {
+      // State-only: breathing hairline, no particles, no throughput width,
+      // and no numeric claim anywhere downstream.
+      expect(flow.treatment).toBe("state-only");
+      expect(flow.rateBps).toBeNull();
+    }
+    // qBittorrent still reads as downloading — without a fabricated rate.
+    const qb = s.anchors.find((a) => a.id === "qbittorrent")!;
+    expect(qb.active).toBe(true);
+    expect(qb.headline).toContain("downloading");
+    expect(qb.rateLine).toBeNull();
+    expect(qb.glow).toBeCloseTo(0.35, 5);
+  });
+
+  it("keeps an unknown active direction as a nullable channel beside a known one", () => {
+    const snapshot = mutableSnapshot("seeding");
+    snapshot.acquisition.rollup.aggregateRateBps = null; // download rate lost
+    const wan = deriveFlows(snapshot, NOW).find((f) => f.kind === "wan-transfer")!;
+    // Both directions participate: the seed carries its measured rate, the
+    // download rides as an explicit unknown — partial, never complete.
+    expect(wan.channels).toHaveLength(2);
+    expect(wan.channels.find((c) => c.direction === "forward")!.bytesPerSecond).toBeNull();
+    expect(wan.channels.find((c) => c.direction === "reverse")!.bytesPerSecond).toBeGreaterThan(0);
+    expect(wan.rate).toMatchObject({ coverage: "partial", unknownContributors: 1 });
+    expect(classifyFlowRate(wan)).toBe("positive");
+  });
+});
+
 describe("network boundary truth", () => {
   it("labels the client edge neutrally when the egress boundary is unknown", () => {
     for (const scenario of ["idle", "transcode", "direct-play", "active"] as const) {

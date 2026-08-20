@@ -520,20 +520,29 @@ export function deriveFlows(
     const uploadBps = rate(acq.rollup.uploadRateBps ?? null);
     const downloadingActive = acq.rollup.downloading > 0;
     const seedingActive = (acq.rollup.seeding ?? 0) > 0;
-    const downloading =
+    const downloadKnown =
       downloadingActive &&
       downloadBps !== null &&
       (downloadBps === 0 || downloadBps >= FLOW_DEADBAND_BPS);
-    const seeding =
+    const seedKnown =
       seedingActive &&
       uploadBps !== null &&
       (uploadBps === 0 || uploadBps >= FLOW_DEADBAND_BPS);
+    // Active work whose rate is UNKNOWN still exists on the wire: it keeps
+    // the conduit alive as a nullable channel and an unknown aggregate so
+    // the renderer's classifier turns it into a state-only path — known
+    // work with unknown magnitude must never simply disappear (V4 final
+    // producer audit). Known sub-deadband noise stays suppressed as before.
+    const downloadUnknown = downloadingActive && downloadBps === null;
+    const seedUnknown = seedingActive && uploadBps === null;
+    const downloadParticipates = downloadKnown || downloadUnknown;
+    const seedParticipates = seedKnown || seedUnknown;
     const controllerServiceId = controllerForItems(
       acq.items,
       ["downloading", "searching", "importing"],
     );
 
-    if (downloading || seeding) {
+    if (downloadParticipates || seedParticipates) {
       // One entry per ACTIVE direction, null when its rate is unknown or was
       // suppressed below the deadband: the aggregate must know about active
       // work the channels do not carry, or a known-zero direction beside an
@@ -543,26 +552,38 @@ export function deriveFlows(
         ...(seedingActive ? [uploadBps] : []),
       ];
       // One shared WAN conduit; download and seed-upload are opposite
-      // channels on it, each carrying its own measured rate.
+      // channels on it, each carrying its own measured rate — or null when
+      // the direction is active but its rate is unknown.
+      const anyKnown = downloadKnown || seedKnown;
       const channels: FlowChannel[] = [];
-      if (downloading) {
-        channels.push({ direction: "forward", role: "ingress", bytesPerSecond: downloadBps });
+      if (downloadParticipates) {
+        channels.push({
+          direction: "forward",
+          role: "ingress",
+          bytesPerSecond: downloadKnown ? downloadBps : null,
+        });
       }
-      if (seeding) {
-        channels.push({ direction: "reverse", role: "egress", bytesPerSecond: uploadBps });
+      if (seedParticipates) {
+        channels.push({
+          direction: "reverse",
+          role: "egress",
+          bytesPerSecond: seedKnown ? uploadBps : null,
+        });
       }
       flows.push(
         makeFlow("wan-transfer", { kind: "network" }, { kind: "service", id: "qbittorrent" }, {
           plane: "data",
-          evidence: "measured",
+          evidence: anyKnown ? "measured" : "state-only",
           freshness: qb.freshness,
           channels,
           rate: transferRateAggregate(contributors, "measured", qb.freshness),
-          provenance: "measured by qBittorrent transfer counters",
+          provenance: anyKnown
+            ? "measured by qBittorrent transfer counters"
+            : "activity reported by qBittorrent; transfer rate unavailable",
           label:
-            downloading && seeding
+            downloadParticipates && seedParticipates
               ? "qBittorrent download + seed"
-              : downloading
+              : downloadParticipates
                 ? "qBittorrent download"
                 : "qBittorrent seeding",
           updatedAt: qb.updatedAt,
@@ -574,16 +595,24 @@ export function deriveFlows(
       // are qBittorrent's transfer counters ATTRIBUTED to the storage hop, so
       // this is derived, not measured — ARC/page cache may absorb part of it.
       const storageChannels: FlowChannel[] = [];
-      if (downloading) {
-        storageChannels.push({ direction: "forward", role: "write", bytesPerSecond: downloadBps });
+      if (downloadParticipates) {
+        storageChannels.push({
+          direction: "forward",
+          role: "write",
+          bytesPerSecond: downloadKnown ? downloadBps : null,
+        });
       }
-      if (seeding) {
-        storageChannels.push({ direction: "reverse", role: "read", bytesPerSecond: uploadBps });
+      if (seedParticipates) {
+        storageChannels.push({
+          direction: "reverse",
+          role: "read",
+          bytesPerSecond: seedKnown ? uploadBps : null,
+        });
       }
       flows.push(
         makeFlow("storage-transfer", { kind: "service", id: "qbittorrent" }, downloadStorage, {
           plane: "data",
-          evidence: "derived",
+          evidence: anyKnown ? "derived" : "state-only",
           freshness: qb.freshness,
           channels: storageChannels,
           rate: transferRateAggregate(contributors, "derived", qb.freshness),
@@ -591,7 +620,9 @@ export function deriveFlows(
             downloadStorage.kind === "pool"
               ? "derived from qBittorrent rates; destination declared by HOMELAB_DOWNLOAD_POOL"
               : "derived from qBittorrent rates; storage destination not declared",
-          label: downloading ? "download landing on storage" : "seeding from storage",
+          label: downloadParticipates
+            ? "download landing on storage"
+            : "seeding from storage",
           updatedAt: qb.updatedAt,
           controllerServiceId,
         }),
