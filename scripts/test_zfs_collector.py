@@ -348,7 +348,8 @@ class MemoryCapacityTests(unittest.TestCase):
     def test_installed_memory_is_null_when_sysfs_memory_tree_is_absent(self):
         root = tempfile.mkdtemp()
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", root], check=False))
-        with patch.object(zfs_collector, "HOST_SYS", root):
+        missing = pathlib.Path(root) / "devices" / "system" / "memory"
+        with patch.object(zfs_collector, "_sys_path", return_value=str(missing)):
             self.assertIsNone(zfs_collector._read_installed_memory_bytes())
 
     def test_read_memory_keeps_memtotal_usable_and_adds_installed_capacity(self):
