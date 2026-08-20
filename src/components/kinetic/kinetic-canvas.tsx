@@ -168,7 +168,9 @@ function inspectorFor(
           (f.to.kind === "anchor" && f.to.id === selection.id),
       ),
       x: placed.x,
-      y: placed.y,
+      // Sit below the wordmark block: the inspector must never cover the
+      // element that opened it.
+      y: placed.y + 64,
     };
   }
   if (selection.kind === "pool") {

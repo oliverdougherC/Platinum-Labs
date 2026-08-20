@@ -385,8 +385,11 @@ export function buildKineticStage(scene: KineticScene, w: number, h: number): Ki
   const stageH = h - bandH;
   const orchY = bandH + stageH * 0.135;
   const anchorY = bandH + stageH * 0.34;
-  const storageTop = h - h * 0.165;
-  const storageH = h * 0.078;
+  // The pool name + capacity block below each stratum needs real pixels, not
+  // a fraction: at small stage heights (200% zoom) a pure-percentage floor
+  // clipped the capacity line off the bottom of the viewport.
+  const storageH = Math.min(Math.max(h * 0.078, 34), 84);
+  const storageTop = h - storageH - Math.max(h * 0.087, 62);
 
   const anchors: AnchorPlacement[] = [
     { id: "qbittorrent", x: w * 0.335, y: anchorY, r: Math.min(w, h * 1.6) * 0.085 },
