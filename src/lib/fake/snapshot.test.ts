@@ -74,6 +74,24 @@ describe("required scenario characteristics", () => {
     expect(r.aggregateRateBps).toBeGreaterThan(0);
   });
 
+  it("confirmed-zero: active work has a measured zero rate", () => {
+    const acquisition = makeFakeSnapshot("confirmed-zero", NOW).acquisition;
+    expect(acquisition.rollup.downloading).toBe(1);
+    expect(acquisition.rollup.aggregateRateBps).toBe(0);
+    expect(acquisition.items).toEqual([
+      expect.objectContaining({ state: "downloading", rateBps: 0 }),
+    ]);
+  });
+
+  it("download-rate-unknown: active work has no fabricated aggregate or item rate", () => {
+    const acquisition = makeFakeSnapshot("download-rate-unknown", NOW).acquisition;
+    expect(acquisition.rollup.downloading).toBe(2);
+    expect(acquisition.rollup.aggregateRateBps).toBeNull();
+    expect(acquisition.rollup.seeding).toBe(0);
+    expect(acquisition.items).toHaveLength(2);
+    expect(acquisition.items.every((item) => item.rateBps === null)).toBe(true);
+  });
+
   it("stalled: a stalled/failed transfer is present", () => {
     expect(
       makeFakeSnapshot("stalled", NOW).acquisition.rollup.failedOrStalled,
@@ -126,6 +144,35 @@ describe("required scenario characteristics", () => {
   it("default scenario resolves to a real builder", () => {
     expect(isScenario(DEFAULT_SCENARIO)).toBe(true);
     expect(makeFakeSnapshot()).toBeTruthy();
+  });
+
+  it("models V3 import variants without confusing organizing with a copy", () => {
+    const radarr = makeFakeSnapshot("radarr-import", NOW);
+    expect(radarr.acquisition.items).toEqual([
+      expect.objectContaining({ source: "radarr", state: "importing" }),
+    ]);
+
+    const samePool = makeFakeSnapshot("same-pool-import", NOW);
+    expect(samePool.downloadPool).toBe(samePool.mediaPool);
+    expect(samePool.telemetry.disk.value?.pools.map((pool) => pool.pool)).toEqual(["DataStore"]);
+
+    const crossPool = makeFakeSnapshot("cross-pool-import", NOW);
+    expect(crossPool.downloadPool).not.toBe(crossPool.mediaPool);
+    expect(crossPool.telemetry.disk.value?.pools.find((pool) => pool.pool === "NVME")?.readBps).toBeGreaterThan(0);
+    expect(crossPool.telemetry.disk.value?.pools.find((pool) => pool.pool === "DataStore")?.writeBps).toBeGreaterThan(0);
+  });
+
+  it("covers GPU, scan, Docker-unavailable, and declared relationship states", () => {
+    expect(makeFakeSnapshot("gpu-workload", NOW).telemetry.gpu.value?.utilizationFraction).toBeGreaterThan(0.7);
+    expect(makeFakeSnapshot("pool-scrub", NOW).zfs.pools.find((pool) => pool.name === "DataStore")?.scan).toBe("scrubbing");
+    expect(makeFakeSnapshot("docker-unavailable", NOW).telemetry.docker).toMatchObject({ status: "unavailable", value: null });
+    expect(makeFakeSnapshot("relationship-map", NOW).fabricRelationships).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: "service:seerr", to: "service:sonarr" }),
+      expect.objectContaining({ from: "service:seerr", to: "service:radarr" }),
+      expect.objectContaining({ from: "service:sonarr", to: "service:qbittorrent" }),
+      expect.objectContaining({ from: "service:sonarr", to: "service:jellyfin" }),
+      expect.objectContaining({ from: "host:control", to: "service:seerr" }),
+    ]));
   });
 });
 

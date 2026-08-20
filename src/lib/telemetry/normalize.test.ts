@@ -4,6 +4,7 @@ import {
   emptyTelemetry,
   gradeTelemetryFreshness,
   hostCollectorSchema,
+  normalizeCpuTopology,
   normalizeHostTelemetry,
   notConfiguredTelemetry,
   type RawHostSample,
@@ -60,6 +61,10 @@ function sample(at: number, overrides: Partial<RawHostSample> = {}): RawHostSamp
           name: "jellyfin",
           state: "running",
           health: "healthy",
+          stableId: "ctr-107f331d4217e3f4",
+          composeProject: "media-stack",
+          composeService: "jellyfin",
+          networkNames: ["media_default", "bridge"],
           restartCount: 0,
           cpuTotalNs: 1_000_000_000,
           systemCpuNs: 100_000_000_000,
@@ -126,6 +131,10 @@ function advance(at: number): RawHostSample {
           name: "jellyfin",
           state: "running",
           health: "healthy",
+          stableId: "ctr-107f331d4217e3f4",
+          composeProject: "media-stack",
+          composeService: "jellyfin",
+          networkNames: ["media_default", "bridge"],
           restartCount: 0,
           // +2e9 container ns over +200e9 system ns on 2 cores = 0.02 cores
           cpuTotalNs: 3_000_000_000,
@@ -176,6 +185,24 @@ describe("normalizeHostTelemetry", () => {
     expect(snap.cpu.value!.perCore[0]).toBeCloseTo(0.8, 5);
     expect(snap.cpu.value!.perCore[1]).toBeCloseTo(0.2, 5);
     expect(snap.cpu.value!.load1).toBe(2.0);
+  });
+
+  it("passes detected CPU topology through and leaves it null when absent", () => {
+    const withoutTopology = normalizeHostTelemetry(sample(1000), advance(3000));
+    expect(withoutTopology.cpu.value!.topology).toBeNull();
+
+    const topology = {
+      logicalCpus: 88,
+      sockets: 2,
+      physicalCores: 44,
+      coreSiblings: Array.from({ length: 44 }, (_, core) => [core, core + 44]),
+    };
+    const second = advance(3000);
+    const withTopology = normalizeHostTelemetry(sample(1000), {
+      ...second,
+      cpu: { ...second.cpu, topology },
+    });
+    expect(withTopology.cpu.value!.topology).toEqual(topology);
   });
 
   it("computes network and per-pool disk rates", () => {
@@ -240,6 +267,10 @@ describe("normalizeHostTelemetry", () => {
     const jellyfin = docker.containers.find((c) => c.name === "jellyfin")!;
     expect(jellyfin.cpuFraction).toBeCloseTo(0.02, 5);
     expect(jellyfin.memoryBytes).toBe(600_000_000);
+    expect(jellyfin.stableId).toBe("ctr-107f331d4217e3f4");
+    expect(jellyfin.composeProject).toBe("media-stack");
+    expect(jellyfin.composeService).toBe("jellyfin");
+    expect(jellyfin.networkNames).toEqual(["media_default", "bridge"]);
     expect(jellyfin.netRxBps).toBeCloseTo(5_000_000, 3);
     expect(jellyfin.netTxBps).toBeCloseTo(1_000_000, 3);
     expect(jellyfin.blockReadBps).toBeCloseTo(5_000_000, 3);
@@ -436,6 +467,64 @@ describe("normalizeHostTelemetry", () => {
     expect(byName.newbie!.blockReadBps).toBeNull();
   });
 
+  it("sanitizes additive docker topology identity fields", () => {
+    const prev = sample(1000);
+    const curr = sample(3000, {
+      docker: {
+        status: "ok",
+        sampledAt: 3000,
+        containers: [
+          {
+            name: "safe",
+            state: "running",
+            health: "healthy",
+            stableId: "CTR-ABC123",
+            composeProject: "project-alpha",
+            composeService: "svc_1",
+            networkNames: ["media_default", "media_default", "bad/name", "bridge"],
+            restartCount: 0,
+            cpuTotalNs: 2,
+            systemCpuNs: 20,
+            memoryBytes: 20,
+            netRxBytes: 200,
+            netTxBytes: 300,
+            blockReadBytes: 400,
+            blockWriteBytes: 500,
+          },
+          {
+            name: "unsafe",
+            state: "running",
+            health: null,
+            stableId: "bad id",
+            composeProject: "../secrets",
+            composeService: "svc with spaces",
+            networkNames: ["bad/name"],
+            restartCount: 0,
+            cpuTotalNs: 3,
+            systemCpuNs: 30,
+            memoryBytes: 30,
+            netRxBytes: 300,
+            netTxBytes: 400,
+            blockReadBytes: 500,
+            blockWriteBytes: 600,
+          },
+        ],
+      },
+    } as Partial<RawHostSample>);
+    const docker = normalizeHostTelemetry(prev, curr).docker.value!;
+    const byName = Object.fromEntries(
+      docker.containers.map((container) => [container.name, container]),
+    ) as Record<string, NonNullable<typeof docker>["containers"][number]>;
+    expect(byName.safe!.stableId).toBe("ctr-abc123");
+    expect(byName.safe!.composeProject).toBe("project-alpha");
+    expect(byName.safe!.composeService).toBe("svc_1");
+    expect(byName.safe!.networkNames).toEqual(["media_default", "bridge"]);
+    expect(byName.unsafe!.stableId).toBeNull();
+    expect(byName.unsafe!.composeProject).toBeNull();
+    expect(byName.unsafe!.composeService).toBeNull();
+    expect(byName.unsafe!.networkNames).toBeUndefined();
+  });
+
   it("keeps unknown restart counts null instead of fabricating 0 (PLA-273)", () => {
     const withUnknownRestarts = (at: number) =>
       sample(at, {
@@ -582,5 +671,82 @@ describe("empty snapshots", () => {
     for (const domain of Object.values(notConfiguredTelemetry())) {
       expect(domain.status).toBe("not-configured");
     }
+  });
+});
+
+describe("normalizeCpuTopology", () => {
+  const full = {
+    logicalCpus: 8,
+    sockets: 2,
+    physicalCores: 4,
+    coreSiblings: [
+      [0, 4],
+      [1, 5],
+      [2, 6],
+      [3, 7],
+    ],
+  };
+
+  it("keeps a consistent full topology", () => {
+    expect(normalizeCpuTopology(full)).toEqual(full);
+  });
+
+  it("keeps SMT-off topology where physical equals logical", () => {
+    const smtOff = {
+      logicalCpus: 4,
+      sockets: 1,
+      physicalCores: 4,
+      coreSiblings: [[0], [1], [2], [3]],
+    };
+    expect(normalizeCpuTopology(smtOff)).toEqual(smtOff);
+  });
+
+  it("is null when topology is absent or has no logical count", () => {
+    expect(normalizeCpuTopology(null)).toBeNull();
+    expect(normalizeCpuTopology(undefined)).toBeNull();
+    expect(normalizeCpuTopology({ ...full, logicalCpus: null })).toBeNull();
+    expect(normalizeCpuTopology({ ...full, logicalCpus: 0 })).toBeNull();
+  });
+
+  it("keeps the logical count but nulls partial physical claims", () => {
+    expect(
+      normalizeCpuTopology({
+        logicalCpus: 4,
+        sockets: null,
+        physicalCores: null,
+        coreSiblings: null,
+      }),
+    ).toEqual({
+      logicalCpus: 4,
+      sockets: null,
+      physicalCores: null,
+      coreSiblings: null,
+    });
+  });
+
+  it("never repairs contradictory physical claims (no logical/2 guessing)", () => {
+    const nulled = {
+      logicalCpus: 8,
+      sockets: null,
+      physicalCores: null,
+      coreSiblings: null,
+    };
+    // More physical cores than logical CPUs.
+    expect(normalizeCpuTopology({ ...full, physicalCores: 16 })).toEqual(nulled);
+    // More sockets than cores.
+    expect(
+      normalizeCpuTopology({ ...full, sockets: 5, physicalCores: 4 }),
+    ).toEqual(nulled);
+    // Sibling groups disagreeing with the physical-core count.
+    expect(
+      normalizeCpuTopology({ ...full, coreSiblings: [[0, 4], [1, 5]] }),
+    ).toEqual(nulled);
+    // A sibling group with a non-integer or negative CPU id.
+    expect(
+      normalizeCpuTopology({
+        ...full,
+        coreSiblings: [[0, 4], [1, 5], [2, 6], [3, -7]],
+      }),
+    ).toEqual(nulled);
   });
 });

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getDataMode, getServerEnv } from "@/lib/env.server";
+import { getDataMode, getFabricRelationships, getServerEnv } from "@/lib/env.server";
 import { appConfig } from "@/lib/config";
 import { parseQuickLinksEnv, type QuickLink } from "@/lib/quicklinks";
 import {
@@ -35,13 +35,17 @@ export async function getDashboardSnapshot(opts?: {
   const mode = getDataMode();
 
   if (mode === "fake") {
-    return makeFakeSnapshot(resolveScenario(opts?.scenarioOverride), opts?.nowOverride);
+    const snapshot = makeFakeSnapshot(resolveScenario(opts?.scenarioOverride), opts?.nowOverride);
+    const configured = getFabricRelationships();
+    return configured.length > 0 ? { ...snapshot, fabricRelationships: configured } : snapshot;
   }
 
   // Live mode: read the cached aggregate assembled by the connector registry
   // (PLA-186). Imported lazily so fake mode never loads the DB/connector stack.
   const { getLiveSnapshot } = await import("@/lib/dashboard/registry.server");
-  return getLiveSnapshot();
+  const snapshot = await getLiveSnapshot();
+  const configured = getFabricRelationships();
+  return configured.length > 0 ? { ...snapshot, fabricRelationships: configured } : snapshot;
 }
 
 /** Resolve the effective fake scenario: query override → env → default. */

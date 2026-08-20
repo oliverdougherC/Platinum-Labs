@@ -52,6 +52,7 @@ USAGE
 """
 
 import hmac
+import hashlib
 import json
 import os
 import re
@@ -67,6 +68,7 @@ TOKEN = os.environ.get("ZFS_COLLECTOR_TOKEN", "")
 BIND = os.environ.get("ZFS_COLLECTOR_BIND", "0.0.0.0")
 PORT = int(os.environ.get("ZFS_COLLECTOR_PORT", "9797"))
 HOST_PROC = os.environ.get("HOST_PROC", "/host/proc")
+HOST_SYS = os.environ.get("HOST_SYS", "/host/sys")
 NET_INTERFACES = [
     i.strip() for i in os.environ.get("HOST_NET_INTERFACES", "").split(",") if i.strip()
 ]
@@ -77,6 +79,9 @@ DOCKER_CACHE_SECONDS = 5.0  # background refresh cadence (between completions)
 POOL_DEVICES_CACHE_SECONDS = 30.0  # device topology changes rarely
 DOCKER_REFRESH_DEADLINE = 8.0  # total budget for one docker refresh cycle
 SECTOR_BYTES = 512  # /proc/diskstats sector counts are always 512-byte units
+SAFE_DOCKER_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+SAFE_DOCKER_ID = re.compile(r"^[a-f0-9]{12,64}$")
+MAX_DOCKER_NETWORKS = 16
 
 if not TOKEN:
     print("[zfs-collector] refusing to start: ZFS_COLLECTOR_TOKEN is required", file=sys.stderr)
@@ -247,6 +252,71 @@ def _proc_path(name):
     return hosted if os.path.exists(hosted) else os.path.join("/proc", name)
 
 
+def _sys_path(name):
+    """Prefer the host-mounted sysfs when present. Unlike /proc/net, CPU
+    topology under /sys/devices/system/cpu is not namespaced, so falling back
+    to the local /sys is legitimate when running bare on the host."""
+    hosted = os.path.join(HOST_SYS, name)
+    return hosted if os.path.exists(hosted) else os.path.join("/sys", name)
+
+
+def _read_sys_int(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+_CPU_DIR = re.compile(r"^cpu(\d+)$")
+
+
+def _read_cpu_topology():
+    """CPU topology from sysfs, or None when unavailable.
+
+    Physical cores are counted from distinct (physical_package_id, core_id)
+    pairs — never inferred by dividing logical CPUs by an assumed SMT factor.
+    When any enumerated CPU lacks topology files, the physical fields are
+    reported null (partial data must not masquerade as a full count) while the
+    logical CPU count, which needs only the cpuN directories, is kept.
+    """
+    base = _sys_path("devices/system/cpu")
+    try:
+        entries = os.listdir(base)
+    except OSError:
+        return None
+    cpu_ids = sorted(
+        int(m.group(1)) for m in (_CPU_DIR.match(e) for e in entries) if m
+    )
+    if not cpu_ids:
+        return None
+    packages = set()
+    cores = {}  # (package_id, core_id) -> sorted logical CPU ids
+    complete = True
+    for cpu in cpu_ids:
+        topo = os.path.join(base, "cpu%d" % cpu, "topology")
+        pkg = _read_sys_int(os.path.join(topo, "physical_package_id"))
+        core = _read_sys_int(os.path.join(topo, "core_id"))
+        if pkg is None or core is None:
+            complete = False
+            continue
+        packages.add(pkg)
+        cores.setdefault((pkg, core), []).append(cpu)
+    if complete and cores:
+        return {
+            "logicalCpus": len(cpu_ids),
+            "sockets": len(packages),
+            "physicalCores": len(cores),
+            "coreSiblings": [cores[key] for key in sorted(cores)],
+        }
+    return {
+        "logicalCpus": len(cpu_ids),
+        "sockets": None,
+        "physicalCores": None,
+        "coreSiblings": None,
+    }
+
+
 def _read_cpu():
     cores = []
     total = None
@@ -262,7 +332,11 @@ def _read_cpu():
                 cores.append(values)
     with open(_proc_path("loadavg")) as f:
         load = [float(v) for v in f.read().split()[:3]]
-    return {"total": total, "cores": cores, "load": load}
+    try:
+        topology = _read_cpu_topology()
+    except Exception:
+        topology = None  # topology is enrichment; never fail the cpu section
+    return {"total": total, "cores": cores, "load": load, "topology": topology}
 
 
 def _read_memory():
@@ -490,6 +564,41 @@ def _docker_get(path):
         return json.loads(res.read())
 
 
+def _safe_docker_token(value):
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()
+    if not trimmed or len(trimmed) > 128 or not SAFE_DOCKER_TOKEN.match(trimmed):
+        return None
+    return trimmed
+
+
+def _stable_container_id(raw_id):
+    if not isinstance(raw_id, str):
+        return None
+    lowered = raw_id.strip().lower()
+    if not SAFE_DOCKER_ID.match(lowered):
+        return None
+    return "ctr-" + hashlib.sha256(lowered.encode("utf-8")).hexdigest()[:16]
+
+
+def _safe_network_names(entry):
+    networks = ((entry.get("NetworkSettings") or {}).get("Networks") or {})
+    if not isinstance(networks, dict):
+        return None
+    seen = set()
+    names = []
+    for raw_name in networks.keys():
+        name = _safe_docker_token(raw_name)
+        if name is None or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+        if len(names) >= MAX_DOCKER_NETWORKS:
+            break
+    return names or None
+
+
 def _fetch_docker(now=time.monotonic):
     if not DOCKER_PROXY_URL:
         return {"status": "not-configured"}
@@ -511,10 +620,15 @@ def _fetch_docker(now=time.monotonic):
             health = "unhealthy"
         elif "(health: starting)" in status_text:
             health = "starting"
+        labels = entry.get("Labels") or {}
         container = {
             "name": name,
             "state": state,
             "health": health,
+            "stableId": _stable_container_id(entry.get("Id")),
+            "composeProject": _safe_docker_token(labels.get("com.docker.compose.project")),
+            "composeService": _safe_docker_token(labels.get("com.docker.compose.service")),
+            "networkNames": _safe_network_names(entry),
             "restartCount": None,
             "cpuTotalNs": None,
             "systemCpuNs": None,

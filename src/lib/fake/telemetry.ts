@@ -6,8 +6,9 @@
  * breathes when polled continuously, yet any fixed `now` renders an identical
  * frame — the property the screenshot harness (PLA-270) depends on.
  *
- * The simulated machine mirrors the real p910 host: 32 logical CPUs, 126 GiB
- * RAM, a GTX 1070, three pools (DataStore / NVME / eSATA).
+ * The simulated machine mirrors the real p910 host after the 2026 CPU upgrade:
+ * two sockets, 44 physical cores, SMT on (88 logical CPUs), 126 GiB RAM, a
+ * GTX 1070, three pools (DataStore / NVME / eSATA).
  */
 
 import { clamp } from "@/lib/utils";
@@ -21,13 +22,25 @@ import {
   notConfiguredTelemetry,
 } from "@/lib/telemetry/normalize";
 import type {
+  CpuTopology,
   DockerContainerTelemetry,
   HostTelemetrySnapshot,
   TelemetryDomain,
   TelemetryHistory,
 } from "@/lib/types";
 
-export const FAKE_CORE_COUNT = 32;
+/**
+ * Topology of the simulated host: 2 × 22-core Xeons with SMT, exactly what the
+ * sysfs detector reports for the upgraded p910. Sibling threads follow the
+ * common kernel enumeration (cpu N pairs with cpu N + physicalCores).
+ */
+export const FAKE_CPU_TOPOLOGY: CpuTopology = {
+  logicalCpus: 88,
+  sockets: 2,
+  physicalCores: 44,
+  coreSiblings: Array.from({ length: 44 }, (_, core) => [core, core + 44]),
+};
+export const FAKE_CORE_COUNT = FAKE_CPU_TOPOLOGY.logicalCpus;
 const GiB = 1024 ** 3;
 const MEM_TOTAL = 126 * GiB;
 const SWAP_TOTAL = 64 * GiB;
@@ -40,6 +53,8 @@ export type TelemetryProfileName =
   | "downloads"
   | "seeding"
   | "importing"
+  | "same-pool-import"
+  | "gpu-workload"
   | "active"
   | "container-mixed"
   | "container-field-real"
@@ -88,6 +103,68 @@ interface ContainerSpec {
   memGiB: number | null;
   netKBps?: [rx: number, tx: number] | null;
   blockKBps?: [read: number, write: number] | null;
+}
+
+function safeContainerToken(name: string): string {
+  return (
+    name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) ||
+    "container"
+  );
+}
+
+const MEDIA_STACK = new Set([
+  "jellyfin",
+  "sonarr",
+  "radarr",
+  "qbittorrent",
+  "prowlarr",
+  "jellyseerr",
+  "gluetun",
+  "unpackerr",
+  "flaresolverr",
+  "bazarr",
+  "tautulli",
+  "wizarr",
+]);
+
+const OBSERVABILITY_STACK = new Set([
+  "grafana",
+  "prometheus",
+  "loki",
+  "dozzle",
+  "cadvisor",
+  "node-exporter",
+  "smokeping",
+  "uptime-kuma",
+  "scrutiny",
+]);
+
+function fakeContainerTopology(name: string) {
+  const service = safeContainerToken(name);
+  if (MEDIA_STACK.has(service)) {
+    return {
+      stableId: `fake-${service}`,
+      composeProject: "media-stack",
+      composeService: service,
+      networkNames: service === "gluetun"
+        ? ["media_default", "bridge"]
+        : ["media_default", "internal_default"],
+    };
+  }
+  if (OBSERVABILITY_STACK.has(service)) {
+    return {
+      stableId: `fake-${service}`,
+      composeProject: "observability-stack",
+      composeService: service,
+      networkNames: ["observability_default", "internal_default"],
+    };
+  }
+  return {
+    stableId: `fake-${service}`,
+    composeProject: "platform-stack",
+    composeService: service,
+    networkNames: ["internal_default"],
+  };
 }
 
 /**
@@ -190,6 +267,7 @@ function containersFromSpecs(
 ): DockerContainerTelemetry[] {
   return specs.map((spec, i) => ({
     name: spec.name,
+    ...fakeContainerTopology(spec.name),
     state: spec.state ?? "running",
     health: spec.health !== undefined ? spec.health : i % 4 === 0 ? "healthy" : null,
     restartCount: spec.restarts !== undefined ? spec.restarts : 0,
@@ -295,6 +373,29 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
     poolIo: {
       NVME: { read: 32_000_000, write: 500_000 },
       DataStore: { read: 800_000, write: 30_000_000 },
+    },
+  },
+  "same-pool-import": {
+    cpu: 0.08,
+    hotCores: 3,
+    memFraction: 0.41,
+    gpuUtil: 0,
+    netRxBps: 200_000,
+    netTxBps: 140_000,
+    poolIo: {
+      DataStore: { read: 1_200_000, write: 2_800_000 },
+    },
+  },
+  "gpu-workload": {
+    cpu: 0.18,
+    hotCores: 6,
+    memFraction: 0.54,
+    gpuUtil: 0.91,
+    netRxBps: 280_000,
+    netTxBps: 180_000,
+    poolIo: {
+      NVME: { read: 1_500_000, write: 2_400_000 },
+      DataStore: { read: 900_000, write: 1_100_000 },
     },
   },
   active: {
@@ -410,6 +511,7 @@ function fakeContainers(
     const unverified = unknown.has(name);
     return {
       name,
+      ...fakeContainerTopology(name),
       state: bad ? "exited" : unverified ? "unknown" : "running",
       health: bad ? "unhealthy" : unverified ? null : i % 3 === 0 ? "healthy" : null,
       restartCount: bad ? 3 : unverified ? null : 0,
@@ -472,6 +574,7 @@ export function makeFakeTelemetry(
         load1: Number((totalFraction * FAKE_CORE_COUNT * 0.9).toFixed(2)),
         load5: Number((totalFraction * FAKE_CORE_COUNT * 0.8).toFixed(2)),
         load15: Number((totalFraction * FAKE_CORE_COUNT * 0.7).toFixed(2)),
+        topology: FAKE_CPU_TOPOLOGY,
       },
       now,
     ),

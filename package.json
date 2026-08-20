@@ -30,6 +30,12 @@
     "screenshots:performance": "node scripts/screenshots.mjs --performance",
     "screenshots:performance:prod": "node scripts/screenshots.mjs --performance --prod",
     "screenshots:determinism": "node scripts/screenshots.mjs --determinism --prod",
+    "screenshots:kinetic": "node scripts/screenshots.mjs --kinetic",
+    "screenshots:kinetic:prod": "node scripts/screenshots.mjs --kinetic --prod",
+    "screenshots:kinetic:motion:prod": "node scripts/screenshots.mjs --kinetic --motion --prod",
+    "screenshots:kinetic:determinism": "node scripts/screenshots.mjs --kinetic --determinism --prod",
+    "screenshots:kinetic:performance:prod": "node scripts/screenshots.mjs --kinetic --performance --prod",
+    "soak:kinetic": "node scripts/soak-kinetic.mjs",
     "dev:fake": "HOMELAB_DATA_MODE=fake HOMELAB_ENABLE_DEV_CONTROLS=1 next dev -p 3911"
   },
   "dependencies": {

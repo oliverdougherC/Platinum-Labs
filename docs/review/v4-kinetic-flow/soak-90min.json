@@ -1,0 +1,649 @@
+{
+  "capturedAt": "2026-08-20T05:17:42.953Z",
+  "minutes": 90,
+  "viewport": {
+    "width": 1920,
+    "height": 1080
+  },
+  "build": "production",
+  "headless": false,
+  "surface": "/?ui=kinetic (production renderer, live fake transport)",
+  "cycle": [
+    {
+      "scenario": "idle",
+      "seconds": 90
+    },
+    {
+      "scenario": "downloads",
+      "seconds": 150
+    },
+    {
+      "scenario": "seeding",
+      "seconds": 120
+    },
+    {
+      "scenario": "direct-play",
+      "seconds": 120
+    },
+    {
+      "scenario": "transcode",
+      "seconds": 150
+    },
+    {
+      "scenario": "active",
+      "seconds": 180,
+      "interact": true
+    },
+    {
+      "scenario": "cross-pool-import",
+      "seconds": 120
+    },
+    {
+      "scenario": "idle",
+      "seconds": 90
+    },
+    {
+      "scenario": "attention",
+      "seconds": 120,
+      "interact": true
+    },
+    {
+      "scenario": "idle",
+      "seconds": 60
+    }
+  ],
+  "sampleEverySeconds": 300,
+  "method": "One mounted production kinetic stage, no reloads. Scenario cycling via the dev fixture hook; CDP Performance.getMetrics per sample; PerformanceObserver longtask deltas; engine counters via __homelabKineticDebug; HeapProfiler.collectGarbage before the baseline and final samples. Gates require bounded behavior, not byte-identical numbers.",
+  "baselineAfterGc": {
+    "label": "baseline-after-gc",
+    "atMinutes": 1.02,
+    "jsHeapUsedMiB": 4.17,
+    "domNodes": 259,
+    "jsEventListeners": 337,
+    "documents": 1,
+    "mainThreadTaskMsPerSecond": null,
+    "scriptMsPerSecond": null,
+    "layoutCountDelta": null,
+    "styleRecalcCountDelta": null,
+    "longTasksDelta": 0,
+    "engine": {
+      "flows": 0,
+      "decaying": 0,
+      "cells": 9,
+      "visibleParticles": 0,
+      "rafActive": false,
+      "visualTime": 5.689499999880788
+    },
+    "canvas": {
+      "width": 1920,
+      "height": 1032
+    },
+    "canvasCount": 1,
+    "stageIntact": true,
+    "pageUrlStable": true
+  },
+  "finalAfterGc": {
+    "label": "final-after-gc",
+    "atMinutes": 90.19,
+    "jsHeapUsedMiB": 4.92,
+    "domNodes": 271,
+    "jsEventListeners": 337,
+    "documents": 1,
+    "mainThreadTaskMsPerSecond": 65.21,
+    "scriptMsPerSecond": 23.39,
+    "layoutCountDelta": 2693,
+    "styleRecalcCountDelta": 10206,
+    "longTasksDelta": 0,
+    "engine": {
+      "flows": 0,
+      "decaying": 0,
+      "cells": 9,
+      "visibleParticles": 0,
+      "rafActive": false,
+      "visualTime": 3972.964300001604
+    },
+    "canvas": {
+      "width": 1920,
+      "height": 1032
+    },
+    "canvasCount": 1,
+    "stageIntact": true,
+    "pageUrlStable": true
+  },
+  "samples": [
+    {
+      "label": "baseline-after-gc",
+      "atMinutes": 1.02,
+      "jsHeapUsedMiB": 4.17,
+      "domNodes": 259,
+      "jsEventListeners": 337,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": null,
+      "scriptMsPerSecond": null,
+      "layoutCountDelta": null,
+      "styleRecalcCountDelta": null,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 0,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 0,
+        "rafActive": false,
+        "visualTime": 5.689499999880788
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 6.03,
+      "jsHeapUsedMiB": 10.14,
+      "domNodes": 274,
+      "jsEventListeners": 388,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 71.95,
+      "scriptMsPerSecond": 26.69,
+      "layoutCountDelta": 1469,
+      "styleRecalcCountDelta": 12389,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 14,
+        "rafActive": true,
+        "visualTime": 222.78099999981598
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 11.03,
+      "jsHeapUsedMiB": 13.08,
+      "domNodes": 274,
+      "jsEventListeners": 388,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 89.67,
+      "scriptMsPerSecond": 34.42,
+      "layoutCountDelta": 4319,
+      "styleRecalcCountDelta": 12838,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 10,
+        "rafActive": true,
+        "visualTime": 523.1749999998158
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 16.02,
+      "jsHeapUsedMiB": 20.5,
+      "domNodes": 277,
+      "jsEventListeners": 473,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 73.34,
+      "scriptMsPerSecond": 29.74,
+      "layoutCountDelta": 2587,
+      "styleRecalcCountDelta": 12838,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 4,
+        "rafActive": true,
+        "visualTime": 822.4828999997067
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 21.03,
+      "jsHeapUsedMiB": 6.48,
+      "domNodes": 271,
+      "jsEventListeners": 1418,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 29.81,
+      "scriptMsPerSecond": 4.27,
+      "layoutCountDelta": 1360,
+      "styleRecalcCountDelta": 11955,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 0,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 0,
+        "rafActive": false,
+        "visualTime": 884.5029999996682
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 26.04,
+      "jsHeapUsedMiB": 5.8,
+      "domNodes": 281,
+      "jsEventListeners": 405,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 57.25,
+      "scriptMsPerSecond": 20,
+      "layoutCountDelta": 1359,
+      "styleRecalcCountDelta": 12454,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 14,
+        "rafActive": true,
+        "visualTime": 1100.7167999996338
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 31.03,
+      "jsHeapUsedMiB": 5.38,
+      "domNodes": 279,
+      "jsEventListeners": 354,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 71.88,
+      "scriptMsPerSecond": 25.79,
+      "layoutCountDelta": 4564,
+      "styleRecalcCountDelta": 12755,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 10,
+        "rafActive": true,
+        "visualTime": 1400.1660999995256
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 36.03,
+      "jsHeapUsedMiB": 9.03,
+      "domNodes": 277,
+      "jsEventListeners": 388,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 74.19,
+      "scriptMsPerSecond": 29.62,
+      "layoutCountDelta": 2842,
+      "styleRecalcCountDelta": 12837,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 4,
+        "rafActive": true,
+        "visualTime": 1700.4820999994247
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 41.02,
+      "jsHeapUsedMiB": 6.18,
+      "domNodes": 271,
+      "jsEventListeners": 1247,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 30.92,
+      "scriptMsPerSecond": 4.38,
+      "layoutCountDelta": 1526,
+      "styleRecalcCountDelta": 11950,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 0,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 0,
+        "rafActive": false,
+        "visualTime": 1762.4798999994669
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 46.03,
+      "jsHeapUsedMiB": 15.41,
+      "domNodes": 281,
+      "jsEventListeners": 388,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 57.65,
+      "scriptMsPerSecond": 20.05,
+      "layoutCountDelta": 1371,
+      "styleRecalcCountDelta": 12367,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 14,
+        "rafActive": true,
+        "visualTime": 1976.7324999994112
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 51.03,
+      "jsHeapUsedMiB": 14.94,
+      "domNodes": 279,
+      "jsEventListeners": 388,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 72.18,
+      "scriptMsPerSecond": 25.89,
+      "layoutCountDelta": 4728,
+      "styleRecalcCountDelta": 12656,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 10,
+        "rafActive": true,
+        "visualTime": 2277.057899999629
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 56.02,
+      "jsHeapUsedMiB": 8.8,
+      "domNodes": 277,
+      "jsEventListeners": 388,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 74.72,
+      "scriptMsPerSecond": 29.99,
+      "layoutCountDelta": 2408,
+      "styleRecalcCountDelta": 12753,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 4,
+        "rafActive": true,
+        "visualTime": 2576.4995000000185
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 61.03,
+      "jsHeapUsedMiB": 5.99,
+      "domNodes": 271,
+      "jsEventListeners": 807,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 29.56,
+      "scriptMsPerSecond": 4.29,
+      "layoutCountDelta": 1182,
+      "styleRecalcCountDelta": 11827,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 0,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 0,
+        "rafActive": false,
+        "visualTime": 2641.1685000001107
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 66.03,
+      "jsHeapUsedMiB": 12.82,
+      "domNodes": 281,
+      "jsEventListeners": 388,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 56.41,
+      "scriptMsPerSecond": 19.4,
+      "layoutCountDelta": 1631,
+      "styleRecalcCountDelta": 12428,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 14,
+        "rafActive": true,
+        "visualTime": 2854.5107000004637
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 71.02,
+      "jsHeapUsedMiB": 10.29,
+      "domNodes": 279,
+      "jsEventListeners": 371,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 70.53,
+      "scriptMsPerSecond": 25.17,
+      "layoutCountDelta": 4221,
+      "styleRecalcCountDelta": 12740,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 10,
+        "rafActive": true,
+        "visualTime": 3153.9196000007364
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 76.03,
+      "jsHeapUsedMiB": 6.64,
+      "domNodes": 277,
+      "jsEventListeners": 354,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 72.65,
+      "scriptMsPerSecond": 28.99,
+      "layoutCountDelta": 2927,
+      "styleRecalcCountDelta": 12844,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 3,
+        "rafActive": true,
+        "visualTime": 3454.335400001045
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 81.02,
+      "jsHeapUsedMiB": 5.52,
+      "domNodes": 271,
+      "jsEventListeners": 854,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 30.19,
+      "scriptMsPerSecond": 4.31,
+      "layoutCountDelta": 1453,
+      "styleRecalcCountDelta": 12115,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 0,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 0,
+        "rafActive": false,
+        "visualTime": 3520.1105000011075
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "interval",
+      "atMinutes": 86.03,
+      "jsHeapUsedMiB": 5.21,
+      "domNodes": 281,
+      "jsEventListeners": 337,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 55.41,
+      "scriptMsPerSecond": 18.33,
+      "layoutCountDelta": 1271,
+      "styleRecalcCountDelta": 12739,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 2,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 14,
+        "rafActive": true,
+        "visualTime": 3731.6139000013563
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    },
+    {
+      "label": "final-after-gc",
+      "atMinutes": 90.19,
+      "jsHeapUsedMiB": 4.92,
+      "domNodes": 271,
+      "jsEventListeners": 337,
+      "documents": 1,
+      "mainThreadTaskMsPerSecond": 65.21,
+      "scriptMsPerSecond": 23.39,
+      "layoutCountDelta": 2693,
+      "styleRecalcCountDelta": 10206,
+      "longTasksDelta": 0,
+      "engine": {
+        "flows": 0,
+        "decaying": 0,
+        "cells": 9,
+        "visibleParticles": 0,
+        "rafActive": false,
+        "visualTime": 3972.964300001604
+      },
+      "canvas": {
+        "width": 1920,
+        "height": 1032
+      },
+      "canvasCount": 1,
+      "stageIntact": true,
+      "pageUrlStable": true
+    }
+  ],
+  "failures": [],
+  "passed": true
+}

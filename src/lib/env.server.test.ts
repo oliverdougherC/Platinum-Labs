@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { getServerEnv, resetServerEnvCache } from "@/lib/env.server";
+import {
+  getFabricRelationships,
+  getServerEnv,
+  resetServerEnvCache,
+} from "@/lib/env.server";
 
 /**
  * Environment parsing regression tests (V2.1 review blocker): a template
@@ -10,6 +14,8 @@ import { getServerEnv, resetServerEnvCache } from "@/lib/env.server";
 
 const MANAGED_KEYS = [
   "HOMELAB_DATA_MODE",
+  "HOMELAB_UI_MODE",
+  "HOMELAB_FABRIC_RELATIONSHIPS",
   "HOMELAB_NETWORK_LINK_MBPS",
   "HOMELAB_HOST_LABEL",
   "HOMELAB_DB_PATH",
@@ -110,8 +116,127 @@ describe(".env.example regression", () => {
 
     const env = getServerEnv();
     expect(env.HOMELAB_DATA_MODE).toBe("fake");
+    expect(env.HOMELAB_UI_MODE).toBe("topology");
     expect(env.HOMELAB_NETWORK_LINK_MBPS).toBeUndefined();
     expect(env.HOMELAB_HOST_LABEL).toBeUndefined();
     expect(env.JELLYFIN_URL).toBeUndefined();
+  });
+});
+
+describe("HOMELAB_UI_MODE parsing", () => {
+  it("defaults to topology when unset", () => {
+    setEnv({ HOMELAB_UI_MODE: undefined });
+    expect(getServerEnv().HOMELAB_UI_MODE).toBe("topology");
+  });
+
+  it("rejects the retired fabric renderer", () => {
+    setEnv({ HOMELAB_UI_MODE: "fabric" });
+    expect(() => getServerEnv()).toThrow(/HOMELAB_UI_MODE/);
+  });
+
+  it("accepts the kinetic V4 flag", () => {
+    setEnv({ HOMELAB_UI_MODE: "kinetic" });
+    expect(getServerEnv().HOMELAB_UI_MODE).toBe("kinetic");
+  });
+
+  it("rejects unknown UI modes", () => {
+    setEnv({ HOMELAB_UI_MODE: "v4" });
+    expect(() => getServerEnv()).toThrow(/HOMELAB_UI_MODE/);
+  });
+});
+
+describe("HOMELAB_FABRIC_RELATIONSHIPS parsing", () => {
+  it("treats the variable as optional", () => {
+    setEnv({ HOMELAB_FABRIC_RELATIONSHIPS: undefined });
+    expect(getServerEnv().HOMELAB_FABRIC_RELATIONSHIPS).toBeUndefined();
+    expect(getFabricRelationships()).toEqual([]);
+  });
+
+  it("accepts a bounded relationship list", () => {
+    setEnv({
+      HOMELAB_FABRIC_RELATIONSHIPS: JSON.stringify([
+        {
+          from: "host:control",
+          to: "service:jellyfin",
+          kind: "control",
+          label: "manages",
+        },
+        {
+          from: "service:seerr",
+          to: "service:radarr",
+          kind: "dependency",
+        },
+      ]),
+    });
+
+    const expected = [
+      {
+        from: "host:control",
+        to: "service:jellyfin",
+        kind: "control",
+        label: "manages",
+      },
+      {
+        from: "service:seerr",
+        to: "service:radarr",
+        kind: "dependency",
+      },
+    ];
+
+    expect(getServerEnv().HOMELAB_FABRIC_RELATIONSHIPS).toEqual(expected);
+    expect(getFabricRelationships()).toEqual(expected);
+  });
+
+  it("accepts a renderable pool endpoint with its case preserved", () => {
+    setEnv({
+      HOMELAB_FABRIC_RELATIONSHIPS: JSON.stringify([
+        { from: "pool:DataStore", to: "service:jellyfin", kind: "dependency" },
+      ]),
+    });
+    expect(getFabricRelationships()[0]?.from).toBe("pool:DataStore");
+  });
+
+  it("rejects safe-looking endpoint ids the renderer cannot resolve", () => {
+    for (const from of ["resource:cpu", "fabric:external", "host:anything"]) {
+      setEnv({
+        HOMELAB_FABRIC_RELATIONSHIPS: JSON.stringify([
+          { from, to: "service:jellyfin", kind: "control" },
+        ]),
+      });
+      expect(() => getServerEnv()).toThrow(/HOMELAB_FABRIC_RELATIONSHIPS/);
+    }
+  });
+
+  it("rejects malformed JSON", () => {
+    setEnv({ HOMELAB_FABRIC_RELATIONSHIPS: "{bad json" });
+    expect(() => getServerEnv()).toThrow(/HOMELAB_FABRIC_RELATIONSHIPS/);
+  });
+
+  it("rejects unsafe identifiers and arbitrary payload", () => {
+    setEnv({
+      HOMELAB_FABRIC_RELATIONSHIPS: JSON.stringify([
+        {
+          from: "../host",
+          to: "service:jellyfin",
+          kind: "control",
+          extra: "nope",
+        },
+      ]),
+    });
+    expect(() => getServerEnv()).toThrow(/HOMELAB_FABRIC_RELATIONSHIPS/);
+  });
+
+  it("rejects unknown relationship fields even when identifiers are safe", () => {
+    setEnv({
+      HOMELAB_FABRIC_RELATIONSHIPS: JSON.stringify([
+        {
+          from: "service:sonarr",
+          to: "service:jellyfin",
+          kind: "control",
+          payload: "not allowed",
+        },
+      ]),
+    });
+    expect(() => getServerEnv()).toThrow(/HOMELAB_FABRIC_RELATIONSHIPS/);
   });
 });

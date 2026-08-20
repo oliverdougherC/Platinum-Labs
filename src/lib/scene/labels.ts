@@ -267,6 +267,14 @@ export function visibleFlowValue(obs: FlowObservation, now: number): string {
   if (obs.freshness === "stale") {
     return obs.updatedAt === null ? "stale" : `stale ${shortAge(obs.updatedAt, now)}`;
   }
+  const rated = obs.channels.filter((channel) => channel.bytesPerSecond !== null);
+  // A fully-known bidirectional conduit keeps its per-direction copy — the
+  // aggregate sum would erase which direction carries the bytes.
+  if (rated.length > 1 && (obs.rate?.unknownContributors ?? 0) === 0) {
+    return rated
+      .map((channel) => `${ROLE_WORD[channel.role] ?? channel.role} ${formatRate(channel.bytesPerSecond!)}`)
+      .join(" · ");
+  }
   if (obs.rate) {
     if (obs.rate.knownBytesPerSecond === null) return "rate unknown";
     const approx = obs.rate.evidence === "estimated" ? "≈ " : "";
@@ -275,13 +283,7 @@ export function visibleFlowValue(obs: FlowObservation, now: number): string {
       unknown > 0 ? ` + ${unknown} unknown` : ""
     }`;
   }
-  const rated = obs.channels.filter((channel) => channel.bytesPerSecond !== null);
   if (rated.length === 1) return formatRate(rated[0]!.bytesPerSecond!);
-  if (rated.length > 1) {
-    return rated
-      .map((channel) => `${ROLE_WORD[channel.role] ?? channel.role} ${formatRate(channel.bytesPerSecond!)}`)
-      .join(" · ");
-  }
   if (obs.plane === "data") return "rate unknown";
   if (obs.kind === "control") return "orchestrating";
   if (obs.kind === "organize") return "organizing";

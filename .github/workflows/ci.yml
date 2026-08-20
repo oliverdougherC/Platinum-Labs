@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every pull request gets exact-head CI, whatever its base branch — stacked
+  # feature-on-feature PRs included. Restricting by base silently skipped them.
   pull_request:
-    branches: [main, finish-v1]
 
 # Least-privilege by default.
 permissions:

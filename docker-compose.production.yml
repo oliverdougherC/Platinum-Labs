@@ -51,6 +51,10 @@ services:
       # counters are read from /host/proc/1/net/dev (host netns via pid 1);
       # without the mount the network section reports "unavailable" (never 0).
       HOST_PROC: /host/proc
+      # Host sysfs (read-only mount below) provides CPU topology
+      # (sockets / physical cores / SMT siblings). Without it the cpu
+      # section still works; topology is simply reported null.
+      HOST_SYS: /host/sys
       # Optional: aggregate only these interfaces (comma-separated). Default:
       # physical-looking interfaces (en*/eth*/bond*), excluding veth/br/tailscale.
       HOST_NET_INTERFACES: ${HOST_NET_INTERFACES:-}
@@ -63,6 +67,10 @@ services:
     volumes:
       # Read-only host procfs for CPU/memory/disk/network counters (PLA-265).
       - /proc:/host/proc:ro
+      # Read-only host CPU-topology sysfs subtree (sockets/cores/threads).
+      # Deliberately NOT all of /sys: the collector only reads
+      # devices/system/cpu, so nothing else is exposed to the container.
+      - /sys/devices/system/cpu:/host/sys/devices/system/cpu:ro
     expose:
       - "9797"
     hostname: zfs-collector

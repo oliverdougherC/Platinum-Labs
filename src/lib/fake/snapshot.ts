@@ -189,6 +189,41 @@ function acquisitionActive(): AcquisitionSnapshot {
   return { items, rollup: rollup(items) };
 }
 
+/** Active queue ownership with a measured, honest zero transfer rate. */
+function acquisitionConfirmedZero(): AcquisitionSnapshot {
+  const items: AcquisitionItem[] = [
+    {
+      id: "q-zero",
+      source: "sonarr",
+      title: "Severance — S02E07",
+      quality: "WEB-DL 1080p",
+      state: "downloading",
+      progress: 0.63,
+      rateBps: 0,
+      etaSeconds: null,
+    },
+  ];
+  return { items, rollup: rollup(items) };
+}
+
+/** Active qBittorrent downloads whose aggregate transfer counter is unavailable. */
+function acquisitionDownloadRateUnknown(): AcquisitionSnapshot {
+  const items = acquisitionActive().items
+    .filter((item) => item.state === "downloading")
+    .map((item) => ({ ...item, rateBps: null, etaSeconds: null }));
+  return {
+    items,
+    rollup: {
+      downloading: items.length,
+      importing: 0,
+      failedOrStalled: 0,
+      aggregateRateBps: null,
+      uploadRateBps: 0,
+      seeding: 0,
+    },
+  };
+}
+
 /** Simultaneous download + seed-upload (the bidirectional WAN conduit demo). */
 function acquisitionSeeding(): AcquisitionSnapshot {
   const items: AcquisitionItem[] = [
@@ -434,15 +469,26 @@ export const SCENARIOS = [
   "direct-play",
   "transcode",
   "transcode-fallback",
+  "transcode-reported",
   "transcode-unknown-rate",
   "direct-stream",
   "paused",
+  "confirmed-zero",
+  "download-rate-unknown",
   "multi-session",
   "mixed-session",
+  "partial-zero",
   "downloads",
   "seeding",
   "seed-only",
   "importing",
+  "radarr-import",
+  "same-pool-import",
+  "cross-pool-import",
+  "gpu-workload",
+  "pool-scrub",
+  "docker-unavailable",
+  "relationship-map",
   "stalled",
   "connector-unavailable",
   "stale",
@@ -475,15 +521,26 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "direct-play": "Jellyfin — direct play",
   transcode: "Jellyfin — transcode",
   "transcode-fallback": "Jellyfin — measured fallback",
+  "transcode-reported": "Jellyfin — reported output rate",
   "transcode-unknown-rate": "Jellyfin — playing, rate unknown",
   "direct-stream": "Jellyfin — direct stream (estimated)",
   paused: "Jellyfin — paused session",
+  "confirmed-zero": "Active download — confirmed zero rate",
+  "download-rate-unknown": "Active downloads — rate unknown",
   "multi-session": "Multiple sessions",
   "mixed-session": "Mixed known / unknown sessions",
+  "partial-zero": "Jellyfin — partial zero (total unknown)",
   downloads: "Active downloads / imports",
   seeding: "Download + seed upload",
   "seed-only": "Seed upload only",
   importing: "Sonarr import (organizing)",
+  "radarr-import": "Radarr import",
+  "same-pool-import": "Same-pool import (organizing)",
+  "cross-pool-import": "Cross-pool import (copy)",
+  "gpu-workload": "GPU-heavy workload",
+  "pool-scrub": "DataStore scrub in progress",
+  "docker-unavailable": "Docker inventory unavailable",
+  "relationship-map": "Declared service relationships",
   stalled: "Stalled / failed transfer",
   "connector-unavailable": "Connector unavailable",
   stale: "Stale (last-known-good)",
@@ -676,6 +733,38 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       telemetryProfile: "transcode",
     }),
 
+  // The reported-output-bitrate case in isolation: Jellyfin reports
+  // TranscodingInfo.Bitrate but the mapped container yields no measured
+  // egress this window, so the REPORTED session rate carries the headline
+  // (canonical precedence: a positive live measured container rate would
+  // win; here there is none).
+  "transcode-reported": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({
+            id: "s1",
+            title: "The Bear — S03E01",
+            subtitle: "S03E01 — Tomorrow",
+            method: "transcode",
+            resolution: "1080p",
+            rate: {
+              bytesPerSecond: 1_500_000,
+              basis: "jellyfin-session-output",
+              evidence: "reported",
+            },
+            progress: 0.27,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "transcode-unknown",
+    }),
+
   // A GENUINELY PLAYING transcode where neither the session nor the mapped
   // container yields any byte rate: the honest display is "rate unknown"
   // with a state-only breathing path — never a fabricated number, never a
@@ -757,6 +846,22 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       telemetryProfile: "idle",
     }),
 
+  "confirmed-zero": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionConfirmedZero(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "idle",
+    }),
+
+  "download-rate-unknown": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionDownloadRateUnknown(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "idle",
+    }),
+
   "multi-session": (now) =>
     compose(now, {
       jellyfin: {
@@ -825,6 +930,48 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       telemetryProfile: "transcode",
     }),
 
+  // The partial-known-zero truth case (V4 final review blocker): two sessions
+  // are genuinely PLAYING; one reports an authoritative session rate of
+  // 0 B/s (a buffered player between bursts) while the other reports no rate
+  // at all, and the mapped container yields no measured fallback. The
+  // aggregate is knownBytesPerSecond = 0 with coverage = "partial" — a zero
+  // LOWER BOUND, not a confirmed zero. The honest render is state-only
+  // activity: breathing paths, no particles, no 0 B/s claim anywhere.
+  "partial-zero": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({
+            id: "s1",
+            user: "oliver",
+            method: "direct-play",
+            rate: {
+              bytesPerSecond: 0,
+              basis: "jellyfin-session-output",
+              evidence: "reported",
+            },
+            progress: 0.42,
+          }),
+          session({
+            id: "s2",
+            user: "guest",
+            title: "Reservation Dogs — S03E10",
+            subtitle: "S03E10 — Dig",
+            method: "transcode",
+            resolution: "720p",
+            rate: null,
+            progress: 0.18,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "transcode-unknown",
+    }),
+
   downloads: (now) =>
     compose(now, {
       jellyfin: jellyfinIdle(now),
@@ -856,6 +1003,95 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       zfs: zfsHealthy(now),
       telemetryProfile: "importing",
     }),
+
+  "radarr-import": (now) => {
+    const acquisition = acquisitionImporting();
+    acquisition.items[0] = {
+      ...acquisition.items[0]!,
+      id: "q-radarr-import",
+      source: "radarr",
+      title: "Sinners (2025)",
+      quality: "Bluray-2160p",
+    };
+    return compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition,
+      zfs: zfsHealthy(now),
+      telemetryProfile: "importing",
+    });
+  },
+
+  "same-pool-import": (now) => {
+    const snapshot = compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionImporting(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "same-pool-import",
+    });
+    snapshot.downloadPool = "DataStore";
+    return snapshot;
+  },
+
+  "cross-pool-import": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionImporting(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "importing",
+    }),
+
+  "gpu-workload": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "gpu-workload",
+    }),
+
+  "pool-scrub": (now) => {
+    const zfs = zfsHealthy(now);
+    const dataStore = zfs.pools.find((item) => item.name === "DataStore");
+    if (dataStore) dataStore.scan = "scrubbing";
+    return compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs,
+      telemetryProfile: "idle",
+    });
+  },
+
+  "docker-unavailable": (now) => {
+    const snapshot = compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "idle",
+    });
+    snapshot.telemetry.docker = { status: "unavailable", updatedAt: null, value: null };
+    return snapshot;
+  },
+
+  "relationship-map": (now) => {
+    const snapshot = compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [session({ id: "s1", method: "direct-play" })],
+        lastPlaybackAt: now - 2 * MINUTE,
+      },
+      acquisition: acquisitionActive(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "active",
+    });
+    snapshot.fabricRelationships = [
+      { from: "service:seerr", to: "service:sonarr", kind: "dependency", label: "request routing" },
+      { from: "service:seerr", to: "service:radarr", kind: "dependency", label: "request routing" },
+      { from: "service:sonarr", to: "service:qbittorrent", kind: "control", label: "download client" },
+      { from: "service:sonarr", to: "service:jellyfin", kind: "control", label: "library refresh" },
+      { from: "host:control", to: "service:seerr", kind: "dependency", label: "operator control" },
+    ];
+    return snapshot;
+  },
 
   stalled: (now) =>
     compose(now, {

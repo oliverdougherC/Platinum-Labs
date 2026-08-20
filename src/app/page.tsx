@@ -4,7 +4,7 @@ import {
   resolveScenario,
   shouldShowDevControls,
 } from "@/lib/snapshot.server";
-import { getDataMode } from "@/lib/env.server";
+import { getDataMode, getUiMode, type ServerEnv } from "@/lib/env.server";
 import { getSeerrAvailability } from "@/lib/seerr/config.server";
 import { ScenarioSwitcher } from "@/components/dev/scenario-switcher";
 import { TopologyApp } from "@/components/topology/topology-app";
@@ -32,9 +32,15 @@ export default async function HomePage({
 }) {
   const params = await searchParams;
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+  const queryUiMode = one(params.ui);
 
   const devControls = shouldShowDevControls();
   const fake = getDataMode() === "fake";
+  const configuredUiMode = getUiMode();
+  const uiMode: ServerEnv["HOMELAB_UI_MODE"] =
+    devControls && queryUiMode === "kinetic"
+      ? queryUiMode
+      : configuredUiMode;
 
   // Freeze is a dev/screenshot affordance: fake mode + dev controls only.
   const freezeRaw = devControls && fake ? Number(one(params.freeze)) : Number.NaN;
@@ -65,6 +71,7 @@ export default async function HomePage({
         initial={initial}
         seerr={getSeerrAvailability()}
         quickLinks={getQuickLinks()}
+        uiMode={uiMode}
         scenario={fake && devControls ? scenarioParam : undefined}
         frozen={frozenAt !== null}
         initialPanels={{ panel, drawer }}

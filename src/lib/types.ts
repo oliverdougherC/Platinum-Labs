@@ -304,6 +304,23 @@ export interface TelemetryDomain<T> {
   value: T | null;
 }
 
+/**
+ * CPU topology detected from sysfs (`/sys/devices/system/cpu/cpu*&#8203;/topology/`).
+ * Physical fields come from distinct (package, core) pairs; they are null —
+ * never inferred from logical/2 — when the topology files were absent or
+ * covered only part of the CPU population.
+ */
+export interface CpuTopology {
+  /** Online logical CPUs enumerated in sysfs. */
+  logicalCpus: number;
+  /** Distinct physical packages; null when topology files were incomplete. */
+  sockets: number | null;
+  /** Distinct (package, core) pairs; null when topology files were incomplete. */
+  physicalCores: number | null;
+  /** Logical CPU ids per physical core (kernel order); null when incomplete. */
+  coreSiblings: number[][] | null;
+}
+
 export interface CpuTelemetry {
   /** 0..1 total utilization across all logical CPUs. */
   totalFraction: number;
@@ -313,6 +330,8 @@ export interface CpuTelemetry {
   load1: number | null;
   load5: number | null;
   load15: number | null;
+  /** Detected CPU topology; null when the collector could not observe sysfs. */
+  topology: CpuTopology | null;
 }
 
 export interface MemoryTelemetry {
@@ -368,8 +387,23 @@ export type ContainerState =
   | "created"
   | "unknown";
 
+export interface FabricDeclaredRelationship {
+  from: string;
+  to: string;
+  kind: "control" | "dependency";
+  label?: string;
+}
+
 export interface DockerContainerTelemetry {
   name: string;
+  /** Stable, sanitized container identity safe for client grouping/correlation. */
+  stableId?: string | null;
+  /** Docker Compose project label when safely available. */
+  composeProject?: string | null;
+  /** Docker Compose service label when safely available. */
+  composeService?: string | null;
+  /** Attached Docker network names from the list payload, after sanitization. */
+  networkNames?: string[];
   state: ContainerState;
   /** Docker health status when a healthcheck exists. */
   health: "healthy" | "unhealthy" | "starting" | null;
@@ -560,4 +594,6 @@ export interface DashboardSnapshot {
   jellyfinContainer?: string | null;
   /** Configured network link capacity in bytes/sec; null means unknown. */
   networkLinkBytesPerSecond?: number | null;
+  /** Operator-declared/control-plane topology relationships, if any. */
+  fabricRelationships?: FabricDeclaredRelationship[];
 }

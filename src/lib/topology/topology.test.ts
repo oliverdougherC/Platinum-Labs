@@ -263,7 +263,11 @@ describe("deriveFlows — bidirectional seeding (PLA-267 v2)", () => {
     ]);
   });
 
-  it("an UNKNOWN upload rate never creates a seed flow (unknown ≠ zero ≠ rate)", () => {
+  it("an UNKNOWN upload rate rides as an explicit nullable channel, never a fabricated rate", () => {
+    // V4 final producer audit: active work with an unknown magnitude keeps
+    // its direction alive as a null-rate channel with partial aggregate
+    // coverage — the earlier behavior (omitting the direction entirely)
+    // hid known activity, and rendering any number would fabricate one.
     const snap = makeFakeSnapshot("seeding", NOW);
     const unknownUpload = {
       ...snap,
@@ -273,7 +277,10 @@ describe("deriveFlows — bidirectional seeding (PLA-267 v2)", () => {
       },
     };
     const wan = byId(unknownUpload, "wan-transfer:network->qbittorrent")!;
-    expect(wan.channels.some((c) => c.direction === "reverse")).toBe(false);
+    const reverse = wan.channels.find((c) => c.direction === "reverse");
+    expect(reverse).toBeDefined();
+    expect(reverse!.bytesPerSecond).toBeNull();
+    expect(wan.rate).toMatchObject({ coverage: "partial", unknownContributors: 1 });
   });
 
   it("seeding with zero seeding count does not invent an upload channel", () => {
@@ -326,6 +333,40 @@ describe("deriveFlows — control plane vs data plane (PLA-266 v2)", () => {
     expect(copy.evidence).toBe("derived");
     expect(copy.from).toEqual({ kind: "pool", name: "NVME" });
     expect(copy.to).toEqual({ kind: "pool", name: "DataStore" });
+  });
+
+  it("carries typed controller attribution from acquisition/import state instead of provenance wording", () => {
+    const base = makeFakeSnapshot("downloads", NOW);
+    const sonarrOnly: DashboardSnapshot = {
+      ...base,
+      acquisition: {
+        ...base.acquisition,
+        items: base.acquisition.items.filter((item) => item.source === "sonarr"),
+      },
+    };
+    const changedWording: DashboardSnapshot = {
+      ...sonarrOnly,
+      mediaPool: null,
+      downloadPool: null,
+    };
+
+    expect(byId(sonarrOnly, "wan-transfer:network->qbittorrent")?.controllerServiceId).toBe("sonarr");
+    expect(byId(sonarrOnly, "storage-transfer:qbittorrent->pool:NVME")?.controllerServiceId).toBe("sonarr");
+    expect(byId(sonarrOnly, "control:sonarr->qbittorrent")?.controllerServiceId).toBe("sonarr");
+    expect(byId(sonarrOnly, "organize:sonarr->pool:DataStore")?.controllerServiceId).toBe("sonarr");
+    expect(byId(sonarrOnly, "import-copy:pool:NVME->pool:DataStore")?.controllerServiceId).toBe("sonarr");
+
+    const pooled = byId(sonarrOnly, "storage-transfer:qbittorrent->pool:NVME")!;
+    const generic = byId(changedWording, "storage-transfer:qbittorrent->storage")!;
+    expect(pooled.provenance).not.toBe(generic.provenance);
+    expect(generic.controllerServiceId).toBe("sonarr");
+    expect(byId(changedWording, "organize:sonarr->storage")?.controllerServiceId).toBe("sonarr");
+  });
+
+  it("leaves shared acquisition flows unattributed when both Arr controllers are active", () => {
+    const mixed = makeFakeSnapshot("downloads", NOW);
+    expect(byId(mixed, "wan-transfer:network->qbittorrent")?.controllerServiceId).toBeUndefined();
+    expect(byId(mixed, "storage-transfer:qbittorrent->pool:NVME")?.controllerServiceId).toBeUndefined();
   });
 });
 
