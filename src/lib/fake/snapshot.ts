@@ -451,6 +451,7 @@ export const SCENARIOS = [
   "direct-play",
   "transcode",
   "transcode-fallback",
+  "transcode-reported",
   "transcode-unknown-rate",
   "direct-stream",
   "paused",
@@ -500,6 +501,7 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "direct-play": "Jellyfin — direct play",
   transcode: "Jellyfin — transcode",
   "transcode-fallback": "Jellyfin — measured fallback",
+  "transcode-reported": "Jellyfin — reported output rate",
   "transcode-unknown-rate": "Jellyfin — playing, rate unknown",
   "direct-stream": "Jellyfin — direct stream (estimated)",
   paused: "Jellyfin — paused session",
@@ -707,6 +709,38 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       acquisition: acquisitionEmpty(),
       zfs: zfsHealthy(now),
       telemetryProfile: "transcode",
+    }),
+
+  // The reported-output-bitrate case in isolation: Jellyfin reports
+  // TranscodingInfo.Bitrate but the mapped container yields no measured
+  // egress this window, so the REPORTED session rate carries the headline
+  // (canonical precedence: a positive live measured container rate would
+  // win; here there is none).
+  "transcode-reported": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({
+            id: "s1",
+            title: "The Bear — S03E01",
+            subtitle: "S03E01 — Tomorrow",
+            method: "transcode",
+            resolution: "1080p",
+            rate: {
+              bytesPerSecond: 1_500_000,
+              basis: "jellyfin-session-output",
+              evidence: "reported",
+            },
+            progress: 0.27,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "transcode-unknown",
     }),
 
   // A GENUINELY PLAYING transcode where neither the session nor the mapped
