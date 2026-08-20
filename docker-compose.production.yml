@@ -67,8 +67,10 @@ services:
     volumes:
       # Read-only host procfs for CPU/memory/disk/network counters (PLA-265).
       - /proc:/host/proc:ro
-      # Read-only host sysfs for CPU topology (sockets/cores/threads).
-      - /sys:/host/sys:ro
+      # Read-only host CPU-topology sysfs subtree (sockets/cores/threads).
+      # Deliberately NOT all of /sys: the collector only reads
+      # devices/system/cpu, so nothing else is exposed to the container.
+      - /sys/devices/system/cpu:/host/sys/devices/system/cpu:ro
     expose:
       - "9797"
     hostname: zfs-collector
