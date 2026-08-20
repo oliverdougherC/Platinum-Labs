@@ -1,18 +1,32 @@
 /**
  * V4 Kinetic Flow Canvas — Canvas 2D painter.
  *
- * Stateless: every frame is a pure function of (scene, layout, t, envelopes,
- * selection), which is what makes frozen screenshots deterministic and lets
- * the caller park the rAF loop whenever nothing on screen is moving. All text
- * lives in the DOM overlay; the canvas draws only light: glow pools, flow
- * ribbons, particles, the workload field, and the storage strata.
+ * Draws one frame from the engine's VISUAL state (see engine.ts): the painter
+ * itself is stateless and boring by design — every treatment is a weighted
+ * layer whose weights the engine eases, so state transitions morph instead of
+ * snapping and a frozen frame is a pure function of (scene, layout, t).
+ *
+ * All text lives in the DOM overlay; the canvas draws only light: glow pools,
+ * flow ribbons, particles, the workload field, and the storage strata.
+ * Per-frame allocation is deliberately minimal: comet heads, halos and
+ * endpoint wakes are pre-rendered tone sprites drawn with drawImage, and the
+ * frame loop iterates compiled visual arrays — no per-frame Maps, finds, or
+ * radial-gradient construction in the hot path.
  */
 
-import type { KineticFlow, KineticScene, FieldCellModel } from "./model";
+import type { KineticScene } from "./model";
 import { rateIntensity } from "./model";
 import type { KineticLayout, SampledPath } from "./layout";
 import { pointAt } from "./layout";
-import { particlePeriodSeconds, widthFromRate } from "@/lib/topology/smoothing";
+import { widthFromRate } from "@/lib/topology/smoothing";
+import {
+  slotPosition,
+  MAX_PARTICLE_SLOTS,
+  type CellVisual,
+  type FlowVisual,
+  type KineticVisualState,
+  type StratumVisual,
+} from "./engine";
 
 // --- palette --------------------------------------------------------------------
 // Restrained cool luminous tones on near-black; ember amber is reserved for
@@ -29,6 +43,7 @@ export const KINETIC_TONES: Record<string, Rgb> = {
   attention: [226, 168, 108], // ember — attention only
   ok: [124, 200, 152],
   stale: [128, 136, 150],
+  critical: [222, 130, 130],
 };
 
 function rgba(c: Rgb, a: number): string {
@@ -40,16 +55,8 @@ export interface KineticSelection {
   id: string;
 }
 
-export interface FlowEnvelope {
-  /** 0..1 onset/decay multiplier. */
-  alpha: number;
-}
-
 export interface KineticFrameOptions {
   t: number;
-  selection: KineticSelection | null;
-  /** Per-flow onset/decay envelopes; missing id = fully present. */
-  envelopes?: ReadonlyMap<string, FlowEnvelope>;
   /**
    * No phase motion: breathing and sweeps hold a fixed pose. Frozen
    * screenshots still show the particle field, placed at the given `t`.
@@ -59,33 +66,63 @@ export interface KineticFrameOptions {
   marks?: boolean;
 }
 
-// --- relatedness (selection dimming) ----------------------------------------------
+// --- sprite cache -----------------------------------------------------------------
+// Radial-gradient light is expensive to construct per particle per frame.
+// Each (tone, shape) pair is rendered once to a small offscreen canvas and
+// composited with drawImage + globalAlpha. The cache is bounded by the tone
+// table (single-digit entries per shape).
 
-function flowTouches(flow: KineticFlow, selection: KineticSelection): boolean {
-  const refs = [flow.from, flow.to];
-  return refs.some((ref) => {
-    if (selection.kind === "anchor") return ref.kind === "anchor" && ref.id === selection.id;
-    if (selection.kind === "pool") return ref.kind === "pool" && ref.name === selection.id;
-    if (selection.kind === "orchestrator")
-      return ref.kind === "orchestrator" && ref.id === selection.id;
-    if (selection.kind === "edge") return ref.kind === "edge" && ref.id === selection.id;
-    return false;
-  });
+type SpriteShape = "comet" | "halo" | "wake";
+
+const SPRITE_SIZE = 64;
+const spriteCache = new Map<string, CanvasImageSource>();
+
+function sprite(tone: Rgb, shape: SpriteShape): CanvasImageSource | null {
+  const key = `${shape}:${tone[0]},${tone[1]},${tone[2]}`;
+  const cached = spriteCache.get(key);
+  if (cached) return cached;
+  if (typeof document === "undefined") return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = SPRITE_SIZE;
+  canvas.height = SPRITE_SIZE;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const c = SPRITE_SIZE / 2;
+  const grad = ctx.createRadialGradient(c, c, 0, c, c, c);
+  if (shape === "comet") {
+    grad.addColorStop(0, rgba(tone, 0.5));
+    grad.addColorStop(0.4, rgba(tone, 0.18));
+    grad.addColorStop(1, rgba(tone, 0));
+  } else if (shape === "halo") {
+    grad.addColorStop(0, rgba(tone, 0));
+    grad.addColorStop(0.7, rgba(tone, 0.1));
+    grad.addColorStop(1, rgba(tone, 0));
+  } else {
+    grad.addColorStop(0, rgba(tone, 0.46));
+    grad.addColorStop(1, rgba(tone, 0));
+  }
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, SPRITE_SIZE, SPRITE_SIZE);
+  spriteCache.set(key, canvas);
+  return canvas;
 }
 
-export function selectionDim(
-  selection: KineticSelection | null,
-  member: KineticSelection,
-  scene: KineticScene,
-): number {
-  if (!selection) return 1;
-  if (selection.kind === member.kind && selection.id === member.id) return 1;
-  // Pools stay lit when a selected flow endpoint references them and vice
-  // versa: anything reachable through a flow shared with the selection.
-  const related = scene.flows.some(
-    (flow) => flowTouches(flow, selection) && flowTouches(flow, member),
-  );
-  return related ? 1 : 0.22;
+function drawSprite(
+  ctx: CanvasRenderingContext2D,
+  tone: Rgb,
+  shape: SpriteShape,
+  x: number,
+  y: number,
+  radius: number,
+  alpha: number,
+): void {
+  if (alpha <= 0.004 || radius <= 0) return;
+  const image = sprite(tone, shape);
+  if (!image) return;
+  const prev = ctx.globalAlpha;
+  ctx.globalAlpha = Math.min(alpha, 1);
+  ctx.drawImage(image, x - radius, y - radius, radius * 2, radius * 2);
+  ctx.globalAlpha = prev;
 }
 
 // --- primitives --------------------------------------------------------------------
@@ -98,6 +135,8 @@ function glowPool(
   tone: Rgb,
   energy: number,
 ): void {
+  // Two anchors per frame: gradient construction here is negligible and the
+  // squashed-ellipse transform makes a sprite awkward.
   const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
   grad.addColorStop(0, rgba(tone, 0.16 * energy + 0.03));
   grad.addColorStop(0.55, rgba(tone, 0.07 * energy + 0.012));
@@ -131,52 +170,6 @@ function strokePath(
   if (dash) ctx.setLineDash(dash);
   ctx.stroke();
   if (dash) ctx.setLineDash([]);
-}
-
-const PARTICLE_SPEED = 86; // px/s — fixed, so velocity never encodes rate
-const MAX_PARTICLES_PER_CHANNEL = 42;
-
-function drawParticles(
-  ctx: CanvasRenderingContext2D,
-  path: SampledPath,
-  bps: number,
-  direction: "forward" | "reverse",
-  tone: Rgb,
-  t: number,
-  phaseSeed: number,
-  lateral: number,
-  alpha: number,
-): void {
-  const period = particlePeriodSeconds(bps);
-  if (!Number.isFinite(period)) return;
-  const spacing = Math.min(Math.max(PARTICLE_SPEED * period, 30), 460);
-  const count = Math.min(Math.ceil(path.total / spacing) + 1, MAX_PARTICLES_PER_CHANNEL);
-  const travel = (t * PARTICLE_SPEED + phaseSeed * spacing) % spacing;
-  ctx.save();
-  ctx.globalCompositeOperation = "lighter";
-  const r = Math.min(1.5 + widthFromRate(bps) * 0.16, 3.1);
-  for (let i = 0; i < count; i++) {
-    const d = i * spacing + travel;
-    if (d > path.total) continue;
-    const dist = direction === "forward" ? d : path.total - d;
-    // Short comet tail: three ghosts trailing the head along the path.
-    for (let k = 3; k >= 0; k--) {
-      const back = k * (5.5 + r);
-      const p = pointAt(path, direction === "forward" ? dist - back : dist + back);
-      const px = p.x + -p.ty * lateral;
-      const py = p.y + p.tx * lateral;
-      const fade = k === 0 ? 1 : 0.34 / k;
-      const grad = ctx.createRadialGradient(px, py, 0, px, py, r * 3.4);
-      grad.addColorStop(0, rgba(tone, 0.5 * fade * alpha));
-      grad.addColorStop(0.4, rgba(tone, 0.18 * fade * alpha));
-      grad.addColorStop(1, rgba(tone, 0));
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(px, py, r * 3.4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  ctx.restore();
 }
 
 function drawStillMarks(
@@ -214,147 +207,176 @@ function endpointWake(
   tone: Rgb,
   energy: number,
 ): void {
+  if (energy <= 0.01) return;
   const p = pointAt(path, at === "start" ? 0 : path.total);
   const r = 7 + energy * 9;
-  const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
-  grad.addColorStop(0, rgba(tone, 0.4 * energy + 0.06));
-  grad.addColorStop(1, rgba(tone, 0));
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-  ctx.fill();
+  drawSprite(ctx, tone, "wake", p.x, p.y, r, Math.min(0.9 * energy + 0.12, 1));
 }
 
 // --- flows -----------------------------------------------------------------------------
 
-function toneOf(flow: KineticFlow): Rgb {
+function toneOf(flow: FlowVisual["flow"]): Rgb {
   return KINETIC_TONES[flow.tone] ?? KINETIC_TONES.neutral!;
+}
+
+function drawParticles(
+  ctx: CanvasRenderingContext2D,
+  visual: FlowVisual,
+  channelIndex: number,
+  tone: Rgb,
+  t: number,
+  lateral: number,
+  alpha: number,
+): void {
+  const channel = visual.channels[channelIndex]!;
+  const path = visual.path;
+  const r = Math.min(1.5 + widthFromRate(channel.rate) * 0.16, 3.1);
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  for (let slot = 0; slot < MAX_PARTICLE_SLOTS; slot++) {
+    const slotAlpha = channel.slotAlphas[slot]!;
+    if (slotAlpha <= 0.02) continue;
+    const norm = slotPosition(channel.seed, slot, t, path.total);
+    const dist = channel.direction === "forward" ? norm * path.total : (1 - norm) * path.total;
+    // Short comet tail: three ghosts trailing the head along the path.
+    for (let k = 3; k >= 0; k--) {
+      const back = k * (5.5 + r);
+      const p = pointAt(
+        path,
+        channel.direction === "forward" ? dist - back : dist + back,
+      );
+      const px = p.x + -p.ty * lateral;
+      const py = p.y + p.tx * lateral;
+      const fade = k === 0 ? 1 : 0.34 / k;
+      drawSprite(ctx, tone, "comet", px, py, r * 3.4, fade * alpha * slotAlpha);
+    }
+  }
+  ctx.restore();
 }
 
 function drawFlow(
   ctx: CanvasRenderingContext2D,
-  flow: KineticFlow,
-  path: SampledPath,
+  visual: FlowVisual,
   t: number,
-  envelope: number,
-  dim: number,
   still: boolean,
   marks: boolean,
 ): void {
-  const alpha = envelope * dim;
+  const alpha = visual.presence * visual.dim;
   if (alpha <= 0.01) return;
+  const flow = visual.flow;
+  const path = visual.path;
   const tone = toneOf(flow);
 
-  if (flow.treatment === "confirmed-zero") {
-    strokePath(ctx, path, 1, rgba(tone, 0.1 * alpha));
-    return;
+  // Confirmed-zero layer: hairline presence, nothing animates.
+  if (visual.zeroW > 0.01) {
+    strokePath(ctx, path, 1, rgba(tone, 0.1 * alpha * visual.zeroW));
   }
-  if (flow.treatment === "stale") {
-    strokePath(ctx, path, 1.6, rgba(KINETIC_TONES.stale!, 0.16 * alpha));
-    drawStillMarks(ctx, path, "forward", KINETIC_TONES.stale!, alpha * 0.7);
-    return;
+
+  // Stale layer: frozen desaturated ribbon with static chevrons.
+  if (visual.staleW > 0.01) {
+    const a = alpha * visual.staleW;
+    strokePath(ctx, path, 1.6, rgba(KINETIC_TONES.stale!, 0.16 * a));
+    drawStillMarks(ctx, path, "forward", KINETIC_TONES.stale!, a * 0.7);
   }
-  if (flow.treatment === "state-only") {
-    // Active-but-unknown rate: a breathing whisper, never particles. The
-    // control-plane organize signal additionally reads as a dashed thread.
+
+  // State-only layer: active-but-unknown rate breathes; never particles. The
+  // control-plane organize signal additionally reads as a dashed thread.
+  if (visual.breath > 0.01) {
+    const a0 = alpha * visual.breath;
     const breath = still ? 0.5 : 0.5 + 0.5 * Math.sin(t * 1.15 + path.total * 0.01);
-    const a = (0.07 + 0.08 * breath) * alpha;
+    const a = (0.07 + 0.08 * breath) * a0;
     const dash = flow.tone === "control" ? [2, 11] : undefined;
     strokePath(ctx, path, 1.3, rgba(tone, a), dash);
-    endpointWake(ctx, path, "end", tone, 0.24 * alpha * (0.6 + 0.4 * breath));
-    return;
+    endpointWake(ctx, path, "end", tone, 0.24 * a0 * (0.6 + 0.4 * breath));
   }
 
-  // Live measured/derived transfer.
-  const channels = flow.channels.filter(
-    (c) => c.bytesPerSecond !== null && c.bytesPerSecond > 0,
-  );
-  const headline = flow.rateBps ?? 0;
-  const w = Math.max(widthFromRate(headline), 1.6);
-  const energy = rateIntensity(headline);
+  // Live layer: measured/derived transfer — ribbon, particles, wakes. Width
+  // and energy come from the EASED rate so magnitude changes glide.
+  if (visual.liveness > 0.01) {
+    const a = alpha * visual.liveness;
+    const w = Math.max(widthFromRate(visual.rate), 1.6);
+    const energy = rateIntensity(visual.rate);
 
-  // Ribbon: wide soft halo, translucent body, brighter core.
-  strokePath(ctx, path, w * 3.2, rgba(tone, 0.045 * alpha));
-  strokePath(ctx, path, w * 1.35, rgba(tone, 0.1 * alpha));
-  strokePath(ctx, path, Math.max(w * 0.42, 1), rgba(tone, 0.2 * alpha));
+    strokePath(ctx, path, w * 3.2, rgba(tone, 0.045 * a));
+    strokePath(ctx, path, w * 1.35, rgba(tone, 0.1 * a));
+    strokePath(ctx, path, Math.max(w * 0.42, 1), rgba(tone, 0.2 * a));
 
-  const twoWay = channels.length > 1;
-  channels.forEach((channel, i) => {
-    const lateral = twoWay ? (channel.direction === "forward" ? -3.4 : 3.4) : 0;
-    if (marks) {
-      drawStillMarks(ctx, path, channel.direction, tone, alpha);
-      return;
-    }
-    drawParticles(
-      ctx,
-      path,
-      channel.bytesPerSecond!,
-      channel.direction,
-      tone,
-      t,
-      ((path.total * 0.37 + i * 61) % 97) / 97,
-      lateral,
-      alpha,
-    );
-  });
+    const twoWay =
+      visual.channels.filter((c) => c.slotAlphas.some((s) => s > 0.02)).length > 1;
+    visual.channels.forEach((channel, i) => {
+      const lateral = twoWay ? (channel.direction === "forward" ? -3.4 : 3.4) : 0;
+      if (marks) {
+        if (channel.slotAlphas.some((s) => s > 0.02)) {
+          drawStillMarks(ctx, path, channel.direction, tone, a);
+        }
+        return;
+      }
+      drawParticles(ctx, visual, i, tone, t, lateral, a);
+    });
 
-  endpointWake(ctx, path, "end", tone, energy * alpha);
-  endpointWake(ctx, path, "start", tone, energy * 0.55 * alpha);
+    endpointWake(ctx, path, "end", tone, energy * a);
+    endpointWake(ctx, path, "start", tone, energy * 0.55 * a);
+  }
 }
 
 // --- workload field -----------------------------------------------------------------------
 
 function drawCell(
   ctx: CanvasRenderingContext2D,
-  cell: FieldCellModel,
-  x: number,
-  y: number,
-  r: number,
+  visual: CellVisual,
   t: number,
-  dim: number,
   still: boolean,
 ): void {
+  const dim = visual.dim * visual.alpha;
+  if (dim <= 0.01) return;
+  const { x, y, r } = visual;
   const neutral = KINETIC_TONES.neutral!;
-  if (cell.attention) {
+
+  if (visual.attentionW > 0.01) {
     const amber = KINETIC_TONES.attention!;
+    const a = dim * visual.attentionW;
     const pulse = still ? 0.75 : 0.65 + 0.35 * Math.sin(t * 2.1 + x * 0.05);
     ctx.beginPath();
     ctx.arc(x, y, r + 3.4, 0, Math.PI * 2);
-    ctx.strokeStyle = rgba(amber, 0.55 * pulse * dim);
+    ctx.strokeStyle = rgba(amber, 0.55 * pulse * a);
     ctx.lineWidth = 1.2;
     ctx.stroke();
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fillStyle = rgba(amber, 0.5 * dim);
+    ctx.fillStyle = rgba(amber, 0.5 * a);
     ctx.fill();
-    return;
   }
-  if (cell.unverified || cell.intensity === null) {
-    // Unknown ≠ proven quiet: hollow ring, never a dim confirmed dot.
+
+  if (visual.unknownW > 0.01) {
+    // Unknown ≠ proven quiet: hollow dashed ring, never a dim confirmed dot.
     ctx.beginPath();
     ctx.arc(x, y, Math.max(r - 0.5, 1.6), 0, Math.PI * 2);
-    ctx.strokeStyle = rgba(neutral, 0.22 * dim);
+    ctx.strokeStyle = rgba(neutral, 0.22 * dim * visual.unknownW);
     ctx.lineWidth = 1;
     ctx.setLineDash([2, 3]);
     ctx.stroke();
     ctx.setLineDash([]);
-    return;
   }
-  const glow = 0.16 + cell.intensity * 0.72;
-  if (cell.ioHalo > 0.04) {
-    const halo = ctx.createRadialGradient(x, y, r * 0.4, x, y, r + 3 + cell.ioHalo * 7);
-    halo.addColorStop(0, rgba(KINETIC_TONES.in!, 0));
-    halo.addColorStop(0.7, rgba(KINETIC_TONES.in!, 0.1 * cell.ioHalo * dim));
-    halo.addColorStop(1, rgba(KINETIC_TONES.in!, 0));
-    ctx.fillStyle = halo;
+
+  const knownW = Math.max(0, 1 - visual.unknownW - visual.attentionW);
+  if (knownW > 0.01) {
+    if (visual.halo > 0.04) {
+      drawSprite(
+        ctx,
+        KINETIC_TONES.in!,
+        "halo",
+        x,
+        y,
+        r + 3 + visual.halo * 7,
+        visual.halo * dim * knownW,
+      );
+    }
+    const glow = 0.16 + visual.intensity * 0.72;
     ctx.beginPath();
-    ctx.arc(x, y, r + 3 + cell.ioHalo * 7, 0, Math.PI * 2);
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = rgba(neutral, glow * dim * knownW);
     ctx.fill();
   }
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fillStyle = rgba(neutral, glow * dim);
-  ctx.fill();
 }
 
 // --- storage --------------------------------------------------------------------------------
@@ -378,20 +400,16 @@ function roundedRectPath(
 
 function drawStratum(
   ctx: CanvasRenderingContext2D,
-  scene: KineticScene,
-  index: number,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
+  visual: StratumVisual,
   t: number,
-  dim: number,
   still: boolean,
 ): void {
-  const pool = scene.storage[index]!;
+  const pool = visual.pool;
+  const { x, y, w, h } = visual;
+  const dim = visual.dim;
   const tone: Rgb =
     pool.capacityTone === "critical"
-      ? [222, 130, 130]
+      ? KINETIC_TONES.critical!
       : pool.capacityTone === "warn"
         ? KINETIC_TONES.attention!
         : KINETIC_TONES.in!;
@@ -415,7 +433,7 @@ function drawStratum(
   // Capacity is a liquid level: a luminous meniscus line whose height within
   // the vessel is the fill fraction, with light pooling just beneath it. The
   // body below stays almost black — never a slab.
-  const fillH = h * Math.min(Math.max(pool.capacityFraction, 0), 1);
+  const fillH = h * visual.fill;
   if (fillH > 0.5) {
     ctx.save();
     roundedRectPath(ctx, x, y, w, h, 7);
@@ -434,12 +452,12 @@ function drawStratum(
     // Meniscus.
     fadeLine(meniscusY, tone, 0.4 * dim);
     // Scrub: a slow luminous sweep through the body of the pool.
-    if (pool.scrubbing) {
+    if (visual.scrubW > 0.01) {
       const phase = still ? 0.35 : (t * 0.06) % 1;
       const sx = x + w * phase;
       const sweep = ctx.createLinearGradient(sx - w * 0.18, 0, sx + w * 0.18, 0);
       sweep.addColorStop(0, rgba(neutral, 0));
-      sweep.addColorStop(0.5, rgba(neutral, 0.07 * dim));
+      sweep.addColorStop(0.5, rgba(neutral, 0.07 * dim * visual.scrubW));
       sweep.addColorStop(1, rgba(neutral, 0));
       ctx.fillStyle = sweep;
       ctx.fillRect(x, y, w, h);
@@ -449,18 +467,14 @@ function drawStratum(
 
   // Healthy is silent: no vessel outline at all. An unhealthy pool gets an
   // ember rim across its top.
-  if (!pool.healthy) {
-    fadeLine(y, KINETIC_TONES.attention!, 0.55 * dim);
+  if (visual.emberW > 0.01) {
+    fadeLine(y, KINETIC_TONES.attention!, 0.55 * dim * visual.emberW);
   }
 
   // Live I/O wakes the surface: soft light bleeding from the top edge.
-  const io =
-    pool.ioFreshness === "live"
-      ? Math.max(rateIntensity(pool.readBps ?? 0), rateIntensity(pool.writeBps ?? 0))
-      : 0;
-  if (io > 0) {
+  if (visual.io > 0.01) {
     const grad = ctx.createLinearGradient(0, y, 0, y + Math.min(h, 14));
-    grad.addColorStop(0, rgba(neutral, 0.09 * io * dim));
+    grad.addColorStop(0, rgba(neutral, 0.09 * visual.io * dim));
     grad.addColorStop(1, rgba(neutral, 0));
     ctx.fillStyle = grad;
     ctx.fillRect(x, y, w, Math.min(h, 14));
@@ -469,81 +483,54 @@ function drawStratum(
 
 // --- frame ------------------------------------------------------------------------------------
 
+function toneForAnchor(id: "qbittorrent" | "jellyfin"): Rgb {
+  return id === "qbittorrent" ? KINETIC_TONES.in! : KINETIC_TONES.out!;
+}
+
 export function drawKineticFrame(
   ctx: CanvasRenderingContext2D,
-  scene: KineticScene,
+  state: KineticVisualState,
   layout: KineticLayout,
   options: KineticFrameOptions,
 ): void {
-  const { t, selection } = options;
+  const { t } = options;
   const still = options.still ?? false;
+  const marks = options.marks ?? false;
   ctx.clearRect(0, 0, layout.w, layout.h);
 
   // Anchor glow pools (always present as a soft ground; energy from truth).
-  for (const anchor of layout.anchors) {
-    const model = scene.anchors.find((a) => a.id === anchor.id);
-    if (!model) continue;
-    const dim = selectionDim(selection, { kind: "anchor", id: anchor.id }, scene);
+  for (const anchor of state.anchors) {
     glowPool(
       ctx,
       anchor.x,
       anchor.y + anchor.r * 0.34,
       anchor.r,
-      model.active ? toneForAnchor(model.id) : KINETIC_TONES.neutral!,
-      (model.active ? 0.35 + model.glow * 0.65 : 0.16) * dim,
+      anchor.active ? toneForAnchor(anchor.id) : KINETIC_TONES.neutral!,
+      anchor.glow * anchor.dim,
     );
   }
 
   // Storage strata.
-  layout.strata.forEach((s, i) => {
-    const dim = selectionDim(selection, { kind: "pool", id: s.name }, scene);
-    drawStratum(ctx, scene, i, s.x, s.y, s.w, s.h, t, dim, still);
-  });
+  for (const stratum of state.strata) {
+    drawStratum(ctx, stratum, t, still);
+  }
 
   // Workload field.
-  const cellsById = new Map<string, FieldCellModel>();
-  for (const group of scene.field) {
-    for (const cell of group.cells) cellsById.set(cell.id, cell);
-  }
-  for (const group of layout.groups) {
-    for (const placed of group.cells) {
-      const cell = cellsById.get(placed.id);
-      if (!cell) continue;
-      const dim = selectionDim(selection, { kind: "cell", id: placed.id }, scene);
-      drawCell(ctx, cell, placed.x, placed.y, placed.r, t, dim, still);
-    }
+  for (const cell of state.cells) {
+    drawCell(ctx, cell, t, still);
   }
 
   // Flows above everything else on the canvas.
-  const marks = options.marks ?? false;
-  for (const placement of layout.flows) {
-    const flow = scene.flows.find((f) => f.id === placement.id);
-    if (!flow) continue;
-    const envelope = options.envelopes?.get(flow.id)?.alpha ?? 1;
-    const dim = flowSelectionDim(selection, flow, scene);
-    drawFlow(ctx, flow, placement.path, t, envelope, dim, still, marks);
+  for (const flow of state.flows) {
+    drawFlow(ctx, flow, t, still, marks);
   }
 }
 
-function toneForAnchor(id: "qbittorrent" | "jellyfin"): Rgb {
-  return id === "qbittorrent" ? KINETIC_TONES.in! : KINETIC_TONES.out!;
-}
-
-function flowSelectionDim(
-  selection: KineticSelection | null,
-  flow: KineticFlow,
-  scene: KineticScene,
-): number {
-  if (!selection) return 1;
-  if (selection.kind === "cell") return 0.22;
-  void scene;
-  return flowTouches(flow, selection) ? 1 : 0.16;
-}
-
 /**
- * True when the scene needs a continuous animation loop: any moving particles,
- * breathing state-only ribbon, attention pulse, or scrub sweep. A quiet scene
- * with none of these parks the rAF loop entirely.
+ * True when the TRUTH scene needs a continuous animation loop: any moving
+ * particles, breathing state-only ribbon, attention pulse, or scrub sweep.
+ * The engine additionally animates while transitional eases settle; the
+ * component consults both.
  */
 export function sceneAnimates(scene: KineticScene): boolean {
   if (scene.flows.some((f) => f.treatment === "particles" || f.treatment === "state-only")) {

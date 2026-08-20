@@ -121,7 +121,8 @@ export interface FlowPlacement {
   path: SampledPath;
 }
 
-export interface KineticLayout {
+/** Everything about the stage that must stay FIXED across telemetry updates. */
+export interface KineticStage {
   w: number;
   h: number;
   bandH: number;
@@ -133,11 +134,35 @@ export interface KineticLayout {
   groups: GroupPlacement[];
   strata: StratumPlacement[];
   storageTop: number;
+  /** Cell radius range, exposed so size changes can ease without re-layout. */
+  cellRMin: number;
+  cellRMax: number;
+}
+
+export interface KineticLayout extends KineticStage {
   flows: FlowPlacement[];
 }
 
+/**
+ * The inputs the STAGE geometry actually depends on. Telemetry-only updates
+ * (rates, CPU, memory, I/O) never change this key, so major geometry can be
+ * cached against it and provably cannot move between snapshots — only
+ * membership or viewport changes recompute placement.
+ */
+export function stageGeometryKey(scene: KineticScene, w: number, h: number): string {
+  return JSON.stringify({
+    w,
+    h,
+    groups: scene.field.map((g) => ({
+      id: g.id,
+      cells: g.cells.map((c) => c.id),
+    })),
+    storage: scene.storage.map((s) => ({ name: s.name, total: s.totalBytes })),
+  });
+}
+
 // Small deterministic hash → 0..1 (same recipe as the fake series wobble).
-function hash01(text: string, salt: number): number {
+export function hash01(text: string, salt: number): number {
   let acc = salt * 374761393;
   for (let i = 0; i < text.length; i++) {
     acc = (acc ^ text.charCodeAt(i)) * 668265263;
@@ -149,6 +174,69 @@ function hash01(text: string, salt: number): number {
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
+interface CellBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+/**
+ * Bounded deterministic separation pass over one group's golden-angle seed
+ * placement (V4 collision hardening). Not a physics simulation: a fixed
+ * number of symmetric pairwise relaxation sweeps in a fixed id order, then a
+ * hard clamp to the group's territory. Identical input → identical output,
+ * and placement settles once — it never keeps moving between telemetry
+ * updates because it is only ever computed when membership/viewport change.
+ * Labeled cells claim extra clearance so their name rows cannot sit on a
+ * neighbor; attention labels (always visible) get the most.
+ */
+function separateCells(
+  placed: CellPlacement[],
+  clearance: Map<string, number>,
+  bounds: CellBounds,
+): void {
+  const ITERATIONS = 28;
+  const clamp = (cell: CellPlacement) => {
+    cell.x = Math.min(Math.max(cell.x, bounds.minX + cell.r), bounds.maxX - cell.r);
+    cell.y = Math.min(Math.max(cell.y, bounds.minY + cell.r), bounds.maxY - cell.r);
+  };
+  for (const cell of placed) clamp(cell);
+  for (let iter = 0; iter < ITERATIONS; iter++) {
+    let moved = false;
+    for (let i = 0; i < placed.length; i++) {
+      for (let j = i + 1; j < placed.length; j++) {
+        const a = placed[i]!;
+        const b = placed[j]!;
+        const need =
+          a.r + b.r + 3 + (clearance.get(a.id) ?? 0) + (clearance.get(b.id) ?? 0);
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let d = Math.hypot(dx, dy);
+        if (d >= need) continue;
+        if (d < 1e-6) {
+          // Deterministic tie-break for exactly coincident seeds.
+          const angle = hash01(`${a.id}|${b.id}`, 7) * Math.PI * 2;
+          dx = Math.cos(angle);
+          dy = Math.sin(angle);
+          d = 1;
+        }
+        const push = (need - d) / 2;
+        const ux = dx / d;
+        const uy = dy / d;
+        a.x -= ux * push;
+        a.y -= uy * push;
+        b.x += ux * push;
+        b.y += uy * push;
+        clamp(a);
+        clamp(b);
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+}
+
 function placeCells(
   cells: FieldCellModel[],
   cx: number,
@@ -156,6 +244,7 @@ function placeCells(
   spread: number,
   rMin: number,
   rMax: number,
+  bounds: CellBounds,
 ): CellPlacement[] {
   // Largest bodies gravitate to the cluster core; a stable sort on the id
   // breaks score ties deterministically.
@@ -163,7 +252,7 @@ function placeCells(
     (a, b) => b.sizeScore - a.sizeScore || a.id.localeCompare(b.id),
   );
   const n = Math.max(1, ordered.length);
-  return ordered.map((cell, i) => {
+  const placed = ordered.map((cell, i) => {
     const jitterA = (hash01(cell.id, 1) - 0.5) * 0.9;
     const jitterR = (hash01(cell.id, 2) - 0.5) * 0.3;
     const angle = i * GOLDEN_ANGLE + jitterA;
@@ -175,11 +264,18 @@ function placeCells(
       r: rMin + (rMax - rMin) * Math.pow(cell.sizeScore, 0.9),
     };
   });
+  const clearance = new Map<string, number>();
+  for (const cell of cells) {
+    if (cell.attention) clearance.set(cell.id, 9);
+    else if (cell.labelVisible) clearance.set(cell.id, 7);
+  }
+  separateCells(placed, clearance, bounds);
+  return placed;
 }
 
 function nodePoint(
   ref: KineticNodeRef,
-  L: Pick<KineticLayout, "anchors" | "orchestrators" | "edges" | "strata" | "storageTop" | "w" | "anchorY">,
+  L: Pick<KineticStage, "anchors" | "orchestrators" | "edges" | "strata" | "storageTop" | "w" | "anchorY">,
   /** Where along a stratum's top edge a flow lands (0..1 of its width). */
   poolAlong = 0.5,
 ): Pt {
@@ -211,7 +307,7 @@ function nodePoint(
  * connection archetype so horizontal runs glide and storage drops fall in a
  * slow S; the import bridge arcs above the storage floor.
  */
-function flowPath(flow: KineticFlow, from: Pt, to: Pt, L: KineticLayout): SampledPath {
+function flowPath(flow: KineticFlow, from: Pt, to: Pt, L: KineticStage): SampledPath {
   const anchorDrop = 58; // ribbons connect below the anchor typography
   if (flow.kind === "wan-transfer" || flow.kind === "egress") {
     const a = { ...from };
@@ -278,7 +374,13 @@ function flowPath(flow: KineticFlow, from: Pt, to: Pt, L: KineticLayout): Sample
 
 // --- entry ----------------------------------------------------------------------------
 
-export function buildKineticLayout(scene: KineticScene, w: number, h: number): KineticLayout {
+/**
+ * Stage geometry (no flow paths). Deterministic, and dependent ONLY on the
+ * inputs in `stageGeometryKey` plus each cell's sizeScore at build time —
+ * callers cache it against the key so telemetry updates can never move the
+ * composition.
+ */
+export function buildKineticStage(scene: KineticScene, w: number, h: number): KineticStage {
   const bandH = Math.min(Math.max(h * 0.088, 64), 108);
   const stageH = h - bandH;
   const orchY = bandH + stageH * 0.135;
@@ -332,6 +434,7 @@ export function buildKineticLayout(scene: KineticScene, w: number, h: number): K
   const groups: GroupPlacement[] = scene.field.map((group, i) => {
     const gw = fieldSpanW * (groupWeights[i]! / groupWeightSum);
     const cx = gCursor + gw / 2;
+    const groupLeft = gCursor;
     gCursor += gw;
     // Spread scales with population so dense clusters loosen instead of
     // clumping; the caption hangs just under the cluster's own extent.
@@ -340,46 +443,22 @@ export function buildKineticLayout(scene: KineticScene, w: number, h: number): K
       gw * 0.42,
     );
     const cy = fieldCy + (hash01(group.id, 3) - 0.5) * h * 0.016;
+    const labelY = Math.min(cy + spread * 0.78 + 26, storageTop - h * 0.032);
     return {
       id: group.id,
       label: group.label,
       cx,
       cy,
-      labelY: Math.min(cy + spread * 0.78 + 26, storageTop - h * 0.032),
-      cells: placeCells(group.cells, cx, cy, spread, rMin, rMax),
-    };
-  });
-
-  const partial: Pick<
-    KineticLayout,
-    "anchors" | "orchestrators" | "edges" | "strata" | "storageTop" | "w" | "anchorY"
-  > = { anchors, orchestrators, edges, strata, storageTop, w, anchorY };
-
-  const flows: FlowPlacement[] = scene.flows.map((flow) => {
-    // Flow landings on strata are biased toward whatever they connect to so
-    // ribbons travel less: the import bridge spans the gap between strata
-    // shoulder-to-shoulder (clear of the download drop), the download drop
-    // lands on the pool's near shoulder, playback leaves from the shoulder
-    // facing Jellyfin.
-    const fromAlong =
-      flow.kind === "import-copy" ? 0.74 : flow.kind === "playback" ? 0.72 : 0.5;
-    const toAlong =
-      flow.kind === "import-copy"
-        ? 0.26
-        : flow.kind === "storage-transfer"
-          ? 0.62
-          : 0.5;
-    const from = nodePoint(flow.from, partial, fromAlong);
-    const to = nodePoint(flow.to, partial, toAlong);
-    return {
-      id: flow.id,
-      path: flowPath(
-        flow,
-        from,
-        to,
-        // flowPath only reads h from the full layout shape.
-        { ...partial, h, bandH, orchY, groups: [], flows: [] } as KineticLayout,
-      ),
+      labelY,
+      // Territory clamp: a group's cells stay inside its own span (with a
+      // small margin so adjacent groups keep visible separation) and above
+      // the caption row so a relaxed cell can never sit on the group label.
+      cells: placeCells(group.cells, cx, cy, spread, rMin, rMax, {
+        minX: groupLeft + 3,
+        maxX: groupLeft + gw - 3,
+        minY: fieldTop - h * 0.04,
+        maxY: labelY - 14,
+      }),
     };
   });
 
@@ -395,6 +474,45 @@ export function buildKineticLayout(scene: KineticScene, w: number, h: number): K
     groups,
     strata,
     storageTop,
-    flows,
+    cellRMin: rMin,
+    cellRMax: rMax,
   };
+}
+
+/**
+ * Flow paths over a fixed stage. Cheap to recompute when the flow SET
+ * changes; endpoint geometry comes from the cached stage, so a new flow can
+ * never move anchors, cells, or strata.
+ */
+export function buildFlowPaths(
+  flows: readonly KineticFlow[],
+  stage: KineticStage,
+): FlowPlacement[] {
+  return flows.map((flow) => {
+    // Flow landings on strata are biased toward whatever they connect to so
+    // ribbons travel less: the import bridge spans the gap between strata
+    // shoulder-to-shoulder (clear of the download drop), the download drop
+    // lands on the pool's near shoulder, playback leaves from the shoulder
+    // facing Jellyfin.
+    const fromAlong =
+      flow.kind === "import-copy" ? 0.74 : flow.kind === "playback" ? 0.72 : 0.5;
+    const toAlong =
+      flow.kind === "import-copy"
+        ? 0.26
+        : flow.kind === "storage-transfer"
+          ? 0.62
+          : 0.5;
+    const from = nodePoint(flow.from, stage, fromAlong);
+    const to = nodePoint(flow.to, stage, toAlong);
+    return {
+      id: flow.id,
+      path: flowPath(flow, from, to, stage),
+    };
+  });
+}
+
+/** Full layout: cached-stage geometry plus paths for the current flow set. */
+export function buildKineticLayout(scene: KineticScene, w: number, h: number): KineticLayout {
+  const stage = buildKineticStage(scene, w, h);
+  return { ...stage, flows: buildFlowPaths(scene.flows, stage) };
 }

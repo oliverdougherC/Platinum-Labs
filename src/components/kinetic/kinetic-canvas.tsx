@@ -5,10 +5,15 @@
  *
  * Hybrid rendering: one Canvas 2D layer for light (glow pools, ribbons,
  * particles, workload field, storage strata) and a DOM overlay for every
- * piece of text and every interactive/accessible target. React stays out of
- * the frame loop: the painter redraws imperatively from refs, and the rAF
- * loop runs only while something is actually moving (parked when quiet,
- * frozen, reduced-motion, or the tab is hidden).
+ * piece of text and every interactive/accessible target.
+ *
+ * React never runs at frame cadence. Snapshots, selection and layout are
+ * React's; frame time, interpolation, particle phase and every visual
+ * envelope belong to the KineticEngine, which lives for the lifetime of the
+ * mounted stage. React effects only move engine TARGETS — they can never
+ * reset animation phase. The rAF loop parks itself whenever the engine
+ * reports nothing moving (quiet scene, hidden tab, frozen clock, reduced
+ * motion) and single-frames on parked data updates.
  */
 
 import {
@@ -26,16 +31,18 @@ import {
   type KineticFlow,
   type KineticScene,
 } from "@/lib/kinetic/model";
-import { buildKineticLayout, type KineticLayout } from "@/lib/kinetic/layout";
+import {
+  buildFlowPaths,
+  buildKineticStage,
+  stageGeometryKey,
+  type KineticLayout,
+  type KineticStage,
+} from "@/lib/kinetic/layout";
+import { KineticEngine } from "@/lib/kinetic/engine";
 import {
   drawKineticFrame,
-  sceneAnimates,
-  type FlowEnvelope,
   type KineticSelection,
 } from "@/lib/kinetic/render";
-
-const ONSET_MS = 900;
-const DECAY_MS = 700;
 
 export interface KineticCanvasProps {
   snapshot: DashboardSnapshot;
@@ -44,11 +51,8 @@ export interface KineticCanvasProps {
   /** Frozen surfaces draw exactly one deterministic frame (no rAF). */
   frozen: boolean;
   surfaceLabel?: string;
-}
-
-interface FadingFlow {
-  flow: KineticFlow;
-  removedAt: number;
+  /** Expose bounded engine counters on window for the soak harness. */
+  debugHook?: boolean;
 }
 
 function useStageSize(ref: React.RefObject<HTMLDivElement | null>): { w: number; h: number } {
@@ -238,6 +242,9 @@ function formatBytesShort(bytes: number): string {
   return `${Math.round(bytes / 1024)} KiB`;
 }
 
+const FOCUS_RING =
+  "outline-none focus-visible:ring-1 focus-visible:ring-accent/70";
+
 // --- component ---------------------------------------------------------------------------
 
 export function KineticCanvas({
@@ -246,6 +253,7 @@ export function KineticCanvas({
   seerrConfigured,
   frozen,
   surfaceLabel = "Kinetic flow canvas",
+  debugHook = false,
 }: KineticCanvasProps) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -253,172 +261,171 @@ export function KineticCanvas({
   const reducedMotion = useReducedMotion();
   const pageVisible = usePageVisible();
   const [selection, setSelection] = useState<KineticSelection | null>(null);
+  const [motionOn, setMotionOn] = useState(false);
+
+  // ONE engine per mounted stage: its epoch — and therefore every particle's
+  // phase — is established exactly once, here.
+  const engineRef = useRef<KineticEngine | null>(null);
+  if (engineRef.current === null) {
+    engineRef.current = new KineticEngine(
+      typeof performance !== "undefined" ? performance.now() : 0,
+    );
+  }
 
   const scene = useMemo(
     () => buildKineticScene(snapshot, { now, seerrConfigured }),
     [snapshot, now, seerrConfigured],
   );
 
-  // Graceful onset and decay: newly appearing flows ramp in over ONSET_MS;
-  // flows that leave the truth model linger as fading ghosts for DECAY_MS
-  // instead of popping out. Frozen and reduced-motion surfaces skip both.
-  const seenRef = useRef<Map<string, number>>(new Map());
-  const prevFlowsRef = useRef<KineticFlow[]>([]);
-  const [ghosts, setGhosts] = useState<FadingFlow[]>([]);
+  // STABLE geometry contract (V4 release blocker): stage placement is cached
+  // against a key that telemetry-only updates cannot change. Rates, CPU,
+  // memory and I/O move engine targets; only membership or viewport changes
+  // recompute where anything sits. Flow paths ride on the cached stage, so a
+  // flow appearing can never shift the composition either.
+  const stageCache = useRef<{ key: string; stage: KineticStage } | null>(null);
+  const layout = useMemo<KineticLayout | null>(() => {
+    if (w <= 0 || h <= 0) return null;
+    const key = stageGeometryKey(scene, w, h);
+    if (stageCache.current?.key !== key) {
+      stageCache.current = { key, stage: buildKineticStage(scene, w, h) };
+    }
+    const stage = stageCache.current.stage;
+    return { ...stage, flows: buildFlowPaths(scene.flows, stage) };
+  }, [scene, w, h]);
 
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+
+  // Imperative painter: reads engine state, resizes the backing store in the
+  // same pass it paints (no blank frame between resize and redraw).
+  const paint = useCallback((t: number, still: boolean, marks: boolean, dprOverride?: number) => {
+    const canvas = canvasRef.current;
+    const engine = engineRef.current;
+    const currentLayout = layoutRef.current;
+    if (!canvas || !engine || !currentLayout) return;
+    const dpr = dprOverride ?? Math.min(window.devicePixelRatio || 1, 2);
+    const pixelW = Math.round(currentLayout.w * dpr);
+    const pixelH = Math.round(currentLayout.h * dpr);
+    if (canvas.width !== pixelW || canvas.height !== pixelH) {
+      canvas.width = pixelW;
+      canvas.height = pixelH;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawKineticFrame(ctx, engine.visualState(), currentLayout, { t, still, marks });
+  }, []);
+
+  // Single rAF loop, ref-guarded: at most one can ever exist, and it parks
+  // itself the frame after the engine reports nothing moving.
+  const rafRef = useRef(0);
+  const stopLoop = useCallback(() => {
+    if (rafRef.current !== 0) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+    }
+    setMotionOn(false);
+  }, []);
+  const tickRef = useRef<() => void>(() => {});
+  tickRef.current = () => {
+    const engine = engineRef.current!;
+    const t = engine.frame(performance.now());
+    paint(t, false, false);
+    if (engine.animating()) {
+      rafRef.current = requestAnimationFrame(() => tickRef.current());
+    } else {
+      rafRef.current = 0;
+      setMotionOn(false);
+    }
+  };
+  const startLoop = useCallback(() => {
+    if (rafRef.current !== 0) return;
+    setMotionOn(true);
+    rafRef.current = requestAnimationFrame(() => tickRef.current());
+  }, []);
+  useEffect(() => stopLoop, [stopLoop]);
+
+  // Data → engine targets. This effect is the ONLY bridge from React to the
+  // kinetic state: it moves targets and manages the loop, never phase.
   useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !layout) return;
+    engine.setSelection(selection);
+    engine.syncTargets(scene, layout, { snap: frozen || reducedMotion });
     if (frozen || reducedMotion) {
-      prevFlowsRef.current = scene.flows;
+      // Deterministic single frame: t derives from the explicit frozen clock,
+      // never the live epoch. Reduced motion swaps particles for static
+      // direction marks; a frozen live scene keeps its particle field placed
+      // at the frozen t so screenshots show real motion state.
+      stopLoop();
+      paint((now % 100_000) / 1000, true, reducedMotion, frozen ? 1 : undefined);
       return;
     }
-    const stamp = performance.now();
-    const ids = new Set(scene.flows.map((f) => f.id));
-    for (const id of ids) {
-      if (!seenRef.current.has(id)) seenRef.current.set(id, stamp);
+    if (!pageVisible) {
+      // Hidden tab: stop all kinetic work. Visual time simply does not pass;
+      // on return the same phase continues and the clamped delta prevents any
+      // catch-up burst.
+      stopLoop();
+      return;
     }
-    for (const id of [...seenRef.current.keys()]) {
-      if (!ids.has(id)) seenRef.current.delete(id);
-    }
-    const removed = prevFlowsRef.current.filter((f) => !ids.has(f.id));
-    prevFlowsRef.current = scene.flows;
-    if (removed.length > 0) {
-      setGhosts((current) => [
-        ...current.filter(
-          (g) => !ids.has(g.flow.id) && !removed.some((r) => r.id === g.flow.id),
-        ),
-        ...removed.map((flow) => ({ flow, removedAt: stamp })),
-      ]);
-    } else {
-      setGhosts((current) => (current.some((g) => ids.has(g.flow.id)) ? current.filter((g) => !ids.has(g.flow.id)) : current));
-    }
-  }, [scene, frozen, reducedMotion]);
+    startLoop();
+  }, [scene, layout, selection, frozen, reducedMotion, pageVisible, now, paint, startLoop, stopLoop]);
 
+  // Bounded diagnostics for the soak harness (dev-controlled surfaces only).
   useEffect(() => {
-    if (ghosts.length === 0) return;
-    const timer = window.setTimeout(
-      () => setGhosts((current) => current.filter((g) => performance.now() - g.removedAt < DECAY_MS)),
-      DECAY_MS + 60,
-    );
-    return () => window.clearTimeout(timer);
-  }, [ghosts]);
+    if (!debugHook) return;
+    const devWindow = window as unknown as {
+      __homelabKineticDebug?: () => Record<string, number | boolean>;
+    };
+    devWindow.__homelabKineticDebug = () => ({
+      ...engineRef.current!.debugCounts(),
+      rafActive: rafRef.current !== 0,
+      visualTime: engineRef.current!.now(),
+    });
+    return () => {
+      delete devWindow.__homelabKineticDebug;
+    };
+  }, [debugHook]);
 
-  const renderScene = useMemo(() => {
-    if (ghosts.length === 0) return scene;
-    const present = new Set(scene.flows.map((f) => f.id));
-    const ghostFlows = ghosts.map((g) => g.flow).filter((f) => !present.has(f.id));
-    return ghostFlows.length > 0 ? { ...scene, flows: [...scene.flows, ...ghostFlows] } : scene;
-  }, [scene, ghosts]);
+  // Focus restoration: the element that opened the inspector gets focus back
+  // when the inspector closes, from whatever path (Escape, ×, re-toggle).
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const closeSelection = useCallback(() => {
+    setSelection(null);
+    const target = restoreFocusRef.current;
+    restoreFocusRef.current = null;
+    if (target && target.isConnected) target.focus();
+  }, []);
 
-  const layout = useMemo(
-    () => (w > 0 && h > 0 ? buildKineticLayout(renderScene, w, h) : null),
-    [renderScene, w, h],
-  );
-
-  const ghostsRef = useRef(ghosts);
-  const sceneRef = useRef(renderScene);
-  const layoutRef = useRef(layout);
-  const selectionRef = useRef(selection);
-  ghostsRef.current = ghosts;
-  sceneRef.current = renderScene;
-  layoutRef.current = layout;
-  selectionRef.current = selection;
-
-  const draw = useCallback(
-    (t: number, still: boolean, marks: boolean) => {
-      const canvas = canvasRef.current;
-      const currentLayout = layoutRef.current;
-      if (!canvas || !currentLayout) return;
-      const dpr = still ? 1 : Math.min(window.devicePixelRatio || 1, 2);
-      const pixelW = Math.round(currentLayout.w * dpr);
-      const pixelH = Math.round(currentLayout.h * dpr);
-      if (canvas.width !== pixelW || canvas.height !== pixelH) {
-        canvas.width = pixelW;
-        canvas.height = pixelH;
-      }
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const envelopes = new Map<string, FlowEnvelope>();
-      if (!still) {
-        const stamp = performance.now();
-        for (const flow of sceneRef.current.flows) {
-          const born = seenRef.current.get(flow.id);
-          if (born !== undefined) {
-            const age = stamp - born;
-            envelopes.set(flow.id, {
-              alpha: Math.min(1, Math.max(0, age / ONSET_MS)),
-            });
-          }
-        }
-        for (const ghost of ghostsRef.current) {
-          const age = stamp - ghost.removedAt;
-          envelopes.set(ghost.flow.id, {
-            alpha: Math.min(1, Math.max(0, 1 - age / DECAY_MS)),
-          });
-        }
-      }
-      drawKineticFrame(ctx, sceneRef.current, currentLayout, {
-        t,
-        selection: selectionRef.current,
-        envelopes,
-        still,
-        marks,
-      });
-    },
-    [],
-  );
-
-  // Deterministic frozen frame: t derived from the frozen clock, dpr = 1,
-  // full envelopes, still particles rendered as direction marks only when
-  // reduced motion asks for it — a frozen live scene keeps its particle field
-  // placed at the frozen t so screenshots show real motion state.
-  const animate =
-    !frozen &&
-    !reducedMotion &&
-    pageVisible &&
-    (sceneAnimates(renderScene) || ghosts.length > 0);
-
-  useEffect(() => {
-    if (!layout) return;
-    if (animate) {
-      let raf = 0;
-      const start = performance.now();
-      const tick = () => {
-        draw((performance.now() - start) / 1000 + (now % 100_000) / 1000, false, false);
-        raf = requestAnimationFrame(tick);
-      };
-      raf = requestAnimationFrame(tick);
-      return () => cancelAnimationFrame(raf);
-    }
-    // Parked: paint exactly one frame. A frozen scene keeps its particle
-    // field placed at the frozen clock; reduced motion swaps particles for
-    // static direction marks.
-    draw((now % 100_000) / 1000, frozen || reducedMotion, reducedMotion);
-    return undefined;
-  }, [animate, draw, layout, frozen, reducedMotion, renderScene, selection, now]);
-
-  // Escape clears selection.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && selectionRef.current) {
+      if (event.key === "Escape" && selection) {
         event.preventDefault();
-        setSelection(null);
+        closeSelection();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [selection, closeSelection]);
 
   const inspector = useMemo(
     () => (selection && layout ? inspectorFor(selection, scene, layout) : null),
     [selection, scene, layout],
   );
 
-  const toggle = useCallback((next: KineticSelection) => {
-    setSelection((prev) =>
-      prev && prev.kind === next.kind && prev.id === next.id ? null : next,
-    );
-  }, []);
+  const toggle = useCallback(
+    (next: KineticSelection, initiator: HTMLElement | null) => {
+      setSelection((prev) => {
+        if (prev && prev.kind === next.kind && prev.id === next.id) {
+          restoreFocusRef.current = null;
+          return null;
+        }
+        restoreFocusRef.current = initiator;
+        return next;
+      });
+    },
+    [],
+  );
 
   const cellsById = useMemo(() => {
     const map = new Map<string, { name: string; label: string }>();
@@ -428,15 +435,17 @@ export function KineticCanvas({
     return map;
   }, [scene]);
 
+  const compact = layout !== null && layout.w < 768;
+
   return (
     <div
       ref={stageRef}
       data-kinetic-stage
-      data-motion={animate ? "on" : "off"}
+      data-motion={motionOn && !frozen && !reducedMotion ? "on" : "off"}
       className="relative h-full w-full overflow-hidden bg-[#07090d] text-fg select-none"
       onClick={(event) => {
         if (event.target === event.currentTarget || event.target === canvasRef.current) {
-          setSelection(null);
+          closeSelection();
         }
       }}
     >
@@ -464,11 +473,19 @@ export function KineticCanvas({
         <aside
           data-kinetic-inspector
           aria-label={`${inspector.title} inspector`}
-          className="absolute z-30 w-64 rounded-lg border border-white/[0.07] bg-[#0d1016]/95 px-4 py-3 shadow-[0_12px_40px_rgba(0,0,0,0.5)] backdrop-blur-sm"
-          style={{
-            left: Math.min(Math.max(inspector.x - 128, 12), layout.w - 268),
-            top: Math.min(Math.max(inspector.y - 12, layout.bandH + 8), layout.h - 220),
-          }}
+          className={
+            compact
+              ? "absolute inset-x-0 bottom-0 z-30 rounded-t-xl border-t border-white/[0.07] bg-[#0d1016]/95 px-5 pb-5 pt-4 shadow-[0_-12px_40px_rgba(0,0,0,0.5)] backdrop-blur-sm"
+              : "absolute z-30 w-64 rounded-lg border border-white/[0.07] bg-[#0d1016]/95 px-4 py-3 shadow-[0_12px_40px_rgba(0,0,0,0.5)] backdrop-blur-sm"
+          }
+          style={
+            compact
+              ? undefined
+              : {
+                  left: Math.min(Math.max(inspector.x - 128, 12), layout.w - 268),
+                  top: Math.min(Math.max(inspector.y - 12, layout.bandH + 8), layout.h - 220),
+                }
+          }
         >
           <div className="flex items-baseline justify-between gap-3">
             <h2 className="text-[15px] font-semibold tracking-tight text-fg">
@@ -477,8 +494,8 @@ export function KineticCanvas({
             <button
               type="button"
               aria-label="Close inspector"
-              className="text-faint transition-opacity hover:opacity-70"
-              onClick={() => setSelection(null)}
+              className={`rounded px-1 text-faint transition-opacity hover:opacity-70 ${FOCUS_RING}`}
+              onClick={closeSelection}
             >
               ×
             </button>
@@ -526,7 +543,7 @@ function KineticOverlay({
   scene: KineticScene;
   layout: KineticLayout;
   selection: KineticSelection | null;
-  toggle: (next: KineticSelection) => void;
+  toggle: (next: KineticSelection, initiator: HTMLElement | null) => void;
   cellsById: Map<string, { name: string; label: string }>;
   surfaceLabel: string;
 }) {
@@ -547,6 +564,42 @@ function KineticOverlay({
     });
     return related ? "" : "opacity-25";
   };
+
+  // Roving keyboard navigation for the workload field: the entire field is
+  // ONE tab stop; arrows walk the population in visual (group, cell) order.
+  // 40+ tiny sequential tab stops would be hostile; this is the grouped
+  // pattern the review required.
+  const cellOrder = useMemo(
+    () => layout.groups.flatMap((group) => group.cells.map((cell) => cell.id)),
+    [layout],
+  );
+  const [rovingId, setRovingId] = useState<string | null>(null);
+  const activeRovingId =
+    rovingId !== null && cellOrder.includes(rovingId) ? rovingId : cellOrder[0] ?? null;
+  const cellRefs = useRef(new Map<string, HTMLButtonElement>());
+
+  const onFieldKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (cellOrder.length === 0 || activeRovingId === null) return;
+      const index = cellOrder.indexOf(activeRovingId);
+      let nextIndex: number | null = null;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+        nextIndex = (index + 1) % cellOrder.length;
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+        nextIndex = (index - 1 + cellOrder.length) % cellOrder.length;
+      } else if (event.key === "Home") {
+        nextIndex = 0;
+      } else if (event.key === "End") {
+        nextIndex = cellOrder.length - 1;
+      }
+      if (nextIndex === null) return;
+      event.preventDefault();
+      const id = cellOrder[nextIndex]!;
+      setRovingId(id);
+      cellRefs.current.get(id)?.focus();
+    },
+    [cellOrder, activeRovingId],
+  );
 
   return (
     <div
@@ -592,8 +645,10 @@ function KineticOverlay({
             type="button"
             data-kinetic-anchor={placed.id}
             aria-label={`${model.label}${model.headline ? `; ${model.headline}` : idle ? "; idle" : ""}`}
-            onClick={() => toggle({ kind: "anchor", id: placed.id })}
-            className={`absolute -translate-x-1/2 -translate-y-1/2 text-center transition-opacity duration-300 ${dimClass({ kind: "anchor", id: placed.id })}`}
+            onClick={(event) =>
+              toggle({ kind: "anchor", id: placed.id }, event.currentTarget)
+            }
+            className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-md text-center transition-opacity duration-300 ${FOCUS_RING} ${dimClass({ kind: "anchor", id: placed.id })}`}
             style={{ left: placed.x, top: placed.y, pointerEvents: "auto" }}
           >
             <div
@@ -648,59 +703,74 @@ function KineticOverlay({
         );
       })}
 
-      {/* Workload field: hit targets + selective labels + group captions. */}
-      {layout.groups.map((group) => (
-        <div key={group.id}>
-          <div
-            className="absolute -translate-x-1/2 text-[11px] font-medium uppercase tracking-[0.26em] text-faint/55"
-            style={{ left: group.cx, top: group.labelY }}
-          >
-            {group.label}
+      {/* Workload field: one roving tab stop + selective labels + captions. */}
+      <div
+        role="group"
+        aria-label={`Workloads (${cellOrder.length}); use arrow keys to move between them`}
+        onKeyDown={onFieldKeyDown}
+      >
+        {layout.groups.map((group) => (
+          <div key={group.id}>
+            <div
+              className="absolute -translate-x-1/2 text-[11px] font-medium uppercase tracking-[0.26em] text-faint/55"
+              style={{ left: group.cx, top: group.labelY }}
+            >
+              {group.label}
+            </div>
+            {group.cells.map((placed) => {
+              const info = cellsById.get(placed.id);
+              const cell = scene.field
+                .flatMap((g) => g.cells)
+                .find((c) => c.id === placed.id);
+              if (!info || !cell) return null;
+              return (
+                <button
+                  key={placed.id}
+                  type="button"
+                  data-kinetic-cell={placed.id}
+                  ref={(el) => {
+                    if (el) cellRefs.current.set(placed.id, el);
+                    else cellRefs.current.delete(placed.id);
+                  }}
+                  tabIndex={placed.id === activeRovingId ? 0 : -1}
+                  aria-label={`${info.name}; ${info.label}${cell.attention ? "; needs attention" : ""}`}
+                  onFocus={() => setRovingId(placed.id)}
+                  onClick={(event) =>
+                    toggle({ kind: "cell", id: placed.id }, event.currentTarget)
+                  }
+                  className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full ${FOCUS_RING}`}
+                  style={{
+                    left: placed.x,
+                    top: placed.y,
+                    width: Math.max(placed.r * 2 + 8, 16),
+                    height: Math.max(placed.r * 2 + 8, 16),
+                    pointerEvents: "auto",
+                  }}
+                >
+                  <span className="sr-only">{info.name}</span>
+                </button>
+              );
+            })}
+            {group.cells.map((placed) => {
+              const cell = scene.field
+                .flatMap((g) => g.cells)
+                .find((c) => c.id === placed.id);
+              if (!cell?.labelVisible) return null;
+              return (
+                <div
+                  key={`${placed.id}-label`}
+                  className={`absolute -translate-x-1/2 text-[10.5px] tracking-wide ${
+                    cell.attention ? "text-warn" : "text-faint"
+                  }`}
+                  style={{ left: placed.x, top: placed.y + placed.r + 5 }}
+                >
+                  {cell.name}
+                </div>
+              );
+            })}
           </div>
-          {group.cells.map((placed) => {
-            const info = cellsById.get(placed.id);
-            const cell = scene.field
-              .flatMap((g) => g.cells)
-              .find((c) => c.id === placed.id);
-            if (!info || !cell) return null;
-            return (
-              <button
-                key={placed.id}
-                type="button"
-                aria-label={`${info.name}; ${info.label}${cell.attention ? "; needs attention" : ""}`}
-                onClick={() => toggle({ kind: "cell", id: placed.id })}
-                className="absolute -translate-x-1/2 -translate-y-1/2 rounded-full"
-                style={{
-                  left: placed.x,
-                  top: placed.y,
-                  width: Math.max(placed.r * 2 + 8, 16),
-                  height: Math.max(placed.r * 2 + 8, 16),
-                  pointerEvents: "auto",
-                }}
-              >
-                <span className="sr-only">{info.name}</span>
-              </button>
-            );
-          })}
-          {group.cells.map((placed) => {
-            const cell = scene.field
-              .flatMap((g) => g.cells)
-              .find((c) => c.id === placed.id);
-            if (!cell?.labelVisible) return null;
-            return (
-              <div
-                key={`${placed.id}-label`}
-                className={`absolute -translate-x-1/2 text-[10.5px] tracking-wide ${
-                  cell.attention ? "text-warn" : "text-faint"
-                }`}
-                style={{ left: placed.x, top: placed.y + placed.r + 5 }}
-              >
-                {cell.name}
-              </div>
-            );
-          })}
-        </div>
-      ))}
+        ))}
+      </div>
 
       {/* Storage labels. */}
       {layout.strata.map((placed) => {
@@ -712,8 +782,10 @@ function KineticOverlay({
             type="button"
             data-kinetic-pool={placed.name}
             aria-label={`${pool.name}; ${pool.usedLabel} of ${pool.totalLabel} used${pool.healthy ? "" : `; ${pool.healthLabel}`}`}
-            onClick={() => toggle({ kind: "pool", id: placed.name })}
-            className={`absolute whitespace-nowrap text-left transition-opacity duration-300 ${dimClass({ kind: "pool", id: placed.name })}`}
+            onClick={(event) =>
+              toggle({ kind: "pool", id: placed.name }, event.currentTarget)
+            }
+            className={`absolute whitespace-nowrap rounded-md text-left transition-opacity duration-300 ${FOCUS_RING} ${dimClass({ kind: "pool", id: placed.name })}`}
             style={{
               left: placed.x + 2,
               top: placed.y + placed.h + 9,
@@ -775,7 +847,7 @@ function InstrumentBand({ scene, layout }: { scene: KineticScene; layout: Kineti
           {cpu.cells.map((v, i) => (
             <span
               key={i}
-              className="block h-[7px] w-[7px] rounded-[1.5px]"
+              className="block h-[7px] w-[7px] rounded-[1.5px] transition-colors duration-700"
               style={{
                 backgroundColor: `rgba(214, 222, 232, ${0.07 + Math.min(1, Math.max(0, v)) * 0.8})`,
               }}

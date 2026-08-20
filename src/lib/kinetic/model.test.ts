@@ -10,7 +10,7 @@ import {
   rateIntensity,
   type KineticScene,
 } from "./model";
-import { buildKineticLayout } from "./layout";
+import { buildKineticLayout, stageGeometryKey } from "./layout";
 import { sceneAnimates } from "./render";
 
 const NOW = Date.UTC(2026, 7, 15, 12, 0, 0);
@@ -372,6 +372,65 @@ describe("buildKineticLayout", () => {
       expect(stratum.x).toBeGreaterThanOrEqual(0);
       expect(stratum.x + stratum.w).toBeLessThanOrEqual(1920);
     }
+  });
+
+  it("separates the 44-container field with no visible cell overlap, including at 1280×720", () => {
+    const s = scene("container-field-real");
+    for (const [w, h] of [
+      [1920, 1080],
+      [1280, 720],
+    ] as const) {
+      const layout = buildKineticLayout(s, w, h);
+      const all = layout.groups.flatMap((g) =>
+        g.cells.map((c) => ({ ...c, group: g.id, labelY: g.labelY })),
+      );
+      for (let i = 0; i < all.length; i++) {
+        for (let j = i + 1; j < all.length; j++) {
+          const a = all[i]!;
+          const b = all[j]!;
+          const d = Math.hypot(a.x - b.x, a.y - b.y);
+          expect(d, `${a.id} vs ${b.id} at ${w}x${h}`).toBeGreaterThanOrEqual(
+            a.r + b.r + 1,
+          );
+        }
+      }
+      // Cells never sit on their group caption row.
+      for (const cell of all) {
+        expect(cell.y + cell.r).toBeLessThanOrEqual(cell.labelY - 2);
+      }
+    }
+  });
+
+  it("stays bounded and finite under the over-budget stress fixture", () => {
+    const s = scene("container-field-stress");
+    const layout = buildKineticLayout(s, 1920, 1080);
+    const again = buildKineticLayout(s, 1920, 1080);
+    expect(layout).toEqual(again);
+    for (const group of layout.groups) {
+      for (const cell of group.cells) {
+        expect(Number.isFinite(cell.x)).toBe(true);
+        expect(Number.isFinite(cell.y)).toBe(true);
+        expect(cell.y).toBeGreaterThan(layout.bandH * 0.9);
+        expect(cell.y).toBeLessThan(layout.storageTop);
+      }
+    }
+  });
+
+  it("keeps stage geometry byte-stable across telemetry-only updates", () => {
+    const NOW2 = NOW + 2_000;
+    const a = makeFakeSnapshot("downloads", NOW);
+    const b = makeFakeSnapshot("downloads", NOW2); // rates wobble with the clock
+    const sceneA = buildKineticScene(a, { now: NOW, seerrConfigured: true });
+    const sceneB = buildKineticScene(b, { now: NOW2, seerrConfigured: true });
+    // The geometry key must not see rate/CPU/memory movement…
+    expect(stageGeometryKey(sceneA, 1920, 1080)).toBe(stageGeometryKey(sceneB, 1920, 1080));
+    // …and membership or viewport changes must change it.
+    const idle = buildKineticScene(makeFakeSnapshot("docker-unavailable", NOW), {
+      now: NOW,
+      seerrConfigured: true,
+    });
+    expect(stageGeometryKey(idle, 1920, 1080)).not.toBe(stageGeometryKey(sceneA, 1920, 1080));
+    expect(stageGeometryKey(sceneA, 1280, 720)).not.toBe(stageGeometryKey(sceneA, 1920, 1080));
   });
 
   it("lays a path for every flow", () => {
