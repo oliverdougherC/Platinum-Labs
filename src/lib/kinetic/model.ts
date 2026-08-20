@@ -18,7 +18,9 @@ import {
   type StorageBodyModel,
 } from "@/lib/scene/model";
 import {
+  classifyFlowRate,
   flowNetworkBoundary,
+  isAuthoritativeZero,
   resolveJellyfinPlayback,
   type FlowKind,
   type FlowNetworkBoundary,
@@ -142,7 +144,11 @@ export interface StorageStratumModel {
 export type FlowTreatment =
   /** Real measured/derived byte movement: ribbon + particles. */
   | "particles"
-  /** Active work with unknown rate: minimal ribbon, slow breath, no particles. */
+  /**
+   * Active work whose TOTAL rate is unknown — including a partial known-zero
+   * (a 0 B/s lower bound with unknown contributors): minimal ribbon, slow
+   * breath, no particles, no throughput claim.
+   */
   | "state-only"
   /** Last-known work, frozen: static ribbon, desaturated, no motion. */
   | "stale"
@@ -391,9 +397,15 @@ function jellyfinAnchor(
   const headlineRate = resolved?.egress.headline ?? null;
   const knownBps = headlineRate?.knownBytesPerSecond ?? null;
   let rateLine: string | null = null;
-  if (headlineRate && knownBps !== null) {
+  if (
+    headlineRate &&
+    knownBps !== null &&
+    (knownBps > 0 || isAuthoritativeZero(headlineRate))
+  ) {
     // Partial coverage is a lower bound and estimated evidence is an estimate:
-    // both carry the ≈ convention. Unknown stays unknown — no line, no zero.
+    // both carry the ≈ convention. Unknown stays unknown — no line, no zero —
+    // and a known zero under partial coverage is equally NOT a rate claim:
+    // "≈ 0 B/s" would read as authoritative while the total is unknown.
     const approximate =
       headlineRate.coverage === "partial" || headlineRate.evidence === "estimated";
     rateLine = `${approximate ? "≈ " : ""}${arrow("up", knownBps)}`;
@@ -570,11 +582,26 @@ function poolRef(
   }
 }
 
-function treatmentOf(flow: FlowObservation, rate: number | null): FlowTreatment {
-  if (flow.freshness === "stale") return "stale";
-  if (rate !== null && rate > 0) return "particles";
-  if (rate === 0) return "confirmed-zero";
-  return "state-only";
+/**
+ * Map the shared flow-rate truth classification (activity layer) onto the
+ * kinetic visual treatment. The renderer never re-derives rate semantics from
+ * the numeric rate alone: a numeric zero is a confirmed zero ONLY when the
+ * authoritative aggregate proves it (complete coverage, no unknown
+ * contributors, live, evidence-backed). A partial known-zero is a lower
+ * bound — activity exists, the total rate is unknown — and renders as
+ * state-only: no particles, no throughput-scaled width, no zero claim.
+ */
+function treatmentOf(flow: FlowObservation): FlowTreatment {
+  switch (classifyFlowRate(flow)) {
+    case "stale":
+      return "stale";
+    case "positive":
+      return "particles";
+    case "confirmed-zero":
+      return "confirmed-zero";
+    case "unknown":
+      return "state-only";
+  }
 }
 
 function toneOf(flow: FlowObservation): KineticFlow["tone"] {
@@ -598,14 +625,18 @@ function buildFlows(scene: SceneModel): KineticFlow[] {
     const to = poolRef(flow.to, flow.kind === "egress" ? "service-side" : wanSide);
     if (!from || !to) continue;
     const rate = primaryRate(flow);
+    const treatment = flow.plane === "control" ? "state-only" : treatmentOf(flow);
     out.push({
       id: flow.id,
       kind: flow.kind,
       from,
       to,
-      treatment: flow.plane === "control" ? "state-only" : treatmentOf(flow, rate),
+      treatment,
       tone: toneOf(flow),
-      rateBps: flow.plane === "control" ? null : rate,
+      // State-only carries NO headline rate: in particular a partial
+      // known-zero (rate 0, coverage incomplete) must never surface "0 B/s"
+      // in the inspector or accessibility text as if it were authoritative.
+      rateBps: treatment === "state-only" ? null : rate,
       channels: flow.channels.map((c) => ({
         direction: c.direction,
         bytesPerSecond: c.bytesPerSecond,

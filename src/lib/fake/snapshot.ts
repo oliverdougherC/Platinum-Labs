@@ -458,6 +458,7 @@ export const SCENARIOS = [
   "confirmed-zero",
   "multi-session",
   "mixed-session",
+  "partial-zero",
   "downloads",
   "seeding",
   "seed-only",
@@ -508,6 +509,7 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "confirmed-zero": "Active download — confirmed zero rate",
   "multi-session": "Multiple sessions",
   "mixed-session": "Mixed known / unknown sessions",
+  "partial-zero": "Jellyfin — partial zero (total unknown)",
   downloads: "Active downloads / imports",
   seeding: "Download + seed upload",
   "seed-only": "Seed upload only",
@@ -898,6 +900,48 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       acquisition: acquisitionEmpty(),
       zfs: zfsHealthy(now),
       telemetryProfile: "transcode",
+    }),
+
+  // The partial-known-zero truth case (V4 final review blocker): two sessions
+  // are genuinely PLAYING; one reports an authoritative session rate of
+  // 0 B/s (a buffered player between bursts) while the other reports no rate
+  // at all, and the mapped container yields no measured fallback. The
+  // aggregate is knownBytesPerSecond = 0 with coverage = "partial" — a zero
+  // LOWER BOUND, not a confirmed zero. The honest render is state-only
+  // activity: breathing paths, no particles, no 0 B/s claim anywhere.
+  "partial-zero": (now) =>
+    compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({
+            id: "s1",
+            user: "oliver",
+            method: "direct-play",
+            rate: {
+              bytesPerSecond: 0,
+              basis: "jellyfin-session-output",
+              evidence: "reported",
+            },
+            progress: 0.42,
+          }),
+          session({
+            id: "s2",
+            user: "guest",
+            title: "Reservation Dogs — S03E10",
+            subtitle: "S03E10 — Dig",
+            method: "transcode",
+            resolution: "720p",
+            rate: null,
+            progress: 0.18,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "transcode-unknown",
     }),
 
   downloads: (now) =>

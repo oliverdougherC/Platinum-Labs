@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
 import { FAKE_CPU_TOPOLOGY } from "@/lib/fake/telemetry";
-import { resolveJellyfinPlayback } from "@/lib/topology/activity";
+import {
+  classifyFlowRate,
+  deriveFlows,
+  resolveJellyfinPlayback,
+} from "@/lib/topology/activity";
 import type { DashboardSnapshot } from "@/lib/types";
 import {
   buildKineticScene,
@@ -124,6 +128,21 @@ describe("buildKineticScene", () => {
     const wan = s.flows.find((f) => f.kind === "wan-transfer");
     expect(wan?.treatment).toBe("confirmed-zero");
     expect(wan?.rateBps).toBe(0);
+    // The authoritative complete zero renders NO motion of any kind.
+    expect(sceneAnimates(s)).toBe(false);
+    // The underlying observation proves the zero: complete coverage, no
+    // unknown contributors, live measured evidence.
+    const obs = deriveFlows(makeFakeSnapshot("confirmed-zero", NOW), NOW).find(
+      (f) => f.kind === "wan-transfer",
+    )!;
+    expect(obs.rate).toMatchObject({
+      knownBytesPerSecond: 0,
+      unknownContributors: 0,
+      coverage: "complete",
+      evidence: "measured",
+      freshness: "live",
+    });
+    expect(classifyFlowRate(obs)).toBe("confirmed-zero");
   });
 
   it("summarizes attention truthfully", () => {
@@ -224,6 +243,9 @@ describe("canonical Jellyfin rate agreement (anchor == ribbon)", () => {
     expect(resolved.egress.headline.coverage).toBe("partial");
     expect(resolved.egress.headline.unknownContributors).toBe(1);
     expect(flow.rateBps).toBe(resolved.egress.headline.knownBytesPerSecond);
+    // A POSITIVE partial lower bound stays a live transfer (approximate),
+    // it never degrades to state-only merely because coverage is partial.
+    expect(flow.treatment).toBe("particles");
     const anchor = jellyfin(s);
     expect(anchor.rateLine).toMatch(/^≈ ↑ /);
   });
@@ -273,6 +295,80 @@ describe("canonical Jellyfin rate agreement (anchor == ribbon)", () => {
     expect(anchor.glow).toBe(0);
     const resolved = resolveJellyfinPlayback(snapshot, NOW)!;
     expect(resolved.egressFreshness).toBe("stale");
+  });
+});
+
+/**
+ * V4 final review blocker: a PARTIAL known-zero rate is a lower bound
+ * ("at least 0 B/s, total unknown"), never a confirmed zero. Only a live,
+ * complete, evidence-backed zero may render as `confirmed-zero`; every other
+ * numeric zero is state-only activity with no throughput or zero claim.
+ */
+describe("partial known zero is never a confirmed zero", () => {
+  it("Jellyfin: known 0 + unknown session renders state-only, active, with no 0 B/s claim", () => {
+    const snapshot = makeFakeSnapshot("partial-zero", NOW);
+    const resolved = resolveJellyfinPlayback(snapshot, NOW)!;
+    // The fixture is the exact blocker aggregate: known lower bound of zero
+    // with an unknown contributor and no measured container fallback.
+    expect(resolved.egress.headline.knownBytesPerSecond).toBe(0);
+    expect(resolved.egress.headline.coverage).toBe("partial");
+    expect(resolved.egress.headline.unknownContributors).toBeGreaterThan(0);
+
+    const s = sceneOf(snapshot);
+    for (const kind of ["egress", "playback"] as const) {
+      const flow = s.flows.find((f) => f.kind === kind)!;
+      expect(flow.treatment).toBe("state-only");
+      expect(flow.treatment).not.toBe("confirmed-zero");
+      // No particles (the engine emits particles only for `particles`), no
+      // throughput-scaled width, and no headline rate for text surfaces to
+      // present as an authoritative zero.
+      expect(flow.rateBps).toBeNull();
+    }
+
+    // Jellyfin stays visibly ACTIVE — playback is known to exist — while the
+    // rate line stays silent instead of claiming "0 B/s" or "≈ 0 B/s".
+    const anchor = jellyfin(s);
+    expect(anchor.active).toBe(true);
+    expect(anchor.headline).toContain("2 streams");
+    expect(anchor.rateLine).toBeNull();
+    expect(anchor.glow).toBeCloseTo(0.35, 5);
+    // State-only breathing still animates; nothing implies byte movement.
+    expect(sceneAnimates(s)).toBe(true);
+  });
+
+  it("qBittorrent: a known-zero direction beside an unknown active direction is partial, not confirmed", () => {
+    const snapshot = mutableSnapshot("confirmed-zero");
+    // One downloading item whose rate qBittorrent does not report, plus
+    // confirmed-idle seeding: the known lower bound is 0 but the total is
+    // unknown.
+    snapshot.acquisition.rollup.aggregateRateBps = null;
+    snapshot.acquisition.rollup.uploadRateBps = 0;
+    snapshot.acquisition.rollup.seeding = 2;
+    const obs = deriveFlows(snapshot, NOW).find((f) => f.kind === "wan-transfer")!;
+    expect(obs.rate).toMatchObject({
+      knownBytesPerSecond: 0,
+      unknownContributors: 1,
+      coverage: "partial",
+    });
+    expect(classifyFlowRate(obs)).toBe("unknown");
+    const s = sceneOf(snapshot);
+    const wan = s.flows.find((f) => f.kind === "wan-transfer")!;
+    expect(wan.treatment).toBe("state-only");
+    expect(wan.rateBps).toBeNull();
+  });
+
+  it("a stale zero stays stale, never confirmed-zero", () => {
+    const snapshot = mutableSnapshot("confirmed-zero");
+    const health = snapshot.health.find((h) => h.id === "qbittorrent")!;
+    health.lastSuccessAt = NOW - 10 * 60_000;
+    const s = sceneOf(snapshot);
+    const flows = s.flows.filter(
+      (f) => f.kind === "wan-transfer" || f.kind === "storage-transfer",
+    );
+    expect(flows.length).toBeGreaterThan(0);
+    for (const flow of flows) {
+      expect(flow.treatment).toBe("stale");
+    }
   });
 });
 

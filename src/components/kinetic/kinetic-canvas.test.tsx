@@ -126,6 +126,26 @@ describe("KineticCanvas continuity", () => {
     expect(document.activeElement).toBe(nextTabbable[0]);
   });
 
+  it("describes a partial known-zero flow as rate-unknown activity, never as 0 B/s", () => {
+    const snapshot = makeFakeSnapshot("partial-zero", NOW);
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    // The accessible flow list keeps the activity visible without claiming an
+    // authoritative zero: the total rate is unknown, not confirmed zero.
+    const flowList = container.querySelector('[aria-label="Active data flows"]')!;
+    expect(flowList.textContent).toContain("rate unknown");
+    expect(flowList.textContent).not.toContain("0 B/s");
+    // Jellyfin remains visibly active — playback is known to exist.
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="jellyfin"]',
+    )!;
+    expect(anchor.getAttribute("aria-label")).toContain("2 streams");
+    // The inspector makes the same non-claim.
+    fireEvent.click(anchor);
+    const inspector = container.querySelector("[data-kinetic-inspector]")!;
+    expect(inspector.textContent).toContain("rate unknown");
+    expect(inspector.textContent).not.toContain("0 B/s");
+  });
+
   it("restores focus to the initiating element when the inspector closes", () => {
     const snapshot = makeFakeSnapshot("active", NOW);
     const { container } = render(<KineticCanvas {...props(snapshot)} />);

@@ -244,6 +244,35 @@ function earliestUpdatedAt(...times: Array<number | null | undefined>): number |
 const rate = (bps: number | null | undefined): number | null =>
   typeof bps === "number" && Number.isFinite(bps) ? Math.max(0, bps) : null;
 
+/**
+ * Aggregate for a transfer conduit whose per-direction rates come from one
+ * measured source (qBittorrent counters, or those counters attributed to the
+ * storage hop). `contributors` holds one entry per ACTIVE direction — null
+ * when that direction's rate is unknown — so a known-zero direction next to
+ * an unknown active direction is honestly partial, never a confirmed zero.
+ */
+function transferRateAggregate(
+  contributors: ReadonlyArray<number | null>,
+  evidence: RateEvidence,
+  freshness: FlowFreshness,
+): AggregateRateObservation {
+  const known = contributors.filter((value): value is number => value !== null);
+  return {
+    knownBytesPerSecond:
+      known.length > 0 ? known.reduce((sum, value) => sum + value, 0) : null,
+    unknownContributors: contributors.length - known.length,
+    coverage:
+      known.length === 0
+        ? "unknown"
+        : known.length < contributors.length
+          ? "partial"
+          : "complete",
+    basis: null,
+    evidence: known.length > 0 ? evidence : null,
+    freshness,
+  };
+}
+
 function weakestEvidence(values: RateEvidence[]): RateEvidence {
   if (values.includes("estimated")) return "estimated";
   if (values.includes("derived")) return "derived";
@@ -505,6 +534,14 @@ export function deriveFlows(
     );
 
     if (downloading || seeding) {
+      // One entry per ACTIVE direction, null when its rate is unknown or was
+      // suppressed below the deadband: the aggregate must know about active
+      // work the channels do not carry, or a known-zero direction beside an
+      // unknown one would masquerade as a complete zero.
+      const contributors: Array<number | null> = [
+        ...(downloadingActive ? [downloadBps] : []),
+        ...(seedingActive ? [uploadBps] : []),
+      ];
       // One shared WAN conduit; download and seed-upload are opposite
       // channels on it, each carrying its own measured rate.
       const channels: FlowChannel[] = [];
@@ -520,6 +557,7 @@ export function deriveFlows(
           evidence: "measured",
           freshness: qb.freshness,
           channels,
+          rate: transferRateAggregate(contributors, "measured", qb.freshness),
           provenance: "measured by qBittorrent transfer counters",
           label:
             downloading && seeding
@@ -548,6 +586,7 @@ export function deriveFlows(
           evidence: "derived",
           freshness: qb.freshness,
           channels: storageChannels,
+          rate: transferRateAggregate(contributors, "derived", qb.freshness),
           provenance:
             downloadStorage.kind === "pool"
               ? "derived from qBittorrent rates; destination declared by HOMELAB_DOWNLOAD_POOL"
@@ -643,6 +682,7 @@ export function deriveFlows(
             evidence: "derived",
             freshness: "live",
             channels: [{ direction: "forward", role: "write", bytesPerSecond: copyRate }],
+            rate: transferRateAggregate([copyRate], "derived", "live"),
             provenance: `import in progress (${arrName}); rate derived from corroborating ${downloadStorage.name} source reads and ${mediaStorage.name} destination writes`,
             label: "import copy between pools",
             updatedAt: earliestUpdatedAt(
@@ -758,4 +798,55 @@ export function primaryRate(obs: FlowObservation): number | null {
     if (max === null || ch.bytesPerSecond > max) max = ch.bytesPerSecond;
   }
   return max;
+}
+
+/**
+ * Whether a numerically-zero aggregate is an AUTHORITATIVE zero: every
+ * contributor is accounted for (complete coverage, no unknown contributors)
+ * and real evidence backs the value. A known zero under partial/unknown
+ * coverage is a LOWER BOUND — "at least 0 B/s" — which says nothing about the
+ * total rate and must never be rendered as a confirmed zero.
+ */
+export function isAuthoritativeZero(rate: AggregateRateObservation): boolean {
+  return (
+    rate.knownBytesPerSecond === 0 &&
+    rate.unknownContributors === 0 &&
+    rate.coverage === "complete" &&
+    rate.evidence !== null
+  );
+}
+
+/**
+ * The truth classification every renderer's rate treatment must derive from.
+ * No renderer may re-infer these semantics from the numeric rate alone —
+ * the number loses coverage information (a partial known-zero and a complete
+ * measured zero are both `0`).
+ */
+export type FlowRateClass =
+  /** The justifying source is stale: freeze, regardless of numeric value. */
+  | "stale"
+  /** A known positive rate (a lower bound when coverage is partial). */
+  | "positive"
+  /** An authoritative zero: complete coverage, live, evidence-backed. */
+  | "confirmed-zero"
+  /** Work may exist but the total rate is unknown (includes partial zeros). */
+  | "unknown";
+
+/** Classify a flow's rate semantics from its authoritative aggregate. */
+export function classifyFlowRate(flow: FlowObservation): FlowRateClass {
+  if (flow.freshness === "stale") return "stale";
+  if (flow.plane !== "data") return "unknown";
+  const rate = primaryRate(flow);
+  if (rate !== null && rate > 0) return "positive";
+  if (
+    rate === 0 &&
+    flow.rate !== undefined &&
+    flow.rate.freshness === "live" &&
+    isAuthoritativeZero(flow.rate)
+  ) {
+    return "confirmed-zero";
+  }
+  // A numeric zero WITHOUT an aggregate proving completeness is never
+  // promoted to confirmed-zero — completeness is declared, not inferred.
+  return "unknown";
 }

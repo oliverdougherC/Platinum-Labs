@@ -171,6 +171,10 @@ const KINETIC_SHOTS = [
   // the requested browser zoom (same convention as the topology matrix).
   { name: "24-v4-zoom-150", scenario: "idle", w: 1280, h: 720, zoom: 1.5 },
   { name: "25-v4-zoom-200", scenario: "idle", w: 960, h: 540, zoom: 2 },
+  // Partial known-zero truth (V4 final review blocker): activity exists, the
+  // total rate is unknown — state-only breathing, no particles, no 0 B/s
+  // claim. Must visibly differ from 22-v4-confirmed-zero.
+  { name: "26-v4-partial-zero-unknown-1920x1080", scenario: "partial-zero", w: 1920, h: 1080 },
 ];
 
 const A_PLUS_ACTIVITY_SIGNATURES = new Map();
