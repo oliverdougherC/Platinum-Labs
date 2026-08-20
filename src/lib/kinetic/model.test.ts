@@ -120,6 +120,22 @@ describe("buildKineticScene", () => {
     expect(flow!.rateBps).toBeGreaterThan(0);
   });
 
+  it("carries the live residual-copy replay through the Kinetic scene and layout", () => {
+    const s = scene("background-copy-live-rollup");
+    const flow = s.flows.find(
+      (candidate) => candidate.id === "background-transfer:pool:DataStore->pool:eSATA",
+    );
+    expect(flow).toMatchObject({
+      kind: "background-transfer",
+      treatment: "particles",
+      rateBps: 39_493_986,
+    });
+
+    const layout = buildKineticLayout(s, 1920, 1080);
+    const path = layout.flows.find((candidate) => candidate.id === flow!.id);
+    expect(path?.path.total).toBeGreaterThan(40);
+  });
+
   it("keeps a stale background copy visible with frozen identity and magnitude", () => {
     const live = scene("background-copy").flows.find(
       (flow) => flow.kind === "background-transfer",

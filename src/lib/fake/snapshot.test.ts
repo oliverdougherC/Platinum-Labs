@@ -83,6 +83,27 @@ describe("required scenario characteristics", () => {
     ]);
   });
 
+  it("background-copy-live-rollup replays the sanitized live queue rollup on a DataStore -> eSATA copy", () => {
+    const snapshot = makeFakeSnapshot("background-copy-live-rollup", NOW);
+    expect(snapshot.mediaPool).toBe("DataStore");
+    expect(snapshot.downloadPool).toBe("DataStore");
+    expect(snapshot.jellyfin.sessions).toHaveLength(0);
+    expect(snapshot.acquisition.rollup).toEqual({
+      downloading: 2,
+      importing: 14,
+      failedOrStalled: 2,
+      aggregateRateBps: 4_592_792,
+      uploadRateBps: 404_164,
+      seeding: 18,
+    });
+    expect(snapshot.telemetry.disk.value?.pools).toEqual([
+      { pool: "DataStore", readBps: 39_898_150, writeBps: 0 },
+      { pool: "NVME", readBps: 6_138, writeBps: 1_231_664 },
+      { pool: "eSATA", readBps: 1_636_763, writeBps: 49_927_161 },
+      { pool: "other", readBps: 0, writeBps: 198_458 },
+    ]);
+  });
+
   it("confirmed-zero: active work has a measured zero rate", () => {
     const acquisition = makeFakeSnapshot("confirmed-zero", NOW).acquisition;
     expect(acquisition.rollup.downloading).toBe(1);

@@ -3,17 +3,25 @@ import { describe, expect, it } from "vitest";
 import { MediaRequestIcon } from "@/components/ui/icons";
 
 describe("MediaRequestIcon", () => {
-  it("keeps the request glyph inside the 20x20 frame with stable geometry", () => {
+  it("renders a hidden decorative media frame with a centered add glyph", () => {
     const { container } = render(<MediaRequestIcon />);
     const svg = container.querySelector("svg");
+    const paths = container.querySelectorAll("path");
     const rect = container.querySelector("rect");
-    const path = container.querySelector("path");
+
     expect(svg).toHaveAttribute("viewBox", "0 0 20 20");
     expect(svg).toHaveAttribute("aria-hidden", "true");
-    expect(rect?.getAttribute("x")).toBe("2.75");
-    expect(rect?.getAttribute("y")).toBe("4.25");
-    expect(rect?.getAttribute("width")).toBe("9.5");
-    expect(rect?.getAttribute("height")).toBe("11");
-    expect(path?.getAttribute("d")).toBe("m5.5 2.75 2 2 2-2M15.25 8.75v6.5M12 12h6.5");
+    expect(svg).toHaveAttribute("focusable", "false");
+    expect(rect).toHaveAttribute("rx", "2");
+    expect(paths).toHaveLength(2);
+
+    const [playGlyph, addGlyph] = paths;
+    expect(playGlyph).toHaveAttribute("fill", "currentColor");
+    expect(playGlyph).toHaveAttribute("stroke", "none");
+    expect(playGlyph?.getAttribute("d")).toMatch(/Z$/);
+    expect(addGlyph?.getAttribute("d")).toMatch(/[Vv].+[Hh]/);
+
+    expect(Number.parseFloat(rect?.getAttribute("width") ?? "0")).toBeGreaterThan(0);
+    expect(Number.parseFloat(rect?.getAttribute("height") ?? "0")).toBeGreaterThan(0);
   });
 });

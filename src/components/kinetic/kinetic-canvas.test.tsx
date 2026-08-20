@@ -165,6 +165,15 @@ describe("KineticCanvas continuity", () => {
     expect(inspector.textContent).not.toContain("0 B/s");
   });
 
+  it("exposes the live residual DataStore to eSATA copy on the rendered flow surface", () => {
+    const snapshot = makeFakeSnapshot("background-copy-live-rollup", NOW);
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    const flowList = container.querySelector('[aria-label="Active data flows"]')!;
+    expect(flowList.textContent).toContain(
+      "background storage copy — background storage transfer · 39.5 MB/s",
+    );
+  });
+
   it("restores focus to the initiating element when the inspector closes", () => {
     const snapshot = makeFakeSnapshot("active", NOW);
     const { container } = render(<KineticCanvas {...props(snapshot)} />);

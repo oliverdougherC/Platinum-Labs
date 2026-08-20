@@ -156,6 +156,12 @@ const KINETIC_SHOTS = [
     w: 1920,
     h: 1080,
   },
+  {
+    name: "35-v41-background-copy-live-rollup-datastore-esata-1920x1080",
+    scenario: "background-copy-live-rollup",
+    w: 1920,
+    h: 1080,
+  },
 ];
 
 /**

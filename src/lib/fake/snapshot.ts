@@ -302,6 +302,68 @@ function acquisitionStalled(): AcquisitionSnapshot {
   return { items, rollup: rollup(items) };
 }
 
+function acquisitionBackgroundCopyLiveRollup(): AcquisitionSnapshot {
+  const items: AcquisitionItem[] = [
+    {
+      id: "q-live-down-1",
+      source: "sonarr",
+      title: "Sample Series — Episode 01",
+      quality: "WEB-DL 1080p",
+      state: "downloading",
+      progress: 0.41,
+      rateBps: 2_865_495,
+      etaSeconds: 540,
+    },
+    {
+      id: "q-live-down-2",
+      source: "radarr",
+      title: "Sample Feature (2026)",
+      quality: "Bluray-2160p",
+      state: "downloading",
+      progress: 0.12,
+      rateBps: 1_727_297,
+      etaSeconds: 1_860,
+    },
+    ...Array.from({ length: 14 }, (_, index): AcquisitionItem => ({
+      id: `q-live-import-${index + 1}`,
+      source: index % 3 === 0 ? "radarr" : "sonarr",
+      title:
+        index % 3 === 0
+          ? `Catalog Feature ${String(index + 1).padStart(2, "0")}`
+          : `Catalog Episode ${String(index + 1).padStart(2, "0")}`,
+      quality: index % 3 === 0 ? "Remux-2160p" : "WEB-DL 1080p",
+      state: "importing",
+      progress: 1,
+      rateBps: null,
+      etaSeconds: null,
+    })),
+    {
+      id: "q-live-stalled-1",
+      source: "qbittorrent",
+      title: "sample-archive-01",
+      quality: null,
+      state: "stalled",
+      progress: 0.77,
+      rateBps: 0,
+      etaSeconds: null,
+    },
+    {
+      id: "q-live-failed-1",
+      source: "qbittorrent",
+      title: "sample-archive-02",
+      quality: null,
+      state: "failed",
+      progress: 0.05,
+      rateBps: 0,
+      etaSeconds: null,
+    },
+  ];
+  return {
+    items,
+    rollup: rollup(items, { uploadRateBps: 404_164, seeding: 18 }),
+  };
+}
+
 interface PoolSpec {
   name: string;
   /** Logical root-dataset values (decimal-byte fixtures). */
@@ -491,6 +553,7 @@ export const SCENARIOS = [
   "background-copy-stale",
   "background-copy-under-deadband",
   "background-copy-with-import",
+  "background-copy-live-rollup",
   "gpu-workload",
   "pool-scrub",
   "docker-unavailable",
@@ -549,6 +612,7 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "background-copy-stale": "Background storage — stale observation",
   "background-copy-under-deadband": "Background storage — below deadband",
   "background-copy-with-import": "Background copy + explicit import",
+  "background-copy-live-rollup": "Background copy + live queue rollup",
   "gpu-workload": "GPU-heavy workload",
   "pool-scrub": "DataStore scrub in progress",
   "docker-unavailable": "Docker inventory unavailable",
@@ -1106,6 +1170,17 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       zfs: zfsHealthy(now),
       telemetryProfile: "importing",
     }),
+
+  "background-copy-live-rollup": (now) => {
+    const snapshot = compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionBackgroundCopyLiveRollup(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "background-copy-live-rollup",
+    });
+    snapshot.downloadPool = "DataStore";
+    return snapshot;
+  },
 
   "gpu-workload": (now) =>
     compose(now, {
