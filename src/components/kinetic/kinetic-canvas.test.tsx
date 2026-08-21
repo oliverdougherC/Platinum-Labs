@@ -57,7 +57,10 @@ beforeEach(() => {
   rafCb = null;
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 function pumpFrames(count: number) {
   act(() => {
@@ -116,6 +119,41 @@ describe("KineticCanvas continuity", () => {
     fireEvent.mouseLeave(panel);
     fireEvent.focus(anchor);
     expect(container.querySelector("[data-download-panel]")).not.toBeNull();
+  });
+
+  it("treats trigger and panel as one keyboard focus region without trapping focus", () => {
+    vi.useFakeTimers();
+    const { container } = render(
+      <KineticCanvas {...props(makeFakeSnapshot("downloads", NOW))} />,
+    );
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="qbittorrent"]',
+    )!;
+
+    act(() => anchor.focus());
+    const panel = container.querySelector<HTMLElement>("[data-download-panel]")!;
+    expect(panel).not.toBeNull();
+    expect(panel.getAttribute("role")).toBe("region");
+    expect(panel.getAttribute("aria-labelledby")).toBe(
+      "qbittorrent-download-panel-title",
+    );
+    expect(anchor.hasAttribute("aria-haspopup")).toBe(false);
+    expect(panel.querySelectorAll("li[data-download-row]")).toHaveLength(2);
+
+    fireEvent.keyDown(anchor, { key: "Tab" });
+    expect(document.activeElement).toBe(panel);
+    act(() => vi.advanceTimersByTime(300));
+    expect(container.querySelector("[data-download-panel]")).toBe(panel);
+
+    fireEvent.keyDown(panel, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(anchor);
+    expect(fireEvent.keyDown(panel, { key: "Tab" })).toBe(true);
+
+    const outside = document.createElement("button");
+    container.append(outside);
+    fireEvent.blur(anchor, { relatedTarget: outside });
+    act(() => vi.advanceTimersByTime(300));
+    expect(container.querySelector("[data-download-panel]")).toBeNull();
   });
 
   it("keeps panel and row identity stable while live values update and input order changes", () => {

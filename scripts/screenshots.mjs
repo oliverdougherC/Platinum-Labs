@@ -167,14 +167,14 @@ const KINETIC_SHOTS = [
     scenario: "downloads",
     w: 1920,
     h: 1080,
-    action: "kinetic-download-hover",
+    action: "kinetic-download-panel",
   },
   {
     name: "37-v42-qb-download-panel-scroll-1920x1080",
     scenario: "downloads-many",
     w: 1920,
     h: 1080,
-    action: "kinetic-download-hover",
+    action: "kinetic-download-panel",
   },
 ];
 
@@ -320,7 +320,7 @@ async function validateKineticShot(page, shot) {
       throw new Error(`Escape did not close the kinetic inspector (${shot.name})`);
     }
   }
-  if (shot.action === "kinetic-download-hover") {
+  if (shot.action === "kinetic-download-panel") {
     const panel = page.locator("[data-download-panel]");
     if ((await panel.count()) !== 1) {
       throw new Error(`qBittorrent download panel did not open (${shot.name})`);
@@ -328,6 +328,12 @@ async function validateKineticShot(page, shot) {
     const expectedRows = shot.scenario === "downloads-many" ? 12 : 2;
     if ((await panel.locator("[data-download-row]").count()) !== expectedRows) {
       throw new Error(`qBittorrent download panel row count drifted (${shot.name})`);
+    }
+    if ((await panel.getAttribute("role")) !== "region") {
+      throw new Error(`qBittorrent download panel is not a non-modal region (${shot.name})`);
+    }
+    if (!(await panel.evaluate((node) => node === document.activeElement))) {
+      throw new Error(`keyboard focus did not enter the download panel (${shot.name})`);
     }
   }
   if (shot.transitionScenario === "docker-unavailable") {
@@ -362,8 +368,9 @@ async function performShotAction(page, action) {
     await page.waitForTimeout(200);
     return;
   }
-  if (action === "kinetic-download-hover") {
-    await page.locator('[data-kinetic-anchor="qbittorrent"]').hover();
+  if (action === "kinetic-download-panel") {
+    await page.locator('[data-kinetic-anchor="qbittorrent"]').focus();
+    await page.keyboard.press("Tab");
     await page.locator("[data-download-panel]").waitFor({ state: "visible" });
     await page.waitForTimeout(220);
     return;
@@ -1118,7 +1125,8 @@ async function captureQbDownloadPanelMotion(browser, baseUrl) {
   await page.waitForFunction(() => typeof window.__homelabSetScenario === "function", {
     timeout: 15_000,
   });
-  await page.locator('[data-kinetic-anchor="qbittorrent"]').hover();
+  await page.locator('[data-kinetic-anchor="qbittorrent"]').focus();
+  await page.keyboard.press("Tab");
   const panel = page.locator("[data-download-panel]");
   await panel.waitFor({ state: "visible" });
   const mountedPanel = await panel.elementHandle();

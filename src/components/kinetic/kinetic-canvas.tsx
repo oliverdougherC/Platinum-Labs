@@ -23,6 +23,11 @@ import {
   useRef,
   useState,
 } from "react";
+import type {
+  FocusEvent as ReactFocusEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  RefObject,
+} from "react";
 import type { DashboardSnapshot } from "@/lib/types";
 import { formatRate } from "@/lib/format/bytes";
 import {
@@ -340,6 +345,32 @@ export function KineticCanvas({
   const [motionOn, setMotionOn] = useState(false);
   const downloadRows = useStableDownloadRows(snapshot);
   const downloadPanel = useDownloadPanelPresence();
+  const downloadTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const downloadPanelRef = useRef<HTMLElement | null>(null);
+  const downloadRegionContains = useCallback(
+    (target: EventTarget | null) =>
+      target instanceof Node &&
+      (downloadTriggerRef.current?.contains(target) === true ||
+        downloadPanelRef.current?.contains(target) === true),
+    [],
+  );
+  const blurDownloadRegion = useCallback(
+    (event: ReactFocusEvent<HTMLElement>) => {
+      if (!downloadRegionContains(event.relatedTarget)) {
+        downloadPanel.scheduleClose();
+      }
+    },
+    [downloadPanel, downloadRegionContains],
+  );
+  const enterDownloadPanel = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>) => {
+      if (event.key !== "Tab" || event.shiftKey) return;
+      event.preventDefault();
+      downloadPanel.open();
+      downloadPanelRef.current?.focus();
+    },
+    [downloadPanel],
+  );
 
   // ONE engine per mounted stage: its epoch — and therefore every particle's
   // phase — is established exactly once, here.
@@ -560,6 +591,9 @@ export function KineticCanvas({
           openDownloadPanel={downloadPanel.open}
           closeDownloadPanel={downloadPanel.scheduleClose}
           dismissDownloadPanel={downloadPanel.close}
+          downloadTriggerRef={downloadTriggerRef}
+          enterDownloadPanel={enterDownloadPanel}
+          blurDownloadRegion={blurDownloadRegion}
         />
       ) : null}
 
@@ -571,6 +605,9 @@ export function KineticCanvas({
           closing={downloadPanel.phase === "closing"}
           onEnter={downloadPanel.open}
           onLeave={downloadPanel.scheduleClose}
+          panelRef={downloadPanelRef}
+          triggerRef={downloadTriggerRef}
+          onBlur={blurDownloadRegion}
         />
       ) : null}
 
@@ -642,6 +679,9 @@ function DownloadPanel({
   closing,
   onEnter,
   onLeave,
+  panelRef,
+  triggerRef,
+  onBlur,
 }: {
   rows: ActiveDownloadRow[];
   scene: KineticScene;
@@ -649,6 +689,9 @@ function DownloadPanel({
   closing: boolean;
   onEnter: () => void;
   onLeave: () => void;
+  panelRef: RefObject<HTMLElement | null>;
+  triggerRef: RefObject<HTMLButtonElement | null>;
+  onBlur: (event: ReactFocusEvent<HTMLElement>) => void;
 }) {
   const anchor = layout.anchors.find((candidate) => candidate.id === "qbittorrent")!;
   const model = scene.anchors.find((candidate) => candidate.id === "qbittorrent")!;
@@ -671,15 +714,22 @@ function DownloadPanel({
 
   return (
     <aside
+      ref={panelRef}
       id="qbittorrent-download-panel"
-      role="dialog"
-      tabIndex={0}
+      role="region"
+      tabIndex={-1}
       data-download-panel
-      aria-label="qBittorrent active downloads"
+      aria-labelledby="qbittorrent-download-panel-title"
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
       onFocus={onEnter}
-      onBlur={onLeave}
+      onBlur={onBlur}
+      onKeyDown={(event) => {
+        if (event.key === "Tab" && event.shiftKey) {
+          event.preventDefault();
+          triggerRef.current?.focus();
+        }
+      }}
       className={`absolute z-20 w-[320px] origin-top-left rounded-xl border border-white/[0.08] bg-[#0d1016]/[0.97] px-3 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.48)] backdrop-blur-sm transition-[opacity,transform] duration-[140ms] ease-out ${
         closing ? "pointer-events-none translate-y-1 scale-[0.985] opacity-0" : "opacity-100"
       }`}
@@ -692,7 +742,10 @@ function DownloadPanel({
     >
       <div className="flex items-baseline justify-between gap-3 px-1 pb-2">
         <div>
-          <h2 className="text-[13px] font-semibold tracking-tight text-fg">
+          <h2
+            id="qbittorrent-download-panel-title"
+            className="text-[13px] font-semibold tracking-tight text-fg"
+          >
             Active downloads
           </h2>
           {qualification ? (
@@ -709,12 +762,12 @@ function DownloadPanel({
           No active downloads
         </p>
       ) : (
-        <div
+        <ul
           data-download-list
           className="max-h-64 overflow-y-auto overscroll-contain border-t border-white/[0.06] pr-1 [scrollbar-width:thin]"
         >
           {rows.map((row) => (
-            <div
+            <li
               key={row.id}
               data-download-row={row.id}
               className="relative grid min-h-10 grid-cols-[minmax(0,1fr)_48px_76px] items-center gap-2 border-b border-white/[0.045] px-1 last:border-b-0"
@@ -737,9 +790,9 @@ function DownloadPanel({
                 className="absolute inset-x-1 bottom-0 h-px origin-left bg-accent/35 transition-transform duration-500"
                 style={{ transform: `scaleX(${row.progress})` }}
               />
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </aside>
   );
@@ -758,6 +811,9 @@ function KineticOverlay({
   openDownloadPanel,
   closeDownloadPanel,
   dismissDownloadPanel,
+  downloadTriggerRef,
+  enterDownloadPanel,
+  blurDownloadRegion,
 }: {
   scene: KineticScene;
   layout: KineticLayout;
@@ -769,6 +825,9 @@ function KineticOverlay({
   openDownloadPanel: () => void;
   closeDownloadPanel: () => void;
   dismissDownloadPanel: () => void;
+  downloadTriggerRef: RefObject<HTMLButtonElement | null>;
+  enterDownloadPanel: (event: ReactKeyboardEvent<HTMLElement>) => void;
+  blurDownloadRegion: (event: ReactFocusEvent<HTMLElement>) => void;
 }) {
   const dimClass = (member: KineticSelection): string => {
     if (!selection) return "";
@@ -871,17 +930,18 @@ function KineticOverlay({
         const idle = !model.active;
         return (
           <button
+            ref={placed.id === "qbittorrent" ? downloadTriggerRef : undefined}
             key={placed.id}
             type="button"
             data-kinetic-anchor={placed.id}
             aria-label={`${model.label}${model.headline ? `; ${model.headline}` : idle ? "; idle" : ""}`}
-            aria-haspopup={placed.id === "qbittorrent" ? "dialog" : undefined}
             aria-expanded={placed.id === "qbittorrent" ? downloadPanelOpen : undefined}
             aria-controls={placed.id === "qbittorrent" ? "qbittorrent-download-panel" : undefined}
             onMouseEnter={placed.id === "qbittorrent" ? openDownloadPanel : undefined}
             onMouseLeave={placed.id === "qbittorrent" ? closeDownloadPanel : undefined}
             onFocus={placed.id === "qbittorrent" ? openDownloadPanel : undefined}
-            onBlur={placed.id === "qbittorrent" ? closeDownloadPanel : undefined}
+            onBlur={placed.id === "qbittorrent" ? blurDownloadRegion : undefined}
+            onKeyDown={placed.id === "qbittorrent" ? enterDownloadPanel : undefined}
             onClick={(event) => {
               if (placed.id === "qbittorrent") dismissDownloadPanel();
               toggle({ kind: "anchor", id: placed.id }, event.currentTarget);
