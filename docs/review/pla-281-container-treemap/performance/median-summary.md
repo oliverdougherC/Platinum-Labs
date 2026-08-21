@@ -2,7 +2,7 @@
 
 Date: August 21, 2026
 
-Warm-up note: `run-1/` was captured while another PR correction pass was still running screenshot/verify work in this repository. It is kept out of the final claim and is intentionally excluded from the medians below.
+The initial uncontended reproduction passed on the isolated PLA-281 branch, but the first three-run synthetic-integration profile reproduced small median misses for download, 44 containers, and 106 containers. The retained-plan hot path was therefore optimized before these final measurements: weight-only frames reuse the plan's leaf/rectangle indexes, and unchanged DOM hitbox geometry is no longer rewritten.
 
 Harness: `npm run screenshots:kinetic:performance:prod -- --out docs/review/pla-281-container-treemap/performance/final-run-N`
 
@@ -16,16 +16,16 @@ Units: main-thread task milliseconds per wall second at 1920×1080, production b
 
 | Profile | Run 1 | Run 2 | Run 3 | Median | Budget | Result |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| quiet | 21.38 | 29.22 | 32.42 | 29.22 | 45 | pass |
-| download | 97.26 | 56.04 | 73.00 | 73.00 | 110 | pass |
-| playback | 91.98 | 83.64 | 87.88 | 87.88 | 110 | pass |
-| transcode | 63.89 | 95.60 | 107.97 | 95.60 | 115 | pass |
-| simultaneous | 94.01 | 85.92 | 87.84 | 87.84 | 120 | pass |
-| 44-container | 107.49 | 92.53 | 81.46 | 92.53 | 130 | pass |
-| 106-container | 124.16 | 147.11 | 122.93 | 124.16 | 155 | pass |
-| attention | 32.11 | 36.99 | 41.37 | 36.99 | 110 | pass |
-| inspector | 102.32 | 104.78 | 95.15 | 102.32 | 115 | pass |
-| reduced-motion | 20.56 | 18.82 | 20.77 | 20.56 | 40 | pass |
-| hidden-tab | 1.76 | 1.15 | 1.02 | 1.15 | 15 | pass |
+| quiet | 35.96 | 34.51 | 32.57 | 34.51 | 45 | pass |
+| download | 92.31 | 90.24 | 90.08 | 90.24 | 110 | pass |
+| playback | 88.53 | 90.32 | 91.11 | 90.32 | 110 | pass |
+| transcode | 98.27 | 101.52 | 103.61 | 101.52 | 115 | pass |
+| simultaneous | 96.21 | 95.64 | 97.30 | 96.21 | 120 | pass |
+| 44-container | 114.89 | 117.60 | 119.87 | 117.60 | 130 | pass |
+| 106-container | 137.06 | 144.19 | 143.08 | 143.08 | 155 | pass |
+| attention | 38.95 | 33.21 | 33.80 | 33.80 | 110 | pass |
+| inspector | 89.53 | 91.53 | 90.63 | 90.63 | 115 | pass |
+| reduced-motion | 21.62 | 21.33 | 18.46 | 21.33 | 40 | pass |
+| hidden-tab | 1.56 | 1.62 | 1.69 | 1.62 | 15 | pass |
 
-The retained treemap plan cleared budget in all three uncontended final runs, so this pass made no code change.
+All three post-optimization production/headful runs cleared every existing budget without changing frame cadence, interpolation, telemetry truth, treemap topology, or hit-target alignment.
