@@ -123,6 +123,10 @@ function safeContainerToken(name: string): string {
   );
 }
 
+function fakeUptimeSeconds(index: number): number {
+  return 15 * 60 + index * 173;
+}
+
 const MEDIA_STACK = new Set([
   "jellyfin",
   "sonarr",
@@ -276,20 +280,24 @@ function containersFromSpecs(
   specs: ContainerSpec[],
   now: number,
 ): DockerContainerTelemetry[] {
-  return specs.map((spec, i) => ({
-    name: spec.name,
-    ...fakeContainerTopology(spec.name),
-    state: spec.state ?? "running",
-    health: spec.health !== undefined ? spec.health : i % 4 === 0 ? "healthy" : null,
-    restartCount: spec.restarts !== undefined ? spec.restarts : 0,
-    cpuFraction:
-      spec.cpu === null ? null : clamp(spec.cpu * (0.7 + 0.6 * wave(now, 45_000, i)), 0, 4),
-    memoryBytes: spec.memGiB === null ? null : Math.round(spec.memGiB * GiB),
-    netRxBps: spec.netKBps == null ? null : Math.round(spec.netKBps[0] * 1_000 * (0.8 + 0.4 * wave(now, 21_000, i))),
-    netTxBps: spec.netKBps == null ? null : Math.round(spec.netKBps[1] * 1_000 * (0.8 + 0.4 * wave(now, 23_000, i + 7))),
-    blockReadBps: spec.blockKBps == null ? null : Math.round(spec.blockKBps[0] * 1_000 * (0.8 + 0.4 * wave(now, 17_000, i + 3))),
-    blockWriteBps: spec.blockKBps == null ? null : Math.round(spec.blockKBps[1] * 1_000 * (0.8 + 0.4 * wave(now, 19_000, i + 11))),
-  }));
+  return specs.map((spec, i) => {
+    const state = spec.state ?? "running";
+    return {
+      name: spec.name,
+      ...fakeContainerTopology(spec.name),
+      state,
+      health: spec.health !== undefined ? spec.health : i % 4 === 0 ? "healthy" : null,
+      uptimeSeconds: state === "running" ? fakeUptimeSeconds(i) : null,
+      restartCount: spec.restarts !== undefined ? spec.restarts : 0,
+      cpuFraction:
+        spec.cpu === null ? null : clamp(spec.cpu * (0.7 + 0.6 * wave(now, 45_000, i)), 0, 4),
+      memoryBytes: spec.memGiB === null ? null : Math.round(spec.memGiB * GiB),
+      netRxBps: spec.netKBps == null ? null : Math.round(spec.netKBps[0] * 1_000 * (0.8 + 0.4 * wave(now, 21_000, i))),
+      netTxBps: spec.netKBps == null ? null : Math.round(spec.netKBps[1] * 1_000 * (0.8 + 0.4 * wave(now, 23_000, i + 7))),
+      blockReadBps: spec.blockKBps == null ? null : Math.round(spec.blockKBps[0] * 1_000 * (0.8 + 0.4 * wave(now, 17_000, i + 3))),
+      blockWriteBps: spec.blockKBps == null ? null : Math.round(spec.blockKBps[1] * 1_000 * (0.8 + 0.4 * wave(now, 19_000, i + 11))),
+    };
+  });
 }
 
 const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigured">, Profile> = {
@@ -597,11 +605,13 @@ function fakeContainers(
   return FAKE_CONTAINERS.map((name, i) => {
     const bad = unhealthy.has(name);
     const unverified = unknown.has(name);
+    const state = bad ? "exited" : unverified ? "unknown" : "running";
     return {
       name,
       ...fakeContainerTopology(name),
-      state: bad ? "exited" : unverified ? "unknown" : "running",
+      state,
       health: bad ? "unhealthy" : unverified ? null : i % 3 === 0 ? "healthy" : null,
+      uptimeSeconds: state === "running" ? fakeUptimeSeconds(i) : null,
       restartCount: bad ? 3 : unverified ? null : 0,
       cpuFraction: bad || unverified
         ? null

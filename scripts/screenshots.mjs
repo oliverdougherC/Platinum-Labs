@@ -163,14 +163,28 @@ const KINETIC_SHOTS = [
     h: 1080,
   },
   {
-    name: "36-v42-qb-download-panel-short-1920x1080",
+    name: "36-v42-container-tooltip-high-cpu-1920x1080",
+    scenario: "container-field-real",
+    w: 1920,
+    h: 1080,
+    action: "kinetic-tooltip-hover:Image ML",
+  },
+  {
+    name: "37-v42-container-tooltip-low-cpu-1280x720",
+    scenario: "container-field-real",
+    w: 1280,
+    h: 720,
+    action: "kinetic-tooltip-focus:vaultwarden",
+  },
+  {
+    name: "38-v42-qb-download-panel-short-1920x1080",
     scenario: "downloads",
     w: 1920,
     h: 1080,
     action: "kinetic-download-panel",
   },
   {
-    name: "37-v42-qb-download-panel-scroll-1920x1080",
+    name: "39-v42-qb-download-panel-scroll-1920x1080",
     scenario: "downloads-many",
     w: 1920,
     h: 1080,
@@ -349,6 +363,27 @@ async function validateKineticShot(page, shot) {
       throw new Error(`keyboard focus did not enter the keyboard-scroll target (${shot.name})`);
     }
   }
+  if (shot.action?.startsWith("kinetic-tooltip-")) {
+    const tooltip = page.locator("[data-kinetic-container-tooltip]");
+    if ((await tooltip.count()) !== 1) {
+      throw new Error(`container metric tooltip missing (${shot.name})`);
+    }
+    await assertInsideViewport(tooltip, page, "container tooltip");
+    const text = (await tooltip.innerText()).trim();
+    if (!/CPU \d+(?:\.\d+)?%/.test(text) || !/\d+(?:\.\d+)? [kMGT]?B/.test(text)) {
+      throw new Error(`container tooltip lacks CPU or memory (${shot.name}): ${text}`);
+    }
+    if (/network|block|health|image|path|container id/i.test(text.replace("Image ML", ""))) {
+      throw new Error(`container tooltip contains extra metric clutter (${shot.name}): ${text}`);
+    }
+    const cpu = Number(text.match(/CPU (\d+(?:\.\d+)?)%/)?.[1]);
+    if (shot.name.includes("high-cpu") && !(cpu > 100)) {
+      throw new Error(`high-CPU fixture did not exceed 100% (${shot.name}): ${text}`);
+    }
+    if (shot.name.includes("low-cpu") && !(cpu > 0 && cpu < 10)) {
+      throw new Error(`low-CPU fixture was not low and non-zero (${shot.name}): ${text}`);
+    }
+  }
   if (shot.transitionScenario === "docker-unavailable") {
     // Retained-identity contract: the field must persist as explicit
     // unknowns, with no live workload count asserted.
@@ -363,6 +398,21 @@ async function validateKineticShot(page, shot) {
 }
 
 async function performShotAction(page, action) {
+  if (action?.startsWith("kinetic-tooltip-hover:") || action?.startsWith("kinetic-tooltip-focus:")) {
+    const separator = action.indexOf(":");
+    const cellName = action.slice(separator + 1);
+    const target = page
+      .locator("[data-kinetic-cell]")
+      .filter({ hasText: cellName })
+      .first();
+    if ((await target.count()) !== 1) {
+      throw new Error(`no kinetic cell matched tooltip target: ${cellName}`);
+    }
+    if (action.startsWith("kinetic-tooltip-hover:")) await target.hover();
+    else await target.focus();
+    await page.waitForTimeout(120);
+    return;
+  }
   if (action?.startsWith("kinetic-anchor:")) {
     const anchorId = action.slice("kinetic-anchor:".length);
     await page.locator(`[data-kinetic-anchor="${anchorId}"]`).click();

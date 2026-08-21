@@ -113,6 +113,7 @@ export interface DockerContainerModel {
   state: ContainerState;
   health: "healthy" | "unhealthy" | "starting" | null;
   restartCount: number | null;
+  uptimeSeconds: number | null;
   cpuFraction: number | null;
   memoryBytes: number | null;
   memoryScore: number;
@@ -440,6 +441,7 @@ export function buildSceneModel(
       ]);
       return {
         ...c,
+        uptimeSeconds: c.uptimeSeconds ?? null,
         memoryScore: containerMemoryScore(c.memoryBytes),
         freshness:
           t.docker.status === "available"

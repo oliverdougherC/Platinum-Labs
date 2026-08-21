@@ -44,7 +44,14 @@ import {
   layoutTreemapWithPlan,
   type TreemapBounds,
   type TreemapPlan,
+  type TreemapRect,
 } from "@/lib/kinetic/treemap";
+import {
+  buildContainerTooltip,
+  CONTAINER_TOOLTIP_HEIGHT,
+  CONTAINER_TOOLTIP_WIDTH,
+  placeContainerTooltip,
+} from "@/lib/kinetic/container-tooltip";
 import { KineticEngine } from "@/lib/kinetic/engine";
 import {
   drawKineticFrame,
@@ -61,6 +68,9 @@ export interface KineticCanvasProps {
   /** Expose bounded engine counters on window for the soak harness. */
   debugHook?: boolean;
 }
+
+const CONTAINER_TOOLTIP_ID = "kinetic-container-metrics";
+const HOVER_EXIT_DELAY_MS = 70;
 
 function useStageSize(ref: React.RefObject<HTMLDivElement | null>): { w: number; h: number } {
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -353,6 +363,45 @@ export function KineticCanvas({
   const pageVisible = usePageVisible();
   const [selection, setSelection] = useState<KineticSelection | null>(null);
   const [motionOn, setMotionOn] = useState(false);
+  const [hoveredCellId, setHoveredCellId] = useState<string | null>(null);
+  const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
+  const hoverExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const liveCellRectsRef = useRef(new Map<string, TreemapRect>());
+  const tooltipCellId = selection?.kind === "cell"
+    ? null
+    : hoveredCellId ?? focusedCellId;
+  const tooltipCellIdRef = useRef<string | null>(tooltipCellId);
+  tooltipCellIdRef.current = tooltipCellId;
+
+  const showHoveredCell = useCallback((id: string) => {
+    if (hoverExitTimerRef.current !== null) {
+      clearTimeout(hoverExitTimerRef.current);
+      hoverExitTimerRef.current = null;
+    }
+    setHoveredCellId(id);
+  }, []);
+  const hideHoveredCell = useCallback((id: string) => {
+    if (hoverExitTimerRef.current !== null) clearTimeout(hoverExitTimerRef.current);
+    hoverExitTimerRef.current = setTimeout(() => {
+      setHoveredCellId((current) => (current === id ? null : current));
+      hoverExitTimerRef.current = null;
+    }, HOVER_EXIT_DELAY_MS);
+  }, []);
+  const showFocusedCell = useCallback((id: string) => {
+    if (hoverExitTimerRef.current !== null) {
+      clearTimeout(hoverExitTimerRef.current);
+      hoverExitTimerRef.current = null;
+    }
+    setHoveredCellId(null);
+    setFocusedCellId(id);
+  }, []);
+  useEffect(
+    () => () => {
+      if (hoverExitTimerRef.current !== null) clearTimeout(hoverExitTimerRef.current);
+    },
+    [],
+  );
   const downloadRows = useStableDownloadRows(snapshot);
   const downloadPanel = useDownloadPanelPresence();
   const downloadTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -444,6 +493,7 @@ export function KineticCanvas({
     );
     treemapPlanRef.current = treemap.plan;
     const cellRects = treemap.rectById;
+    liveCellRectsRef.current = cellRects;
     // Paint and interaction geometry share the same eased rectangles. Direct
     // style writes avoid a React render on every animation frame while keeping
     // pointer and focus targets attached to the tile a reviewer actually sees.
@@ -477,6 +527,13 @@ export function KineticCanvas({
           h: rect.h,
         });
       }
+    }
+    const tooltipElement = tooltipRef.current;
+    const activeTooltipId = tooltipCellIdRef.current;
+    const activeTooltipRect = activeTooltipId ? cellRects.get(activeTooltipId) : null;
+    if (tooltipElement && activeTooltipRect) {
+      const position = placeContainerTooltip(activeTooltipRect, currentLayout);
+      tooltipElement.style.transform = `translate3d(${position.left}px, ${position.top}px, 0)`;
     }
     drawKineticFrame(ctx, visualState, currentLayout, { t, still, marks, cellRects });
   }, []);
@@ -644,6 +701,27 @@ export function KineticCanvas({
     return map;
   }, [scene]);
 
+  const tooltipCell = useMemo(
+    () =>
+      tooltipCellId === null
+        ? null
+        : scene.field
+            .flatMap((group) => group.cells)
+            .find((cell) => cell.id === tooltipCellId) ?? null,
+    [scene, tooltipCellId],
+  );
+  const tooltipContent = tooltipCell ? buildContainerTooltip(tooltipCell) : null;
+  const tooltipTarget =
+    tooltipCellId === null || layout === null
+      ? null
+      : liveCellRectsRef.current.get(tooltipCellId) ??
+        layout.groups
+          .flatMap((group) => group.cells)
+          .find((cell) => cell.id === tooltipCellId) ??
+        null;
+  const tooltipPosition =
+    tooltipTarget && layout ? placeContainerTooltip(tooltipTarget, layout) : null;
+
   const compact = layout !== null && layout.w < 768;
 
   return (
@@ -675,6 +753,11 @@ export function KineticCanvas({
           toggle={toggle}
           cellsById={cellsById}
           cellRefs={cellButtonRefs}
+          activeTooltipId={tooltipCellId}
+          onCellPointerEnter={showHoveredCell}
+          onCellPointerLeave={hideHoveredCell}
+          onCellFocus={showFocusedCell}
+          onCellBlur={(id) => setFocusedCellId((current) => (current === id ? null : current))}
           surfaceLabel={surfaceLabel}
           downloadPanelOpen={downloadPanel.phase !== "closed"}
           openDownloadPanel={downloadPanel.open}
@@ -699,6 +782,37 @@ export function KineticCanvas({
           triggerRef={downloadTriggerRef}
           onBlur={blurDownloadRegion}
         />
+      ) : null}
+
+      {tooltipContent && tooltipPosition ? (
+        <div
+          ref={tooltipRef}
+          id={CONTAINER_TOOLTIP_ID}
+          data-kinetic-container-tooltip
+          role="tooltip"
+          className="pointer-events-none absolute left-0 top-0 z-20 box-border h-[72px] w-[232px] rounded-md border border-white/[0.10] bg-[#0d1118]/[0.97] px-3.5 py-2.5 shadow-[0_10px_32px_rgba(0,0,0,0.48)] backdrop-blur-sm"
+          style={{
+            width: CONTAINER_TOOLTIP_WIDTH,
+            height: CONTAINER_TOOLTIP_HEIGHT,
+            transform: `translate3d(${tooltipPosition.left}px, ${tooltipPosition.top}px, 0)`,
+          }}
+        >
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3">
+            <div className="whitespace-nowrap text-[12px] font-medium tracking-[0.01em] text-fg">
+              {tooltipContent.name}
+            </div>
+            <div className="tnum whitespace-nowrap text-right text-[11px] text-muted">
+              {tooltipContent.uptime}
+            </div>
+          </div>
+          <div className="my-2 h-px bg-white/[0.08]" />
+          <div className="grid grid-cols-[1fr_auto] items-baseline gap-3 text-[11px]">
+            <div className="tnum whitespace-nowrap text-muted">{tooltipContent.cpu}</div>
+            <div className="tnum whitespace-nowrap text-right text-fg/90">
+              {tooltipContent.memory}
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {inspector && layout ? (
@@ -909,6 +1023,11 @@ function KineticOverlay({
   toggle,
   cellsById,
   cellRefs,
+  activeTooltipId,
+  onCellPointerEnter,
+  onCellPointerLeave,
+  onCellFocus,
+  onCellBlur,
   surfaceLabel,
   downloadPanelOpen,
   openDownloadPanel,
@@ -924,6 +1043,11 @@ function KineticOverlay({
   toggle: (next: KineticSelection, initiator: HTMLElement | null) => void;
   cellsById: Map<string, { name: string; label: string }>;
   cellRefs: React.MutableRefObject<Map<string, HTMLButtonElement>>;
+  activeTooltipId: string | null;
+  onCellPointerEnter: (id: string) => void;
+  onCellPointerLeave: (id: string) => void;
+  onCellFocus: (id: string) => void;
+  onCellBlur: (id: string) => void;
   surfaceLabel: string;
   downloadPanelOpen: boolean;
   openDownloadPanel: () => void;
@@ -1137,7 +1261,16 @@ function KineticOverlay({
                   }}
                   tabIndex={placed.id === activeRovingId ? 0 : -1}
                   aria-label={`${info.name}; ${info.label}${cell.attention ? "; needs attention" : ""}`}
-                  onFocus={() => setRovingId(placed.id)}
+                  aria-describedby={
+                    activeTooltipId === placed.id ? CONTAINER_TOOLTIP_ID : undefined
+                  }
+                  onPointerEnter={() => onCellPointerEnter(placed.id)}
+                  onPointerLeave={() => onCellPointerLeave(placed.id)}
+                  onFocus={() => {
+                    setRovingId(placed.id);
+                    onCellFocus(placed.id);
+                  }}
+                  onBlur={() => onCellBlur(placed.id)}
                   onClick={(event) =>
                     toggle({ kind: "cell", id: placed.id }, event.currentTarget)
                   }

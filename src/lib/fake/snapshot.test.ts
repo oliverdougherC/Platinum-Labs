@@ -211,6 +211,15 @@ describe("required scenario characteristics", () => {
       expect.objectContaining({ from: "host:control", to: "service:seerr" }),
     ]));
   });
+
+  it("container uptime is deterministic for running containers and null for unknown or exited ones", () => {
+    const docker = makeFakeSnapshot("container-field-real", NOW).telemetry.docker.value!;
+    const byName = Object.fromEntries(docker.containers.map((container) => [container.name, container]));
+    expect(byName.jellyfin!.uptimeSeconds).toBeGreaterThan(0);
+    expect(byName.cadvisor!.uptimeSeconds).toBeGreaterThan(0);
+    expect(byName.flaresolverr!.uptimeSeconds).toBeNull();
+    expect(byName.recyclarr!.uptimeSeconds).toBeNull();
+  });
 });
 
 describe("fake mode performs no network I/O", () => {
