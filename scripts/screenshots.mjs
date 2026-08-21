@@ -115,7 +115,7 @@ const KINETIC_SHOTS = [
   { name: "16-v4-cpu-gpu-load-1920x1080", scenario: "gpu-workload", w: 1920, h: 1080 },
   { name: "17-v4-jellyfin-inspector-1920x1080", scenario: "active", w: 1920, h: 1080, action: "kinetic-anchor:jellyfin" },
   { name: "18-v4-qbittorrent-inspector-1920x1080", scenario: "downloads", w: 1920, h: 1080, action: "kinetic-anchor:qbittorrent" },
-  { name: "19-v4-workload-inspector-1920x1080", scenario: "container-field-real", w: 1920, h: 1080, action: "kinetic-cell:unpackerr" },
+  { name: "19-v4-workload-inspector-1920x1080", scenario: "container-field-real", w: 1920, h: 1080, action: "kinetic-cell:vaultwarden" },
   { name: "20-v4-reduced-motion-1920x1080", scenario: "active", w: 1920, h: 1080, reducedMotion: true },
   { name: "21-v4-stale-1920x1080", scenario: "stale", w: 1920, h: 1080 },
   { name: "22-v4-confirmed-zero-1920x1080", scenario: "confirmed-zero", w: 1920, h: 1080 },
@@ -328,12 +328,11 @@ async function performShotAction(page, action) {
   }
   if (action?.startsWith("kinetic-cell:")) {
     const cellName = action.slice("kinetic-cell:".length);
-    // Cells are keyed by container id; target them by accessible name so the
-    // evidence exercises exactly what a keyboard/screen-reader user gets.
+    // Treemap tiles intentionally keep small names out of visible pixels, but
+    // every tile retains its complete accessible name.
+    const escapedName = cellName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     await page
-      .locator("[data-kinetic-cell]")
-      .filter({ has: page.locator(`text="${cellName}"`) })
-      .first()
+      .getByRole("button", { name: new RegExp(`^${escapedName};`, "i") })
       .click();
     await page.waitForTimeout(200);
     return;
