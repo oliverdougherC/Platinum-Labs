@@ -340,7 +340,9 @@ export function buildKineticStage(scene: KineticScene, w: number, h: number): Ki
 
   // Workload field: one fixed resource canvas. Raw positive memory is the
   // only area weight; unknown/zero memory is omitted rather than fabricated.
-  // Stable hashed tree branches keep ordinary 2-second updates continuous.
+  // Stable identity ordering prevents weight-rank reshuffles; balanced
+  // longest-side splits keep real-scale rectangles legible while ordinary
+  // updates stay continuous.
   const fieldTop = bandH + stageH * 0.5;
   const labelY = storageTop - Math.max(h * 0.03, 22);
   const field: TreemapBounds = {

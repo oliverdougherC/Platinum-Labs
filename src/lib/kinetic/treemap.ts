@@ -1,13 +1,17 @@
 /**
- * Stable weighted-binary treemap used by the kinetic container field.
+ * Stable aspect-ratio-aware binary treemap used by the kinetic container field.
  *
- * A container's stable identity chooses a persistent branch in the binary
- * partition tree. Each hash-bit depth has a fixed split axis and each branch
- * divides according to the exact sum of its children's weights. That gives us
- * three useful properties:
+ * Containers have one deterministic identity order, then a balanced topology
+ * is planned by splitting nearest half of the initial weight along each
+ * rectangle's longest side. A mounted field reuses that topology while live
+ * weights move only its boundaries. Stable ordering avoids weight-rank
+ * crossings, while balanced longest-side subdivision prevents pathological
+ * full-field strips without allowing telemetry changes to flip the topology.
+ * Together those choices give us four useful properties:
  * every positive item is represented, area is exactly proportional to raw
  * memory, and changing a weight moves existing boundaries continuously instead
- * of re-sorting the whole field on small rank crossings.
+ * of re-sorting the whole field on small rank crossings, with substantially
+ * better rectangle aspect ratios at real homelab scale.
  */
 
 export interface TreemapItem {
@@ -29,6 +33,33 @@ export interface TreemapRect extends TreemapBounds {
 
 interface RankedItem extends TreemapItem {
   rank: number;
+}
+
+interface TreemapPlanLeaf {
+  kind: "leaf";
+  id: string;
+  weight: number;
+}
+
+interface TreemapPlanBranch {
+  kind: "branch";
+  splitWidth: boolean;
+  weight: number;
+  left: TreemapPlanNode;
+  right: TreemapPlanNode;
+}
+
+type TreemapPlanNode = TreemapPlanLeaf | TreemapPlanBranch;
+
+export interface TreemapPlan {
+  idsKey: string;
+  aspectRatio: number;
+  root: TreemapPlanNode;
+}
+
+export interface PlannedTreemap {
+  rects: TreemapRect[];
+  plan: TreemapPlan | null;
 }
 
 function stableRank(id: string): number {
@@ -69,76 +100,127 @@ function splitRect(
   ];
 }
 
-function place(
+function balancedSplitIndex(items: readonly RankedItem[]): number {
+  const combinedWeight = total(items);
+  let leftWeight = 0;
+  let splitIndex = 1;
+  let closestDelta = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < items.length; index++) {
+    leftWeight += items[index - 1]!.weight;
+    const delta = Math.abs(combinedWeight / 2 - leftWeight);
+    if (delta < closestDelta) {
+      closestDelta = delta;
+      splitIndex = index;
+    }
+  }
+  return splitIndex;
+}
+
+function buildPlanNode(
   items: readonly RankedItem[],
   bounds: TreemapBounds,
-  bit: number,
-  out: TreemapRect[],
-): void {
-  if (items.length === 0) return;
+): TreemapPlanNode {
   if (items.length === 1) {
-    const item = items[0]!;
-    out.push({ id: item.id, weight: item.weight, ...bounds });
-    return;
+    return { kind: "leaf", id: items[0]!.id, weight: items[0]!.weight };
   }
-
-  // A hash collision is extremely unlikely, but identity still needs a
-  // deterministic layout if it happens.
-  if (bit < 0) {
-    const ordered = [...items].sort((a, b) => a.id.localeCompare(b.id));
-    const midpoint = Math.ceil(ordered.length / 2);
-    const fallbackLeft = ordered.slice(0, midpoint);
-    const fallbackRight = ordered.slice(midpoint);
-    const fallbackLeftWeight = total(fallbackLeft);
-    const fallbackCombined = fallbackLeftWeight + total(fallbackRight);
-    const [fallbackLeftBounds, fallbackRightBounds] = splitRect(
-      bounds,
-      fallbackCombined > 0 ? fallbackLeftWeight / fallbackCombined : 0.5,
-      true,
-    );
-    place(fallbackLeft, fallbackLeftBounds, -1, out);
-    place(fallbackRight, fallbackRightBounds, -1, out);
-    return;
-  }
-
-  const left: RankedItem[] = [];
-  const right: RankedItem[] = [];
-  for (const item of items) {
-    ((item.rank >>> bit) & 1 ? right : left).push(item);
-  }
-
-  // Preserve unary hash-trie levels instead of compressing them. Advancing
-  // the fixed axis schedule through an empty branch means adding/removing a
-  // near-zero item converges to the exact same geometry as the absent state.
-  if (left.length === 0) {
-    place(right, bounds, bit - 1, out);
-    return;
-  }
-  if (right.length === 0) {
-    place(left, bounds, bit - 1, out);
-    return;
-  }
-
+  const combinedWeight = total(items);
+  const splitIndex = balancedSplitIndex(items);
+  const left = items.slice(0, splitIndex);
+  const right = items.slice(splitIndex);
   const leftWeight = total(left);
-  const combinedWeight = leftWeight + total(right);
+  const splitWidth = bounds.w >= bounds.h;
   const [leftBounds, rightBounds] = splitRect(
     bounds,
     combinedWeight > 0 ? leftWeight / combinedWeight : 0.5,
-    (31 - bit) % 2 === 0,
+    splitWidth,
   );
-  place(left, leftBounds, bit - 1, out);
-  place(right, rightBounds, bit - 1, out);
+  return {
+    kind: "branch",
+    splitWidth,
+    weight: combinedWeight,
+    left: buildPlanNode(left, leftBounds),
+    right: buildPlanNode(right, rightBounds),
+  };
+}
+
+function updatePlanWeights(
+  node: TreemapPlanNode,
+  items: ReadonlyMap<string, RankedItem>,
+): number {
+  if (node.kind === "leaf") {
+    node.weight = items.get(node.id)?.weight ?? 0;
+    return node.weight;
+  }
+  node.weight =
+    updatePlanWeights(node.left, items) + updatePlanWeights(node.right, items);
+  return node.weight;
+}
+
+function placePlan(
+  node: TreemapPlanNode,
+  items: ReadonlyMap<string, RankedItem>,
+  bounds: TreemapBounds,
+  out: TreemapRect[],
+): void {
+  if (node.kind === "leaf") {
+    const item = items.get(node.id);
+    if (item) out.push({ id: item.id, weight: item.weight, ...bounds });
+    return;
+  }
+  const leftWeight = node.left.weight;
+  const rightWeight = node.right.weight;
+  const combinedWeight = leftWeight + rightWeight;
+  const [leftBounds, rightBounds] = splitRect(
+    bounds,
+    combinedWeight > 0 ? leftWeight / combinedWeight : 0.5,
+    node.splitWidth,
+  );
+  placePlan(node.left, items, leftBounds, out);
+  placePlan(node.right, items, rightBounds, out);
+}
+
+function rankedItems(items: readonly TreemapItem[]): RankedItem[] {
+  return items
+    .filter((item) => positiveWeight(item.weight))
+    .map((item) => ({ ...item, rank: stableRank(item.id) }))
+    .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+}
+
+function idsKey(items: readonly RankedItem[]): string {
+  return items.map((item) => item.id).join("\0");
+}
+
+export function layoutTreemapWithPlan(
+  items: readonly TreemapItem[],
+  bounds: TreemapBounds,
+  previous: TreemapPlan | null = null,
+): PlannedTreemap {
+  const measured = rankedItems(items);
+  if (measured.length === 0 || bounds.w <= 0 || bounds.h <= 0) {
+    return { rects: [], plan: null };
+  }
+  const key = idsKey(measured);
+  const aspectRatio = bounds.w / bounds.h;
+  const plan =
+    previous &&
+    previous.idsKey === key &&
+    Math.abs(previous.aspectRatio - aspectRatio) < 0.01
+      ? previous
+      : {
+          idsKey: key,
+          aspectRatio,
+          root: buildPlanNode(measured, bounds),
+        };
+  const byId = new Map(measured.map((item) => [item.id, item]));
+  updatePlanWeights(plan.root, byId);
+  const rects: TreemapRect[] = [];
+  placePlan(plan.root, byId, bounds, rects);
+  return { rects, plan };
 }
 
 export function layoutTreemap(
   items: readonly TreemapItem[],
   bounds: TreemapBounds,
 ): TreemapRect[] {
-  const measured = items
-    .filter((item) => positiveWeight(item.weight))
-    .map((item) => ({ ...item, rank: stableRank(item.id) }));
-  if (measured.length === 0 || bounds.w <= 0 || bounds.h <= 0) return [];
-  const out: TreemapRect[] = [];
-  place(measured, bounds, 31, out);
-  return out;
+  return layoutTreemapWithPlan(items, bounds).rects;
 }

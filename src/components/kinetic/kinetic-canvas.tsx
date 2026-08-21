@@ -35,7 +35,11 @@ import {
   buildKineticLayout,
   type KineticLayout,
 } from "@/lib/kinetic/layout";
-import { layoutTreemap, type TreemapRect } from "@/lib/kinetic/treemap";
+import {
+  layoutTreemapWithPlan,
+  type TreemapPlan,
+  type TreemapRect,
+} from "@/lib/kinetic/treemap";
 import { KineticEngine } from "@/lib/kinetic/engine";
 import {
   drawKineticFrame,
@@ -259,6 +263,7 @@ export function KineticCanvas({
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const cellButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const treemapPlanRef = useRef<TreemapPlan | null>(null);
   const { w, h } = useStageSize(stageRef);
   const reducedMotion = useReducedMotion();
   const pageVisible = usePageVisible();
@@ -305,11 +310,14 @@ export function KineticCanvas({
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const visualState = engine.visualState();
+    const treemap = layoutTreemapWithPlan(
+      visualState.cells.map((cell) => ({ id: cell.id, weight: cell.weight })),
+      currentLayout.field,
+      treemapPlanRef.current,
+    );
+    treemapPlanRef.current = treemap.plan;
     const cellRects = new Map<string, TreemapRect>(
-      layoutTreemap(
-        visualState.cells.map((cell) => ({ id: cell.id, weight: cell.weight })),
-        currentLayout.field,
-      ).map((rect) => [rect.id, rect]),
+      treemap.rects.map((rect) => [rect.id, rect]),
     );
     // Paint and interaction geometry share the same eased rectangles. Direct
     // style writes avoid a React render on every animation frame while keeping

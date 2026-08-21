@@ -1,10 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { layoutTreemap, type TreemapRect } from "./treemap";
+import { makeFakeSnapshot } from "@/lib/fake/snapshot";
+import {
+  layoutTreemap,
+  layoutTreemapWithPlan,
+  type TreemapPlan,
+  type TreemapRect,
+} from "./treemap";
+
+const NOW = Date.UTC(2026, 7, 15, 12, 0, 0);
 
 function overlap(a: TreemapRect, b: TreemapRect): number {
   return (
     Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) *
     Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y))
+  );
+}
+
+function aspectRatio(rect: TreemapRect): number {
+  return Math.max(rect.w / rect.h, rect.h / rect.w);
+}
+
+function fixtureItems(scenario: "container-field-real" | "container-field-stress") {
+  return makeFakeSnapshot(scenario, NOW).telemetry.docker.value!.containers.flatMap(
+    (container) =>
+      container.memoryBytes !== null && container.memoryBytes > 0
+        ? [{ id: container.stableId ?? container.name, weight: container.memoryBytes }]
+        : [],
   );
 }
 
@@ -104,6 +125,57 @@ describe("layoutTreemap", () => {
       expect(Math.abs(rect.y - previous.y)).toBeLessThan(0.00001);
       expect(Math.abs(rect.w - previous.w)).toBeLessThan(0.00001);
       expect(Math.abs(rect.h - previous.h)).toBeLessThan(0.00001);
+    }
+  });
+
+  it.each([
+    ["container-field-real", 12, 9],
+    ["container-field-stress", 14, 7],
+  ] as const)(
+    "controls pathological aspect ratios for the %s fixture",
+    (scenario, maxAllowed, p95Allowed) => {
+      const rects = layoutTreemap(fixtureItems(scenario), {
+        x: 192,
+        y: 588,
+        w: 1536,
+        h: 290,
+      });
+      const ratios = rects.map(aspectRatio).sort((a, b) => a - b);
+      const p95 = ratios[Math.floor((ratios.length - 1) * 0.95)]!;
+      expect(Math.max(...ratios)).toBeLessThan(maxAllowed);
+      expect(p95).toBeLessThan(p95Allowed);
+    },
+  );
+
+  it("redistributes the real field sanely throughout a large eased memory change", () => {
+    const bounds = { x: 0, y: 0, w: 1024, h: 230 };
+    const items = fixtureItems("container-field-real");
+    const growing = items.find((item) => item.id.includes("immich-machine-learning"))!;
+    let plan: TreemapPlan | null = null;
+    let first = layoutTreemapWithPlan(items, bounds, plan);
+    plan = first.plan;
+    let previous = new Map(first.rects.map((rect) => [rect.id, rect]));
+    for (let scale = 1.005; scale <= 8; scale *= 1.005) {
+      const result = layoutTreemapWithPlan(
+        items.map((item) =>
+          item.id === growing.id ? { ...item, weight: item.weight * scale } : item,
+        ),
+        bounds,
+        plan,
+      );
+      plan = result.plan;
+      const next = result.rects;
+      for (const rect of next) {
+        const before = previous.get(rect.id)!;
+        const largestEdgeStep = Math.max(
+          Math.abs(rect.x - before.x),
+          Math.abs(rect.y - before.y),
+          Math.abs(rect.w - before.w),
+          Math.abs(rect.h - before.h),
+        );
+        expect(largestEdgeStep).toBeLessThan(8);
+      }
+      previous = new Map(next.map((rect) => [rect.id, rect]));
     }
   });
 });
