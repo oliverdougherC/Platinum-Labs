@@ -81,7 +81,7 @@ export interface AnchorModel {
 }
 
 export interface OrchestratorModel {
-  id: "seerr" | "sonarr" | "radarr";
+  id: "sonarr" | "radarr";
   label: string;
   status: BodyStatus;
   active: boolean;
@@ -444,16 +444,20 @@ export function rateIntensity(bps: number): number {
 
 function orchestration(scene: SceneModel): OrchestratorModel[] {
   const out: OrchestratorModel[] = [];
-  for (const id of ["seerr", "sonarr", "radarr"] as const) {
+  for (const id of ["sonarr", "radarr"] as const) {
     const body = scene.services.find((s) => s.id === id);
     if (!body) continue;
-    let detail = body.detail;
-    if ((id === "sonarr" || id === "radarr") && body.count && body.count > 0) {
-      detail = body.detail ?? `${body.count} queued`;
-    }
+    const detail =
+      body.status === "down"
+        ? "unavailable"
+        : body.status === "degraded"
+          ? "degraded"
+          : body.active && body.count !== null
+            ? `${body.count} active`
+            : "idle";
     out.push({
       id,
-      label: id === "seerr" ? "Requests" : body.label,
+      label: body.label,
       status: body.status,
       active: body.active,
       detail,
@@ -623,11 +627,6 @@ function toneOf(flow: FlowObservation): KineticFlow["tone"] {
 function buildFlows(scene: SceneModel): KineticFlow[] {
   const out: KineticFlow[] = [];
   for (const flow of scene.flows) {
-    // Control-plane orchestration (Arr → downloader) stays implicit in
-    // overview: the orchestration row sits directly above the anchor and a
-    // drawn line would be topology exposure, not information. `organize`
-    // keeps a visible whisper because it is the only sign of an import.
-    if (flow.kind === "control") continue;
     const wanSide = flow.kind === "wan-transfer" ? "network" : "service-side";
     const from = poolRef(flow.from, wanSide);
     const to = poolRef(flow.to, flow.kind === "egress" ? "service-side" : wanSide);

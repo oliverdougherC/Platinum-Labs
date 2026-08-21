@@ -84,10 +84,33 @@ describe("buildKineticScene", () => {
     expect(sceneAnimates(s)).toBe(true);
   });
 
-  it("never draws control-plane orchestration as a flow in overview", () => {
-    for (const id of ["downloads", "active", "importing"] as const) {
-      expect(scene(id).flows.some((f) => f.kind === "control")).toBe(false);
+  it("shows truthful Arr control cues without inventing throughput", () => {
+    const controls = scene("downloads").flows.filter((flow) => flow.kind === "control");
+    expect(controls).toHaveLength(2);
+    expect(controls.map((flow) => flow.id).sort()).toEqual([
+      "control:radarr->qbittorrent",
+      "control:sonarr->qbittorrent",
+    ]);
+    for (const flow of controls) {
+      expect(flow).toMatchObject({
+        treatment: "state-only",
+        tone: "control",
+        rateBps: null,
+      });
+      expect(flow.from.kind).toBe("orchestrator");
+      expect(flow.to).toEqual({ kind: "anchor", id: "qbittorrent" });
     }
+  });
+
+  it("centers only Sonarr and Radarr with explicit idle or active detail", () => {
+    expect(scene("idle").orchestration).toEqual([
+      expect.objectContaining({ id: "sonarr", active: false, detail: "idle" }),
+      expect.objectContaining({ id: "radarr", active: false, detail: "idle" }),
+    ]);
+    expect(scene("downloads").orchestration).toEqual([
+      expect.objectContaining({ id: "sonarr", active: true, detail: "2 active" }),
+      expect.objectContaining({ id: "radarr", active: true, detail: "1 active" }),
+    ]);
   });
 
   it("models cross-pool import as a pool-to-pool copy plus an organize whisper", () => {

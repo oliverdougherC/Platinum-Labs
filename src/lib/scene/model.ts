@@ -342,7 +342,9 @@ function serviceModel(
   }
   // sonarr / radarr
   const items = snapshot.acquisition.items.filter(
-    (i) => i.source === id && i.state !== "completed",
+    (i) =>
+      i.source === id &&
+      (i.state === "searching" || i.state === "downloading" || i.state === "importing"),
   );
   return {
     id,
@@ -350,9 +352,9 @@ function serviceModel(
     status,
     active:
       status === "ok" &&
-      items.some((i) => i.state === "downloading" || i.state === "importing"),
+      items.length > 0,
     count: items.length > 0 ? items.length : null,
-    detail: items.some((i) => i.state === "importing") ? "importing" : null,
+    detail: items.length > 0 ? "active" : null,
   };
 }
 
