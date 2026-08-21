@@ -10,7 +10,9 @@
  * the flow IDENTITY stays fixed while its magnitude moves through
  * low → medium → high → medium → low, which is exactly the case the phase-
  * continuity contract must survive. Dev-only capture affordance — the truth
- * pipeline itself is never touched.
+ * pipeline itself is never touched. PLA-281 adds the equivalent deterministic
+ * memory-scale hook for one stable container identity so the evidence harness
+ * can record it taking area from its peers over successive samples.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -35,6 +37,7 @@ export function KineticFlowLab({
   const [scenario, setScenario] = useState<FakeScenario>(initialScenario);
   const [now, setNow] = useState(initialNow);
   const [rateScale, setRateScale] = useState(1);
+  const [containerMemoryScale, setContainerMemoryScale] = useState(1);
   useEffect(() => setScenario(initialScenario), [initialScenario]);
   useEffect(() => setNow(initialNow), [initialNow]);
 
@@ -50,6 +53,7 @@ export function KineticFlowLab({
     const devWindow = window as unknown as {
       __homelabSetScenario?: (next: string) => void;
       __homelabSetRateScale?: (scale: number) => void;
+      __homelabSetContainerMemoryScale?: (scale: number) => void;
     };
     devWindow.__homelabSetScenario = (next) => {
       if (isScenario(next)) setScenario(next);
@@ -57,15 +61,21 @@ export function KineticFlowLab({
     devWindow.__homelabSetRateScale = (scale) => {
       if (Number.isFinite(scale) && scale >= 0 && scale <= 64) setRateScale(scale);
     };
+    devWindow.__homelabSetContainerMemoryScale = (scale) => {
+      if (Number.isFinite(scale) && scale >= 0.05 && scale <= 16) {
+        setContainerMemoryScale(scale);
+      }
+    };
     return () => {
       delete devWindow.__homelabSetScenario;
       delete devWindow.__homelabSetRateScale;
+      delete devWindow.__homelabSetContainerMemoryScale;
     };
   }, []);
 
   const snapshot = useMemo(() => {
     const base = makeFakeSnapshot(scenario, now);
-    if (rateScale === 1) return base;
+    if (rateScale === 1 && containerMemoryScale === 1) return base;
     const scaled = structuredClone(base);
     const rollup = scaled.acquisition.rollup;
     if (rollup.aggregateRateBps !== null) {
@@ -74,8 +84,14 @@ export function KineticFlowLab({
     if (rollup.uploadRateBps !== null && rollup.uploadRateBps !== undefined) {
       rollup.uploadRateBps = Math.round(rollup.uploadRateBps * rateScale);
     }
+    const growing = scaled.telemetry.docker.value?.containers.find(
+      (container) => container.name === "immich-machine-learning",
+    );
+    if (growing?.memoryBytes !== null && growing?.memoryBytes !== undefined) {
+      growing.memoryBytes = Math.round(growing.memoryBytes * containerMemoryScale);
+    }
     return scaled;
-  }, [scenario, now, rateScale]);
+  }, [scenario, now, rateScale, containerMemoryScale]);
 
   return (
     <KineticCanvas

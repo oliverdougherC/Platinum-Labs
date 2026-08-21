@@ -82,6 +82,15 @@ SECTOR_BYTES = 512  # /proc/diskstats sector counts are always 512-byte units
 SAFE_DOCKER_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 SAFE_DOCKER_ID = re.compile(r"^[a-f0-9]{12,64}$")
 MAX_DOCKER_NETWORKS = 16
+DOCKER_UPTIME_UNITS = {
+    "second": 1,
+    "minute": 60,
+    "hour": 60 * 60,
+    "day": 24 * 60 * 60,
+    "week": 7 * 24 * 60 * 60,
+    "month": 30 * 24 * 60 * 60,
+    "year": 365 * 24 * 60 * 60,
+}
 
 if not TOKEN:
     print("[zfs-collector] refusing to start: ZFS_COLLECTOR_TOKEN is required", file=sys.stderr)
@@ -650,6 +659,34 @@ def _safe_network_names(entry):
     return names or None
 
 
+def _parse_docker_uptime_seconds(state, status_text):
+    if state != "running" or not isinstance(status_text, str):
+        return None
+    text = status_text.strip()
+    if not text.lower().startswith("up "):
+        return None
+    text = re.sub(r"\s*\([^)]*\)\s*$", "", text[3:]).strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    if text == "less than a second":
+        return 0
+    about = re.fullmatch(r"about an? (\w+)", text)
+    if about:
+        unit = about.group(1)
+        return DOCKER_UPTIME_UNITS.get(unit)
+    one = re.fullmatch(r"an? (\w+)", text)
+    if one:
+        unit = one.group(1)
+        seconds = DOCKER_UPTIME_UNITS.get(unit)
+        return seconds if seconds is not None else None
+    quantified = re.fullmatch(r"(\d+) (\w+?)(?:s)?", text)
+    if quantified:
+        qty = int(quantified.group(1))
+        unit = quantified.group(2)
+        seconds = DOCKER_UPTIME_UNITS.get(unit)
+        return qty * seconds if seconds is not None else None
+    return None
+
+
 def _fetch_docker(now=time.monotonic):
     if not DOCKER_PROXY_URL:
         return {"status": "not-configured"}
@@ -676,6 +713,7 @@ def _fetch_docker(now=time.monotonic):
             "name": name,
             "state": state,
             "health": health,
+            "uptimeSeconds": _parse_docker_uptime_seconds(state, status_text),
             "stableId": _stable_container_id(entry.get("Id")),
             "composeProject": _safe_docker_token(labels.get("com.docker.compose.project")),
             "composeService": _safe_docker_token(labels.get("com.docker.compose.service")),

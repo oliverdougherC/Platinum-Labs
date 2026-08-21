@@ -1,6 +1,9 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
-import { KineticApp } from "@/components/kinetic/kinetic-app";
+import {
+  KineticApp,
+  retainSingleMissingSample,
+} from "@/components/kinetic/kinetic-app";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
 
 const NOW = Date.UTC(2026, 7, 15, 12, 0, 0);
@@ -47,6 +50,74 @@ function props(scenario: Parameters<typeof makeFakeSnapshot>[0]) {
 }
 
 describe("KineticApp retained topology", () => {
+  it("retains one missing container sample as unknown, then removes it", () => {
+    const initial = makeFakeSnapshot("container-field-real", NOW).telemetry.docker.value!;
+    const first = retainSingleMissingSample(initial, new Map());
+    const omitted = {
+      ...initial,
+      containers: initial.containers.slice(1),
+    };
+    const gap = retainSingleMissingSample(omitted, first.retained);
+    expect(gap.docker.containers).toHaveLength(initial.containers.length);
+    const retained = gap.docker.containers.find(
+      (container) => container.stableId === initial.containers[0]!.stableId,
+    )!;
+    expect(retained.state).toBe("unknown");
+    expect(retained.memoryBytes).toBe(initial.containers[0]!.memoryBytes);
+    expect(retained.cpuFraction).toBeNull();
+
+    const confirmed = retainSingleMissingSample(omitted, gap.retained);
+    expect(confirmed.docker.containers).toHaveLength(initial.containers.length - 1);
+  });
+
+  it("does not consume missing-container grace on rerenders of one Docker sample", () => {
+    const initial = makeFakeSnapshot("container-field-real", NOW);
+    const omittedId = initial.telemetry.docker.value!.containers[0]!.stableId;
+    const omittedValue = {
+      ...initial.telemetry.docker.value!,
+      containers: initial.telemetry.docker.value!.containers.slice(1),
+    };
+    const omittedSample = {
+      ...initial,
+      telemetry: {
+        ...initial.telemetry,
+        docker: {
+          ...initial.telemetry.docker,
+          updatedAt: NOW + 2_000,
+          value: omittedValue,
+        },
+      },
+    };
+    const appProps = {
+      now: NOW,
+      seerrConfigured: true,
+      frozen: false,
+      devControls: false,
+    };
+    const { container, rerender } = render(
+      <KineticApp {...appProps} snapshot={initial} />,
+    );
+
+    rerender(<KineticApp {...appProps} snapshot={omittedSample} />);
+    rerender(<KineticApp {...appProps} snapshot={{ ...omittedSample }} />);
+    rerender(<KineticApp {...appProps} snapshot={{ ...omittedSample }} />);
+    expect(
+      container.querySelector(`[data-kinetic-cell="${omittedId}"]`),
+    ).not.toBeNull();
+
+    const secondDistinctSample = {
+      ...omittedSample,
+      telemetry: {
+        ...omittedSample.telemetry,
+        docker: { ...omittedSample.telemetry.docker, updatedAt: NOW + 4_000 },
+      },
+    };
+    rerender(<KineticApp {...appProps} snapshot={secondDistinctSample} />);
+    expect(
+      container.querySelector(`[data-kinetic-cell="${omittedId}"]`),
+    ).toBeNull();
+  });
+
   it("keeps the last-known workload population as explicit unknowns when Docker drops out", () => {
     const { container, rerender } = render(<KineticApp {...props("container-field-real")} />);
     const populated = container.querySelectorAll("[data-kinetic-cell]").length;

@@ -62,6 +62,7 @@ function sample(at: number, overrides: Partial<RawHostSample> = {}): RawHostSamp
           name: "jellyfin",
           state: "running",
           health: "healthy",
+          uptimeSeconds: 3_600,
           stableId: "ctr-107f331d4217e3f4",
           composeProject: "media-stack",
           composeService: "jellyfin",
@@ -79,6 +80,7 @@ function sample(at: number, overrides: Partial<RawHostSample> = {}): RawHostSamp
           name: "broken",
           state: "exited",
           health: null,
+          uptimeSeconds: null,
           restartCount: 3,
           cpuTotalNs: null,
           systemCpuNs: null,
@@ -132,6 +134,7 @@ function advance(at: number): RawHostSample {
           name: "jellyfin",
           state: "running",
           health: "healthy",
+          uptimeSeconds: 7_200,
           stableId: "ctr-107f331d4217e3f4",
           composeProject: "media-stack",
           composeService: "jellyfin",
@@ -150,6 +153,7 @@ function advance(at: number): RawHostSample {
           name: "broken",
           state: "exited",
           health: null,
+          uptimeSeconds: null,
           restartCount: 3,
           cpuTotalNs: null,
           systemCpuNs: null,
@@ -268,6 +272,7 @@ describe("normalizeHostTelemetry", () => {
     const jellyfin = docker.containers.find((c) => c.name === "jellyfin")!;
     expect(jellyfin.cpuFraction).toBeCloseTo(0.02, 5);
     expect(jellyfin.memoryBytes).toBe(600_000_000);
+    expect(jellyfin.uptimeSeconds).toBe(7_200);
     expect(jellyfin.stableId).toBe("ctr-107f331d4217e3f4");
     expect(jellyfin.composeProject).toBe("media-stack");
     expect(jellyfin.composeService).toBe("jellyfin");
@@ -279,6 +284,52 @@ describe("normalizeHostTelemetry", () => {
     const broken = docker.containers.find((c) => c.name === "broken")!;
     expect(broken.cpuFraction).toBeNull();
     expect(broken.state).toBe("exited");
+    expect(broken.uptimeSeconds).toBeNull();
+  });
+
+  it("keeps Docker uptime finite and nonnegative, otherwise null", () => {
+    const snap = normalizeHostTelemetry(sample(1000), sample(3000, {
+      docker: {
+        status: "ok",
+        sampledAt: 3000,
+        containers: [
+          {
+            name: "safe",
+            state: "running",
+            health: "healthy",
+            uptimeSeconds: 123,
+            restartCount: 0,
+            cpuTotalNs: 2,
+            systemCpuNs: 4,
+            memoryBytes: 20,
+          },
+          {
+            name: "negative",
+            state: "running",
+            health: null,
+            uptimeSeconds: -1,
+            restartCount: 0,
+            cpuTotalNs: 2,
+            systemCpuNs: 4,
+            memoryBytes: 20,
+          },
+          {
+            name: "infinite",
+            state: "running",
+            health: null,
+            uptimeSeconds: Number.POSITIVE_INFINITY,
+            restartCount: 0,
+            cpuTotalNs: 2,
+            systemCpuNs: 4,
+            memoryBytes: 20,
+          },
+        ],
+      },
+    } as Partial<RawHostSample>)).docker.value!;
+    const byName = Object.fromEntries(snap.containers.map((container) => [container.name, container]));
+    expect(byName.safe!.uptimeSeconds).toBe(123);
+    expect(byName.negative!.uptimeSeconds).toBeNull();
+    expect(byName.infinite!.uptimeSeconds).toBeNull();
   });
 
   it("keeps unfamiliar Docker runtime states explicitly unknown", () => {

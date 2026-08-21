@@ -57,7 +57,10 @@ beforeEach(() => {
   rafCb = null;
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 function pumpFrames(count: number) {
   act(() => {
@@ -80,6 +83,168 @@ function props(snapshot: DashboardSnapshot, frozen = false) {
 }
 
 describe("KineticCanvas continuity", () => {
+  it("presents Sonarr and Radarr as readable idle or active orchestrators", () => {
+    const { container, rerender } = render(
+      <KineticCanvas {...props(makeFakeSnapshot("idle", NOW))} />,
+    );
+    const orchestratorText = () =>
+      [...container.querySelectorAll("[data-kinetic-orchestrator]")].map(
+        (node) => node.textContent,
+      );
+
+    expect(orchestratorText()).toEqual(["Sonarridle", "Radarridle"]);
+    expect(orchestratorText().join(" ")).not.toContain("Requests");
+
+    rerender(<KineticCanvas {...props(makeFakeSnapshot("downloads", NOW))} />);
+    expect(orchestratorText()).toEqual(["Sonarr2 active", "Radarr1 active"]);
+
+    const flowList = container.querySelector('[aria-label="Active data flows"]')!;
+    expect(flowList.textContent).toContain("orchestration — Sonarr orchestrating qBittorrent");
+    expect(flowList.textContent).toContain("orchestration — Radarr orchestrating qBittorrent");
+    expect(flowList.textContent).not.toContain("orchestration — Sonarr orchestrating qBittorrent · rate unknown");
+  });
+
+  it("opens a compact active-download panel on qBittorrent hover and focus", () => {
+    const snapshot = structuredClone(makeFakeSnapshot("downloads", NOW));
+    snapshot.acquisition.items.push({
+      id: "arr-only",
+      source: "sonarr",
+      title: "Uncorrelated usenet acquisition",
+      quality: null,
+      state: "downloading",
+      progress: 0.4,
+      rateBps: 900_000,
+      etaSeconds: null,
+      correlationKey: null,
+    });
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="qbittorrent"]',
+    )!;
+
+    expect(container.querySelector("[data-download-panel]")).toBeNull();
+    fireEvent.mouseEnter(anchor);
+    const panel = container.querySelector("[data-download-panel]")!;
+    expect(panel).not.toBeNull();
+    expect(panel.textContent).toContain("Severance — S02E07");
+    expect(panel.textContent).toContain("63%");
+    expect(panel.textContent).toContain("7.5 MB/s");
+    expect(panel.textContent).toContain("Sinners (2025)");
+    expect(panel.textContent).not.toContain("Shrinking — S02E10");
+    expect(panel.textContent).not.toContain("Uncorrelated usenet acquisition");
+
+    fireEvent.mouseLeave(anchor);
+    fireEvent.mouseEnter(panel);
+    expect(container.querySelector("[data-download-panel]")).toBe(panel);
+
+    fireEvent.mouseLeave(panel);
+    fireEvent.focus(anchor);
+    expect(container.querySelector("[data-download-panel]")).not.toBeNull();
+  });
+
+  it("treats trigger and panel as one keyboard focus region without trapping focus", () => {
+    vi.useFakeTimers();
+    const { container } = render(
+      <KineticCanvas {...props(makeFakeSnapshot("downloads", NOW))} />,
+    );
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="qbittorrent"]',
+    )!;
+
+    act(() => anchor.focus());
+    const panel = container.querySelector<HTMLElement>("[data-download-panel]")!;
+    expect(panel).not.toBeNull();
+    expect(panel.getAttribute("role")).toBe("region");
+    expect(panel.getAttribute("aria-labelledby")).toBe(
+      "qbittorrent-download-panel-title",
+    );
+    expect(anchor.hasAttribute("aria-haspopup")).toBe(false);
+    const list = panel.querySelector<HTMLElement>("[data-download-list]")!;
+    expect(panel.querySelectorAll("li[data-download-row]")).toHaveLength(2);
+    expect(list.tabIndex).toBe(0);
+
+    fireEvent.keyDown(anchor, { key: "Tab" });
+    expect(document.activeElement).toBe(list);
+    act(() => vi.advanceTimersByTime(300));
+    expect(container.querySelector("[data-download-panel]")).toBe(panel);
+
+    fireEvent.keyDown(list, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(anchor);
+    expect(fireEvent.keyDown(list, { key: "Tab" })).toBe(true);
+
+    const outside = document.createElement("button");
+    container.append(outside);
+    fireEvent.blur(anchor, { relatedTarget: outside });
+    act(() => vi.advanceTimersByTime(300));
+    expect(container.querySelector("[data-download-panel]")).toBeNull();
+  });
+
+  it("keeps panel and row identity stable while live values update and input order changes", () => {
+    const initial = structuredClone(makeFakeSnapshot("downloads", NOW));
+    const { container, rerender } = render(<KineticCanvas {...props(initial)} />);
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="qbittorrent"]',
+    )!;
+    fireEvent.mouseEnter(anchor);
+    const panel = container.querySelector("[data-download-panel]")!;
+    const beforeRows = [...panel.querySelectorAll<HTMLElement>("[data-download-row]")];
+    const beforeIds = beforeRows.map((row) => row.dataset.downloadRow);
+
+    const next = structuredClone(initial);
+    next.acquisition.items.reverse();
+    const severance = next.acquisition.items.find((item) => item.id === "q-1")!;
+    severance.progress = 0.71;
+    severance.rateBps = 8_400_000;
+    rerender(<KineticCanvas {...props(next)} />);
+
+    const updatedPanel = container.querySelector("[data-download-panel]")!;
+    const afterRows = [...updatedPanel.querySelectorAll<HTMLElement>("[data-download-row]")];
+    expect(updatedPanel).toBe(panel);
+    expect(afterRows.map((row) => row.dataset.downloadRow)).toEqual(beforeIds);
+    for (let index = 0; index < beforeRows.length; index++) {
+      expect(afterRows[index]).toBe(beforeRows[index]);
+    }
+    expect(updatedPanel.textContent).toContain("71%");
+    expect(updatedPanel.textContent).toContain("8.4 MB/s");
+  });
+
+  it("focuses the actual scroll container for the deterministic long-download fixture", () => {
+    const { container } = render(
+      <KineticCanvas {...props(makeFakeSnapshot("downloads-many", NOW))} />,
+    );
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="qbittorrent"]',
+    )!;
+    fireEvent.focus(anchor);
+    const panel = container.querySelector("[data-download-panel]")!;
+    expect(panel.querySelectorAll("[data-download-row]")).toHaveLength(12);
+    const list = panel.querySelector<HTMLElement>("[data-download-list]")!;
+    expect(list.className).toContain("max-h-");
+    expect(list.className).toContain("overflow-y-auto");
+    fireEvent.keyDown(anchor, { key: "Tab" });
+    expect(document.activeElement).toBe(list);
+    expect(fireEvent.keyDown(list, { key: "End" })).toBe(true);
+    expect(fireEvent.keyDown(list, { key: "PageDown" })).toBe(true);
+  });
+
+  it("shows a quiet empty state instead of seeders or fabricated zero values", () => {
+    const { container, rerender } = render(
+      <KineticCanvas {...props(makeFakeSnapshot("seed-only", NOW))} />,
+    );
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="qbittorrent"]',
+    )!;
+    fireEvent.mouseEnter(anchor);
+    let panel = container.querySelector("[data-download-panel]")!;
+    expect(panel.textContent).toContain("No active downloads");
+    expect(panel.querySelectorAll("[data-download-row]")).toHaveLength(0);
+
+    rerender(<KineticCanvas {...props(makeFakeSnapshot("download-rate-unknown", NOW))} />);
+    panel = container.querySelector("[data-download-panel]")!;
+    expect(panel.textContent).toContain("—");
+    expect(panel.textContent).not.toContain("0 B/s");
+  });
+
   it("keeps the same mounted stage and single canvas across rate-changing snapshot updates", () => {
     const { container, rerender } = render(
       <KineticCanvas {...props(snapshotWithRate(10_000_000))} />,
@@ -124,6 +289,81 @@ describe("KineticCanvas continuity", () => {
     expect(nextTabbable).toHaveLength(1);
     expect(nextTabbable[0]).not.toBe(tabbable[0]);
     expect(document.activeElement).toBe(nextTabbable[0]);
+  });
+
+  it("shows the sparse container metrics on hover and keyboard focus", () => {
+    const snapshot = structuredClone(makeFakeSnapshot("container-field-real", NOW));
+    const imageMl = snapshot.telemetry.docker.value!.containers.find(
+      (container) => container.name === "immich-machine-learning",
+    )!;
+    imageMl.cpuFraction = 1.4;
+    imageMl.memoryBytes = 3_200_000_000;
+    imageMl.uptimeSeconds = 3 * 86_400 + 4 * 3_600;
+    const dozzle = snapshot.telemetry.docker.value!.containers.find(
+      (container) => container.name === "dozzle",
+    )!;
+    dozzle.cpuFraction = 0.007;
+    dozzle.memoryBytes = 125_000_000;
+    dozzle.uptimeSeconds = 18 * 60;
+
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    const high = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-cell][aria-label^="Image ML;"]',
+    )!;
+    fireEvent.pointerEnter(high);
+    const tooltip = container.querySelector<HTMLElement>(
+      "[data-kinetic-container-tooltip]",
+    )!;
+    expect(tooltip).not.toBeNull();
+    expect(tooltip.textContent).toContain("Image ML");
+    expect(tooltip.textContent).toContain("3d 4h");
+    expect(tooltip.textContent).toContain("CPU 140.0%");
+    expect(tooltip.textContent).toContain("3.2 GB");
+    expect(tooltip.textContent).not.toMatch(/network|health|block|container id/i);
+    expect(high.getAttribute("aria-describedby")).toBe("kinetic-container-metrics");
+
+    const low = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-cell][aria-label^="dozzle;"]',
+    )!;
+    act(() => low.focus());
+    expect(tooltip.textContent).toContain("dozzle");
+    expect(tooltip.textContent).toContain("18m");
+    expect(tooltip.textContent).toContain("CPU 0.7%");
+    expect(tooltip.textContent).toContain("125.0 MB");
+    expect(low.getAttribute("aria-describedby")).toBe("kinetic-container-metrics");
+
+    fireEvent.pointerEnter(high);
+    expect(tooltip.textContent).toContain("Image ML");
+    expect(low.getAttribute("aria-describedby")).toBeNull();
+    expect(high.getAttribute("aria-describedby")).toBe("kinetic-container-metrics");
+  });
+
+  it("constrains a long real container name without hiding its full accessible text", () => {
+    const snapshot = structuredClone(makeFakeSnapshot("container-field-real", NOW));
+    const imageMl = snapshot.telemetry.docker.value!.containers.find(
+      (container) => container.name === "immich-machine-learning",
+    )!;
+    const longName =
+      "immich-machine-learning-with-a-production-blue-green-deployment-suffix";
+    imageMl.name = longName;
+    imageMl.composeService = longName;
+
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    const target = container.querySelector<HTMLButtonElement>(
+      `[data-kinetic-cell][aria-label^="${longName};"]`,
+    )!;
+    act(() => target.focus());
+
+    const tooltip = container.querySelector<HTMLElement>(
+      "[data-kinetic-container-tooltip]",
+    )!;
+    const name = tooltip.querySelector<HTMLElement>(`[title="${longName}"]`)!;
+    expect(name).not.toBeNull();
+    expect(name.textContent).toBe(longName);
+    expect(name.className).toContain("overflow-hidden");
+    expect(name.className).toContain("text-ellipsis");
+    expect(target.getAttribute("aria-describedby")).toBe("kinetic-container-metrics");
+    expect(tooltip.textContent).toMatch(/\d+[dhms]/);
   });
 
   it("describes a partial known-zero flow as rate-unknown activity, never as 0 B/s", () => {

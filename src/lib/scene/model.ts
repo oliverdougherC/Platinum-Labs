@@ -113,6 +113,7 @@ export interface DockerContainerModel {
   state: ContainerState;
   health: "healthy" | "unhealthy" | "starting" | null;
   restartCount: number | null;
+  uptimeSeconds: number | null;
   cpuFraction: number | null;
   memoryBytes: number | null;
   memoryScore: number;
@@ -342,7 +343,9 @@ function serviceModel(
   }
   // sonarr / radarr
   const items = snapshot.acquisition.items.filter(
-    (i) => i.source === id && i.state !== "completed",
+    (i) =>
+      i.source === id &&
+      (i.state === "searching" || i.state === "downloading" || i.state === "importing"),
   );
   return {
     id,
@@ -350,9 +353,9 @@ function serviceModel(
     status,
     active:
       status === "ok" &&
-      items.some((i) => i.state === "downloading" || i.state === "importing"),
+      items.length > 0,
     count: items.length > 0 ? items.length : null,
-    detail: items.some((i) => i.state === "importing") ? "importing" : null,
+    detail: items.length > 0 ? "active" : null,
   };
 }
 
@@ -438,6 +441,7 @@ export function buildSceneModel(
       ]);
       return {
         ...c,
+        uptimeSeconds: c.uptimeSeconds ?? null,
         memoryScore: containerMemoryScore(c.memoryBytes),
         freshness:
           t.docker.status === "available"
