@@ -55,6 +55,11 @@ import {
 import { KineticEngine } from "@/lib/kinetic/engine";
 import { formatContainerRuntimeSummary } from "@/lib/kinetic/container-summary";
 import {
+  gaugePercent,
+  gaugeUtilizationLabel,
+  type GaugeTelemetryStatus,
+} from "@/lib/kinetic/gauge-utilization";
+import {
   drawKineticBase,
   drawKineticFlows,
   drawKineticFrame,
@@ -1438,11 +1443,11 @@ function InstrumentBand({ scene, layout }: { scene: KineticScene; layout: Kineti
         </div>
       </div>
 
-      <BandGauge label="memory" gauge={instrument.memory} />
+      <BandGauge label="memory" gauge={instrument.memory} showUtilization />
       {instrument.gpu.status !== "not-configured" ? (
         <BandGauge label="gpu" gauge={instrument.gpu} />
       ) : null}
-      <BandGauge label="arc" gauge={instrument.arc} />
+      <BandGauge label="arc" gauge={instrument.arc} showUtilization />
 
       <div className="ml-auto flex items-center gap-4">
         {scene.attention.headline ? (
@@ -1463,14 +1468,22 @@ function InstrumentBand({ scene, layout }: { scene: KineticScene; layout: Kineti
 function BandGauge({
   label,
   gauge,
+  showUtilization = false,
 }: {
   label: string;
-  gauge: { status: string; fraction: number | null; primary: string | null; secondary: string | null };
+  gauge: {
+    status: GaugeTelemetryStatus;
+    fraction: number | null;
+    primary: string | null;
+    secondary: string | null;
+  };
+  showUtilization?: boolean;
 }) {
   if (gauge.status === "not-configured") return null;
-  const unknown = gauge.fraction === null;
+  const percent = gaugePercent(gauge.fraction);
+  const utilization = gaugeUtilizationLabel(gauge.status, percent);
   return (
-    <div className="w-40">
+    <div className="w-40" data-band-gauge={label}>
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-[16px] font-semibold tabular-nums leading-none text-fg">
           {gauge.primary ?? "—"}
@@ -1480,14 +1493,22 @@ function BandGauge({
         ) : null}
       </div>
       <div className="mt-1.5 h-[3px] w-full rounded-full bg-white/[0.05]">
-        {!unknown ? (
+        {percent !== null ? (
           <div
+            data-gauge-fill
             className="h-full rounded-full bg-[rgba(214,222,232,0.55)] transition-[width] duration-700"
-            style={{ width: `${Math.round((gauge.fraction ?? 0) * 100)}%` }}
+            style={{ width: `${percent}%` }}
           />
         ) : null}
       </div>
-      <div className="mt-1 text-[10px] uppercase tracking-[0.2em] text-faint">{label}</div>
+      <div className="mt-1 flex items-baseline justify-between gap-2 text-[10px] uppercase tracking-[0.2em] text-faint">
+        <span>{label}</span>
+        {showUtilization ? (
+          <span className="tabular-nums tracking-[0.12em] text-faint/80">
+            {utilization}
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }

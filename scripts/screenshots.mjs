@@ -344,6 +344,19 @@ async function validateKineticShot(page, shot) {
     if (!stageText.includes("69.6 TB") || /\bTiB\b/.test(stageText)) {
       throw new Error(`storage overview drifted from decimal TB labels (${shot.name})`);
     }
+    for (const label of ["memory", "arc"]) {
+      const gauge = page.locator(`[data-band-gauge="${label}"]`);
+      const text = (await gauge.innerText()).trim();
+      const displayed = text.match(/(\d+)%\s*$/)?.[1];
+      const width = await gauge.locator("[data-gauge-fill]").evaluate(
+        (element) => element.style.width,
+      );
+      if (!displayed || width !== `${displayed}%`) {
+        throw new Error(
+          `${label} fill and utilization copy disagree (${shot.name}): ${width} vs ${text}`,
+        );
+      }
+    }
   }
   if (shot.scenario === "download-rate-unknown") {
     const anchorLabel =
