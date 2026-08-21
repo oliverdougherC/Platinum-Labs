@@ -18,6 +18,7 @@ import {
   type StorageBodyModel,
 } from "@/lib/scene/model";
 import {
+  backgroundTransferResidualSupport,
   classifyFlowRate,
   flowNetworkBoundary,
   isAuthoritativeZero,
@@ -29,6 +30,7 @@ import {
 } from "@/lib/topology/activity";
 import { groupWorkloads } from "@/lib/fabric/groups";
 import { formatBytes, formatRate } from "@/lib/format/bytes";
+import { FLOW_DEADBAND_BPS } from "@/lib/topology/smoothing";
 
 // --- instrument band ----------------------------------------------------------
 
@@ -204,8 +206,80 @@ export interface KineticScene {
   fieldRunning: number | null;
   storage: StorageStratumModel[];
   flows: KineticFlow[];
+  /** Why a previously observed inferred background transfer is absent now. */
+  backgroundTransferObservation:
+    | "observed"
+    | "ambiguous-gap"
+    | "confirmed-end"
+    | "source-unavailable";
+  /** Material raw disk legs that can still plausibly support a retained copy. */
+  backgroundTransferPlausiblePools: {
+    readers: string[];
+    writers: string[];
+  };
+  /** Flow families whose authoritative connector cannot confirm current truth. */
+  unavailableFlowKinds: FlowKind[];
   attention: AttentionSummaryModel;
   critical: boolean;
+}
+
+function unavailableFlowKinds(snapshot: DashboardSnapshot): FlowKind[] {
+  const unavailable = new Set<FlowKind>();
+  const connectorUnavailable = (id: "jellyfin" | "qbittorrent"): boolean =>
+    snapshot.health.some((health) => health.id === id && health.status === "unavailable");
+
+  if (connectorUnavailable("jellyfin")) {
+    unavailable.add("playback");
+    unavailable.add("egress");
+  }
+  if (connectorUnavailable("qbittorrent")) {
+    unavailable.add("wan-transfer");
+    unavailable.add("storage-transfer");
+    unavailable.add("import-copy");
+  }
+  if (snapshot.telemetry.disk.status === "unavailable") {
+    unavailable.add("storage-transfer");
+    unavailable.add("import-copy");
+    unavailable.add("background-transfer");
+    unavailable.add("playback");
+  }
+  return [...unavailable];
+}
+
+function backgroundTransferObservation(
+  snapshot: DashboardSnapshot,
+  flows: readonly KineticFlow[],
+  now: number,
+): KineticScene["backgroundTransferObservation"] {
+  if (flows.some((flow) => flow.kind === "background-transfer")) return "observed";
+  const disk = snapshot.telemetry.disk;
+  if (disk.status !== "available" || !disk.value) return "source-unavailable";
+  if (backgroundTransferResidualSupport(snapshot, now) !== "none") {
+    return "ambiguous-gap";
+  }
+  const namedPools = disk.value.pools.filter((pool) => pool.pool !== "other");
+  const readers = namedPools.filter((pool) => pool.readBps >= FLOW_DEADBAND_BPS);
+  const writers = namedPools.filter((pool) => pool.writeBps >= FLOW_DEADBAND_BPS);
+  return readers.some((reader) => writers.some((writer) => writer.pool !== reader.pool))
+    ? "ambiguous-gap"
+    : "confirmed-end";
+}
+
+function backgroundTransferPlausiblePools(
+  snapshot: DashboardSnapshot,
+): KineticScene["backgroundTransferPlausiblePools"] {
+  const disk = snapshot.telemetry.disk;
+  if (disk.status !== "available" || !disk.value) {
+    return { readers: [], writers: [] };
+  }
+  return {
+    readers: disk.value.pools
+      .filter((pool) => pool.pool !== "other" && pool.readBps >= FLOW_DEADBAND_BPS)
+      .map((pool) => pool.pool),
+    writers: disk.value.pools
+      .filter((pool) => pool.pool !== "other" && pool.writeBps >= FLOW_DEADBAND_BPS)
+      .map((pool) => pool.pool),
+  };
 }
 
 export interface KineticSceneOptions {
@@ -746,6 +820,9 @@ export function buildKineticScene(
         : null,
     storage: buildStorage(scene),
     flows,
+    backgroundTransferObservation: backgroundTransferObservation(snapshot, flows, options.now),
+    backgroundTransferPlausiblePools: backgroundTransferPlausiblePools(snapshot),
+    unavailableFlowKinds: unavailableFlowKinds(snapshot),
     attention: buildAttention(snapshot),
     critical: scene.critical,
   };

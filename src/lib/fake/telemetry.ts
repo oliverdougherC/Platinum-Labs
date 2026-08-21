@@ -438,9 +438,9 @@ const PROFILES: Record<Exclude<TelemetryProfileName, "unavailable" | "unconfigur
     netRxBps: 180_000,
     netTxBps: 120_000,
     poolIo: {
-      DataStore: { read: 52_000_000, write: 0 },
-      NVME: { read: 18_000_000, write: 0 },
-      eSATA: { read: 0, write: 58_000_000 },
+      DataStore: { read: 30_000_000, write: 0 },
+      NVME: { read: 22_000_000, write: 0 },
+      eSATA: { read: 0, write: 40_000_000 },
     },
   },
   "background-copy-under-deadband": {

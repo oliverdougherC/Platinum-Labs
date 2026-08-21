@@ -156,6 +156,48 @@ describe("buildKineticScene", () => {
     expect(sceneAnimates(staleScene)).toBe(false);
   });
 
+  it("distinguishes ambiguous background evidence, confirmed end, and source loss", () => {
+    expect(scene("background-copy").backgroundTransferObservation).toBe("observed");
+    expect(scene("background-copy-ambiguous").backgroundTransferObservation).toBe(
+      "ambiguous-gap",
+    );
+    expect(scene("background-copy-under-deadband").backgroundTransferObservation).toBe(
+      "confirmed-end",
+    );
+    expect(scene("idle").backgroundTransferObservation).toBe("confirmed-end");
+
+    const unavailable = makeFakeSnapshot("idle", NOW);
+    unavailable.telemetry.disk = {
+      status: "unavailable",
+      value: null,
+      updatedAt: null,
+    };
+    expect(
+      buildKineticScene(unavailable, { now: NOW, seerrConfigured: true })
+        .backgroundTransferObservation,
+    ).toBe("source-unavailable");
+
+    const connectorUnavailable = scene("connector-unavailable");
+    expect(connectorUnavailable.unavailableFlowKinds).toEqual(
+      expect.arrayContaining(["playback", "egress"]),
+    );
+
+    const zero = scene("confirmed-zero").flows.find(
+      (flow) => flow.kind === "wan-transfer",
+    );
+    expect(zero).toMatchObject({ treatment: "confirmed-zero", rateBps: 0 });
+  });
+
+  it("retains an observed background copy ambiguously during concurrent playback", () => {
+    const s = scene("background-copy-playback-ambiguous");
+    expect(s.backgroundTransferObservation).toBe("ambiguous-gap");
+    expect(s.flows.some((flow) => flow.kind === "background-transfer")).toBe(false);
+    expect(s.flows.find((flow) => flow.kind === "playback")).toMatchObject({
+      treatment: "state-only",
+      rateBps: null,
+    });
+  });
+
   it("freezes stale work instead of animating it", () => {
     const snapshot = makeFakeSnapshot("stale", NOW);
     const s = buildKineticScene(snapshot, { now: NOW, seerrConfigured: true });

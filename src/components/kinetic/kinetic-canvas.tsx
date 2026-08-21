@@ -366,7 +366,10 @@ export function KineticCanvas({
     const engine = engineRef.current;
     if (!engine || !layout) return;
     engine.setSelection(selection);
-    engine.syncTargets(scene, layout, { snap: frozen || reducedMotion });
+    engine.syncTargets(scene, layout, {
+      snap: frozen || reducedMotion,
+      nowMs: performance.now(),
+    });
     if (frozen || reducedMotion) {
       // Deterministic single frame: t derives from the explicit frozen clock,
       // never the live epoch. Reduced motion swaps particles for static
@@ -390,12 +393,41 @@ export function KineticCanvas({
   useEffect(() => {
     if (!debugHook) return;
     const devWindow = window as unknown as {
-      __homelabKineticDebug?: () => Record<string, number | boolean>;
+      __homelabKineticDebug?: () => {
+        flows: number;
+        decaying: number;
+        cells: number;
+        visibleParticles: number;
+        rafActive: boolean;
+        visualTime: number;
+        visuals: Array<{
+          id: string;
+          kind: KineticFlow["kind"];
+          treatment: KineticFlow["treatment"];
+          rateBps: number | null;
+          removed: boolean;
+          missingSinceMs: number | null;
+          particleSlots: number;
+        }>;
+      };
     };
     devWindow.__homelabKineticDebug = () => ({
       ...engineRef.current!.debugCounts(),
       rafActive: rafRef.current !== 0,
       visualTime: engineRef.current!.now(),
+      visuals: engineRef.current!.visualState().flows.map((visual) => ({
+        id: visual.id,
+        kind: visual.flow.kind,
+        treatment: visual.flow.treatment,
+        rateBps: visual.flow.rateBps,
+        removed: visual.removed,
+        missingSinceMs: visual.missingSinceMs,
+        particleSlots: visual.channels.reduce(
+          (sum, channel) =>
+            sum + channel.slotAlphas.filter((alpha) => alpha > 0.02).length,
+          0,
+        ),
+      })),
     });
     return () => {
       delete devWindow.__homelabKineticDebug;

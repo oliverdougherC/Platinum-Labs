@@ -5,6 +5,7 @@ import { buildKineticScene, type KineticScene } from "./model";
 import { buildKineticLayout, type KineticLayout } from "./layout";
 import {
   KineticEngine,
+  FLOW_MISSING_GRACE_SECONDS,
   MAX_FRAME_DELTA_SECONDS,
   MAX_PARTICLE_SLOTS,
   PARTICLE_SPEED,
@@ -44,6 +45,22 @@ function wanVisual(engine: KineticEngine) {
     .visualState()
     .flows.find((f) => f.flow.kind === "wan-transfer");
   if (!visual) throw new Error("no wan-transfer visual");
+  return visual;
+}
+
+function backgroundVisual(engine: KineticEngine) {
+  const visual = engine
+    .visualState()
+    .flows.find((f) => f.flow.kind === "background-transfer");
+  if (!visual) throw new Error("no background-transfer visual");
+  return visual;
+}
+
+function playbackVisual(engine: KineticEngine) {
+  const visual = engine
+    .visualState()
+    .flows.find((flow) => flow.flow.kind === "playback");
+  if (!visual) throw new Error("no playback visual");
   return visual;
 }
 
@@ -135,41 +152,212 @@ describe("KineticEngine phase continuity", () => {
     expect(fastCount).toBeLessThanOrEqual(MAX_PARTICLE_SLOTS);
   });
 
-  it("decays a stopped flow gracefully and reverses cleanly when it reappears mid-decay", () => {
+  it("starts terminal decay promptly when a download is confirmed complete", () => {
     const engine = new KineticEngine(0);
     const active = sceneAndLayout("downloads");
+    const idle = sceneAndLayout("idle");
     engine.syncTargets(active.scene, active.layout);
     let at = run(engine, 0, 3);
-    expect(wanVisual(engine).presence).toBe(1);
+    const before = wanVisual(engine);
+    const seedBefore = before.channels[0]!.seed;
+    expect(before.presence).toBe(1);
 
-    const idle = sceneAndLayout("idle");
     engine.syncTargets(idle.scene, idle.layout);
-    at = run(engine, at, 0.3);
-    const fading = wanVisual(engine);
-    expect(fading.removed).toBe(true);
-    expect(fading.presence).toBeGreaterThan(0);
-    expect(fading.presence).toBeLessThan(1);
-    const midPresence = fading.presence;
+    expect(before.removed).toBe(true);
+    expect(before.missingSinceMs).toBeNull();
+    at = run(engine, at, 0.1);
+    expect(before.presence).toBeLessThan(1);
 
-    // Same flow returns 300 ms into its decay: ONE visual object reverses —
-    // no duplicate populations, no brightness spike, no phase reset.
+    // A rapid restart during terminal decay still resumes on the same object;
+    // no renderer grace is needed to preserve identity or particle phase.
     engine.syncTargets(active.scene, active.layout);
     at += 16;
     engine.frame(at);
     const back = wanVisual(engine);
-    expect(back).toBe(fading);
+    expect(back).toBe(before);
     expect(back.removed).toBe(false);
-    expect(back.presence).toBeGreaterThanOrEqual(midPresence);
-    expect(back.presence).toBeLessThan(1);
+    expect(back.presence).toBeGreaterThan(0);
+    expect(back.channels[0]!.seed).toBe(seedBefore);
     expect(
       engine.visualState().flows.filter((f) => f.flow.kind === "wan-transfer"),
     ).toHaveLength(1);
+  });
 
-    // And a completed decay removes the visual entirely.
+  it("prunes a confirmed stop exactly once without a ghost", () => {
+    const engine = new KineticEngine(0);
+    const active = sceneAndLayout("downloads");
+    const idle = sceneAndLayout("idle");
+    engine.syncTargets(active.scene, active.layout);
+    let at = run(engine, 0, 3);
+    const before = wanVisual(engine);
+
     engine.syncTargets(idle.scene, idle.layout);
-    run(engine, at, 2);
+    expect(before.removed).toBe(true);
+    at = run(engine, at, 0.2);
+    expect(before.presence).toBeGreaterThan(0);
+    expect(before.presence).toBeLessThan(1);
+
+    at = run(engine, at, 2);
     expect(
       engine.visualState().flows.some((f) => f.flow.kind === "wan-transfer"),
+    ).toBe(false);
+    engine.syncTargets(idle.scene, idle.layout);
+    run(engine, at, 1);
+    expect(
+      engine.visualState().flows.some((f) => f.flow.kind === "wan-transfer"),
+    ).toBe(false);
+  });
+
+  it("bridges an ambiguous disk sample as stale, then resumes the same object", () => {
+    const engine = new KineticEngine(0);
+    const active = sceneAndLayout("background-copy");
+    const missing = sceneAndLayout("background-copy-ambiguous");
+    engine.syncTargets(active.scene, active.layout);
+    let at = run(engine, 0, 3);
+    const before = backgroundVisual(engine);
+    const seed = before.channels[0]!.seed;
+
+    engine.syncTargets(missing.scene, missing.layout);
+    expect(backgroundVisual(engine)).toBe(before);
+    expect(before.flow.treatment).toBe("stale");
+    expect(before.flow.rateBps).toBeNull();
+    expect(before.removed).toBe(false);
+    at = run(engine, at, 2.2);
+    expect(backgroundVisual(engine)).toBe(before);
+    expect(before.presence).toBe(1);
+    expect(before.staleW).toBeGreaterThan(0.9);
+    expect(before.liveness).toBeLessThan(0.1);
+
+    engine.syncTargets(missing.scene, missing.layout);
+    expect(backgroundVisual(engine)).toBe(before);
+    expect(before.removed).toBe(false);
+
+    engine.syncTargets(active.scene, active.layout);
+    at += 16;
+    engine.frame(at);
+    const resumed = backgroundVisual(engine);
+    expect(resumed).toBe(before);
+    expect(resumed.id).toBe(
+      "background-transfer:pool:DataStore->pool:eSATA",
+    );
+    expect(resumed.channels[0]!.seed).toBe(seed);
+    expect(resumed.removed).toBe(false);
+    expect(resumed.flow.treatment).toBe("particles");
+  });
+
+  it("retains a background copy through concurrent playback ambiguity without restarting grace", () => {
+    const engine = new KineticEngine(0);
+    const active = sceneAndLayout("background-copy");
+    const ambiguous = sceneAndLayout("background-copy-playback-ambiguous");
+    const idle = sceneAndLayout("idle");
+    engine.syncTargets(active.scene, active.layout);
+    let at = run(engine, 0, 3);
+    const before = backgroundVisual(engine);
+    const seed = before.channels[0]!.seed;
+
+    engine.syncTargets(ambiguous.scene, ambiguous.layout);
+    expect(backgroundVisual(engine)).toBe(before);
+    expect(before.flow.treatment).toBe("stale");
+    expect(before.flow.rateBps).toBeNull();
+    expect(before.flow.channels.every((channel) => channel.bytesPerSecond === null)).toBe(
+      true,
+    );
+    const missingSince = before.missingSinceMs;
+    at = run(engine, at, FLOW_MISSING_GRACE_SECONDS * 0.5);
+    engine.syncTargets(ambiguous.scene, ambiguous.layout);
+    expect(before.missingSinceMs).toBe(missingSince);
+
+    engine.syncTargets(active.scene, active.layout);
+    at += 16;
+    engine.frame(at);
+    const resumed = backgroundVisual(engine);
+    expect(resumed).toBe(before);
+    expect(resumed.channels[0]!.seed).toBe(seed);
+    expect(resumed.flow.treatment).toBe("particles");
+    expect(resumed.removed).toBe(false);
+
+    engine.syncTargets(idle.scene, idle.layout);
+    expect(before.removed).toBe(true);
+    expect(before.missingSinceMs).toBeNull();
+  });
+
+  it("does not let an unavailable disk source masquerade as fresh traffic", () => {
+    const engine = new KineticEngine(0);
+    const active = sceneAndLayout("background-copy");
+    const unavailable = sceneAndLayout("idle", (snapshot) => {
+      snapshot.telemetry.disk = {
+        status: "unavailable",
+        value: null,
+        updatedAt: null,
+      };
+    });
+    engine.syncTargets(active.scene, active.layout);
+    let at = run(engine, 0, 3);
+    const before = backgroundVisual(engine);
+
+    engine.syncTargets(unavailable.scene, unavailable.layout);
+    expect(before.removed).toBe(true);
+    expect(before.missingSinceMs).toBeNull();
+    expect(before.flow.treatment).toBe("stale");
+    expect(before.flow.rateBps).toBeNull();
+    at = run(engine, at, 0.2);
+    expect(before.presence).toBeLessThan(1);
+    expect(before.liveness).toBeLessThan(1);
+    expect(before.staleW).toBeGreaterThan(0);
+    run(engine, at, 2);
+    expect(
+      engine.visualState().flows.some(
+        (flow) => flow.flow.kind === "background-transfer",
+      ),
+    ).toBe(false);
+  });
+
+  it("freezes a residual connector-owned flow as unknown while it exits", () => {
+    const engine = new KineticEngine(0);
+    const active = sceneAndLayout("direct-play");
+    const unavailable = sceneAndLayout("connector-unavailable");
+    engine.syncTargets(active.scene, active.layout);
+    let at = run(engine, 0, 3);
+    const before = playbackVisual(engine);
+
+    engine.syncTargets(unavailable.scene, unavailable.layout);
+    expect(before.removed).toBe(true);
+    expect(before.flow.treatment).toBe("stale");
+    expect(before.flow.rateBps).toBeNull();
+    expect(before.flow.channels.every((channel) => channel.bytesPerSecond === null)).toBe(
+      true,
+    );
+    at = run(engine, at, 0.2);
+    expect(before.presence).toBeLessThan(1);
+    expect(before.liveness).toBeLessThan(1);
+    expect(before.staleW).toBeGreaterThan(0);
+    run(engine, at, 2);
+    expect(
+      engine.visualState().flows.some((flow) => flow.flow.kind === "playback"),
+    ).toBe(false);
+  });
+
+  it("expires the grace by monotonic wall time when reduced motion snaps frames", () => {
+    const engine = new KineticEngine(0);
+    const active = sceneAndLayout("background-copy");
+    const missing = sceneAndLayout("background-copy-ambiguous");
+    engine.syncTargets(active.scene, active.layout, { snap: true, nowMs: 0 });
+    const before = backgroundVisual(engine);
+
+    engine.syncTargets(missing.scene, missing.layout, {
+      snap: true,
+      nowMs: 2_000,
+    });
+    expect(backgroundVisual(engine)).toBe(before);
+
+    engine.syncTargets(missing.scene, missing.layout, {
+      snap: true,
+      nowMs: 2_000 + FLOW_MISSING_GRACE_SECONDS * 1000 + 1,
+    });
+    expect(
+      engine.visualState().flows.some(
+        (flow) => flow.flow.kind === "background-transfer",
+      ),
     ).toBe(false);
   });
 
