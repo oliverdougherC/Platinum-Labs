@@ -272,6 +272,7 @@ describe("buildKineticScene", () => {
     expect(cells).toHaveLength(44);
     expect(cells.find((cell) => cell.name === "Jellyfin")).toBeDefined();
     expect(cells.find((cell) => cell.name === "qBittorrent")).toBeDefined();
+    expect(cells.find((cell) => cell.name === "Image ML")).toBeDefined();
     expect(new Set(cells.map((cell) => cell.id)).size).toBe(cells.length);
   });
 

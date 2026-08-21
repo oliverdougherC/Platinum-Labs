@@ -32,6 +32,7 @@ function unknownIdentity(container: DockerContainerTelemetry): DockerContainerTe
     state: "unknown",
     health: null,
     restartCount: null,
+    uptimeSeconds: container.uptimeSeconds ?? null,
     cpuFraction: null,
     memoryBytes: container.memoryBytes,
     netRxBps: null,

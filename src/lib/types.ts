@@ -410,6 +410,8 @@ export interface DockerContainerTelemetry {
   state: ContainerState;
   /** Docker health status when a healthcheck exists. */
   health: "healthy" | "unhealthy" | "starting" | null;
+  /** Truthful runtime from Docker list status text; null when not running or not parseable. */
+  uptimeSeconds: number | null;
   /** null when the source endpoint does not know it (`/containers/json` does not) — renders "—", never 0. */
   restartCount: number | null;
   /** 0..1 of one core (can exceed 1 for multi-core usage); null when stats were not sampled. */

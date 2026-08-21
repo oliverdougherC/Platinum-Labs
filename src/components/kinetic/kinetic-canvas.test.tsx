@@ -291,6 +291,81 @@ describe("KineticCanvas continuity", () => {
     expect(document.activeElement).toBe(nextTabbable[0]);
   });
 
+  it("shows the sparse container metrics on hover and keyboard focus", () => {
+    const snapshot = structuredClone(makeFakeSnapshot("container-field-real", NOW));
+    const imageMl = snapshot.telemetry.docker.value!.containers.find(
+      (container) => container.name === "immich-machine-learning",
+    )!;
+    imageMl.cpuFraction = 1.4;
+    imageMl.memoryBytes = 3_200_000_000;
+    imageMl.uptimeSeconds = 3 * 86_400 + 4 * 3_600;
+    const dozzle = snapshot.telemetry.docker.value!.containers.find(
+      (container) => container.name === "dozzle",
+    )!;
+    dozzle.cpuFraction = 0.007;
+    dozzle.memoryBytes = 125_000_000;
+    dozzle.uptimeSeconds = 18 * 60;
+
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    const high = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-cell][aria-label^="Image ML;"]',
+    )!;
+    fireEvent.pointerEnter(high);
+    const tooltip = container.querySelector<HTMLElement>(
+      "[data-kinetic-container-tooltip]",
+    )!;
+    expect(tooltip).not.toBeNull();
+    expect(tooltip.textContent).toContain("Image ML");
+    expect(tooltip.textContent).toContain("3d 4h");
+    expect(tooltip.textContent).toContain("CPU 140.0%");
+    expect(tooltip.textContent).toContain("3.2 GB");
+    expect(tooltip.textContent).not.toMatch(/network|health|block|container id/i);
+    expect(high.getAttribute("aria-describedby")).toBe("kinetic-container-metrics");
+
+    const low = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-cell][aria-label^="dozzle;"]',
+    )!;
+    act(() => low.focus());
+    expect(tooltip.textContent).toContain("dozzle");
+    expect(tooltip.textContent).toContain("18m");
+    expect(tooltip.textContent).toContain("CPU 0.7%");
+    expect(tooltip.textContent).toContain("125.0 MB");
+    expect(low.getAttribute("aria-describedby")).toBe("kinetic-container-metrics");
+
+    fireEvent.pointerEnter(high);
+    expect(tooltip.textContent).toContain("Image ML");
+    expect(low.getAttribute("aria-describedby")).toBeNull();
+    expect(high.getAttribute("aria-describedby")).toBe("kinetic-container-metrics");
+  });
+
+  it("constrains a long real container name without hiding its full accessible text", () => {
+    const snapshot = structuredClone(makeFakeSnapshot("container-field-real", NOW));
+    const imageMl = snapshot.telemetry.docker.value!.containers.find(
+      (container) => container.name === "immich-machine-learning",
+    )!;
+    const longName =
+      "immich-machine-learning-with-a-production-blue-green-deployment-suffix";
+    imageMl.name = longName;
+    imageMl.composeService = longName;
+
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    const target = container.querySelector<HTMLButtonElement>(
+      `[data-kinetic-cell][aria-label^="${longName};"]`,
+    )!;
+    act(() => target.focus());
+
+    const tooltip = container.querySelector<HTMLElement>(
+      "[data-kinetic-container-tooltip]",
+    )!;
+    const name = tooltip.querySelector<HTMLElement>(`[title="${longName}"]`)!;
+    expect(name).not.toBeNull();
+    expect(name.textContent).toBe(longName);
+    expect(name.className).toContain("overflow-hidden");
+    expect(name.className).toContain("text-ellipsis");
+    expect(target.getAttribute("aria-describedby")).toBe("kinetic-container-metrics");
+    expect(tooltip.textContent).toMatch(/\d+[dhms]/);
+  });
+
   it("describes a partial known-zero flow as rate-unknown activity, never as 0 B/s", () => {
     const snapshot = makeFakeSnapshot("partial-zero", NOW);
     const { container } = render(<KineticCanvas {...props(snapshot)} />);

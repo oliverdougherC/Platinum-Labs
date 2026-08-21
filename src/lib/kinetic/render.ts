@@ -60,6 +60,8 @@ export interface KineticFrameOptions {
   t: number;
   /** Eased tile geometry shared with the DOM interaction layer. */
   cellRects: ReadonlyMap<string, TreemapRect>;
+  /** Per-mounted-stage label measurements; names and font are stable between frames. */
+  cellLabelWidths?: Map<string, { label: string; width: number }>;
   /**
    * No phase motion: breathing and sweeps hold a fixed pose. Frozen
    * screenshots still show the particle field, placed at the given `t`.
@@ -79,6 +81,19 @@ type SpriteShape = "comet" | "halo" | "wake";
 
 const SPRITE_SIZE = 64;
 const spriteCache = new Map<string, CanvasImageSource>();
+const flowPathCache = new WeakMap<SampledPath, Path2D>();
+
+function retainedFlowPath(path: SampledPath): Path2D {
+  const cached = flowPathCache.get(path);
+  if (cached) return cached;
+  const retained = new Path2D();
+  retained.moveTo(path.points[0]!.x, path.points[0]!.y);
+  for (let i = 1; i < path.points.length; i++) {
+    retained.lineTo(path.points[i]!.x, path.points[i]!.y);
+  }
+  flowPathCache.set(path, retained);
+  return retained;
+}
 
 function sprite(tone: Rgb, shape: SpriteShape): CanvasImageSource | null {
   const key = `${shape}:${tone[0]},${tone[1]},${tone[2]}`;
@@ -162,16 +177,11 @@ function strokePath(
   style: string,
   dash?: number[],
 ): void {
-  ctx.beginPath();
-  ctx.moveTo(path.points[0]!.x, path.points[0]!.y);
-  for (let i = 1; i < path.points.length; i++) {
-    ctx.lineTo(path.points[i]!.x, path.points[i]!.y);
-  }
   ctx.lineWidth = width;
   ctx.strokeStyle = style;
   ctx.lineCap = "round";
   if (dash) ctx.setLineDash(dash);
-  ctx.stroke();
+  ctx.stroke(retainedFlowPath(path));
   if (dash) ctx.setLineDash([]);
 }
 
@@ -340,6 +350,7 @@ function drawCell(
   rect: TreemapRect,
   t: number,
   still: boolean,
+  labelWidths?: Map<string, { label: string; width: number }>,
 ): void {
   const dim = visual.dim * visual.alpha;
   if (dim <= 0.01) return;
@@ -380,7 +391,20 @@ function drawCell(
     ctx.save();
     ctx.font = "500 11px ui-sans-serif, system-ui, -apple-system, sans-serif";
     ctx.textBaseline = "middle";
-    const textWidth = ctx.measureText(visual.cell.name).width;
+    const cachedLabel = labelWidths?.get(visual.id);
+    const textWidth =
+      cachedLabel?.label === visual.cell.name
+        ? cachedLabel.width
+        : ctx.measureText(visual.cell.name).width;
+    if (labelWidths && cachedLabel?.label !== visual.cell.name) {
+      // A mounted dashboard has a bounded container set in practice. Keep the
+      // defensive cap so repeated container renames cannot grow the cache for
+      // the lifetime of a 24/7 display.
+      if (labelWidths.size >= 512 && !labelWidths.has(visual.id)) {
+        labelWidths.clear();
+      }
+      labelWidths.set(visual.id, { label: visual.cell.name, width: textWidth });
+    }
     const fit = treemapLabelFitAlpha(w, h, textWidth);
     if (fit > 0) {
       ctx.fillStyle = rgba(tone, Math.min(1, (0.96 + visual.intensity * 0.04) * dim * fit));
@@ -504,10 +528,20 @@ export function drawKineticFrame(
   layout: KineticLayout,
   options: KineticFrameOptions,
 ): void {
+  ctx.clearRect(0, 0, layout.w, layout.h);
+  drawKineticBase(ctx, state, layout, options);
+  drawKineticFlows(ctx, state, options);
+}
+
+/** Paint the non-flow scene so a mounted canvas can retain it between frames. */
+export function drawKineticBase(
+  ctx: CanvasRenderingContext2D,
+  state: KineticVisualState,
+  layout: KineticLayout,
+  options: KineticFrameOptions,
+): void {
   const { t } = options;
   const still = options.still ?? false;
-  const marks = options.marks ?? false;
-  ctx.clearRect(0, 0, layout.w, layout.h);
 
   // Anchor glow pools (always present as a soft ground; energy from truth).
   for (const anchor of state.anchors) {
@@ -531,7 +565,7 @@ export function drawKineticFrame(
   ctx.fillRect(layout.field.x, layout.field.y, layout.field.w, layout.field.h);
   for (const cell of state.cells) {
     const rect = options.cellRects.get(cell.id);
-    if (rect) drawCell(ctx, cell, rect, t, still);
+    if (rect) drawCell(ctx, cell, rect, t, still, options.cellLabelWidths);
   }
   ctx.strokeStyle = "rgba(214, 222, 232, 0.16)";
   ctx.lineWidth = 1;
@@ -541,10 +575,18 @@ export function drawKineticFrame(
     Math.max(0, layout.field.w - 1),
     Math.max(0, layout.field.h - 1),
   );
+}
 
-  // Flows above everything else on the canvas.
+/** Paint the time-varying flow layer above the retained base scene. */
+export function drawKineticFlows(
+  ctx: CanvasRenderingContext2D,
+  state: KineticVisualState,
+  options: KineticFrameOptions,
+): void {
+  const still = options.still ?? false;
+  const marks = options.marks ?? false;
   for (const flow of state.flows) {
-    drawFlow(ctx, flow, t, still, marks);
+    drawFlow(ctx, flow, options.t, still, marks);
   }
 }
 

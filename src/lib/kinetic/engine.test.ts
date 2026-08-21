@@ -71,7 +71,7 @@ describe("KineticEngine phase continuity", () => {
     engine.syncTargets(initial.scene, initial.layout, { snap: true });
     const before = engine
       .visualState()
-      .cells.find((cell) => cell.cell.name === "immich-machine-learning")!;
+      .cells.find((cell) => cell.cell.name === "Image ML")!;
     const initialWeight = before.weight;
 
     const grown = sceneAndLayout("container-field-real", (snapshot) => {

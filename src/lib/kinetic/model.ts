@@ -117,6 +117,9 @@ export interface FieldCellModel {
   tone: "neutral" | "in" | "out" | "import";
   cpuFraction: number | null;
   memoryBytes: number | null;
+  /** Docker-reported running duration, or null when the runtime did not expose it. */
+  uptimeSeconds: number | null;
+  freshness: "live" | "stale" | "unavailable";
 }
 
 export interface FieldGroupModel {
@@ -552,6 +555,7 @@ function friendlyContainerName(name: string, composeService: string | null): str
   if (key === "sonarr") return SERVICE_LABELS.sonarr;
   if (key === "radarr") return SERVICE_LABELS.radarr;
   if (key === "jellyseerr" || key === "seerr") return SERVICE_LABELS.seerr;
+  if (key === "immich-machine-learning") return "Image ML";
   return name;
 }
 
@@ -584,6 +588,8 @@ function fieldCell(
     tone,
     cpuFraction: c.cpuFraction,
     memoryBytes: c.memoryBytes,
+    uptimeSeconds: c.uptimeSeconds ?? null,
+    freshness: c.freshness,
   };
 }
 
