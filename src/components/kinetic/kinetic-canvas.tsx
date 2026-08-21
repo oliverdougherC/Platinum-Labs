@@ -3,9 +3,9 @@
 /**
  * V4 Kinetic Flow Canvas — the stage component.
  *
- * Hybrid rendering: one Canvas 2D layer for light (glow pools, ribbons,
- * particles, workload field, storage strata) and a DOM overlay for every
- * piece of text and every interactive/accessible target.
+ * Hybrid rendering: one Canvas 2D layer for light and exact-fit workload
+ * labels, plus a DOM overlay for every interactive/accessible target and the
+ * remaining interface text.
  *
  * React never runs at frame cadence. Snapshots, selection and layout are
  * React's; frame time, interpolation, particle phase and every visual
@@ -23,8 +23,13 @@ import {
   useRef,
   useState,
 } from "react";
+import type {
+  FocusEvent as ReactFocusEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  RefObject,
+} from "react";
 import type { DashboardSnapshot } from "@/lib/types";
-import { formatRate } from "@/lib/format/bytes";
+import { formatBytes, formatRate } from "@/lib/format/bytes";
 import {
   buildKineticScene,
   type AnchorModel,
@@ -32,19 +37,31 @@ import {
   type KineticScene,
 } from "@/lib/kinetic/model";
 import {
-  buildFlowPaths,
-  buildKineticStage,
-  stageGeometryKey,
+  buildKineticLayout,
   type KineticLayout,
-  type KineticStage,
 } from "@/lib/kinetic/layout";
+import {
+  layoutTreemapWithPlan,
+  type TreemapBounds,
+  type TreemapPlan,
+  type TreemapRect,
+} from "@/lib/kinetic/treemap";
+import {
+  buildContainerTooltip,
+  CONTAINER_TOOLTIP_HEIGHT,
+  CONTAINER_TOOLTIP_WIDTH,
+  placeContainerTooltip,
+} from "@/lib/kinetic/container-tooltip";
 import { KineticEngine } from "@/lib/kinetic/engine";
+import { formatContainerRuntimeSummary } from "@/lib/kinetic/container-summary";
 import {
   gaugePercent,
   gaugeUtilizationLabel,
   type GaugeTelemetryStatus,
 } from "@/lib/kinetic/gauge-utilization";
 import {
+  drawKineticBase,
+  drawKineticFlows,
   drawKineticFrame,
   type KineticSelection,
 } from "@/lib/kinetic/render";
@@ -59,6 +76,9 @@ export interface KineticCanvasProps {
   /** Expose bounded engine counters on window for the soak harness. */
   debugHook?: boolean;
 }
+
+const CONTAINER_TOOLTIP_ID = "kinetic-container-metrics";
+const HOVER_EXIT_DELAY_MS = 70;
 
 function useStageSize(ref: React.RefObject<HTMLDivElement | null>): { w: number; h: number } {
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -110,6 +130,79 @@ interface InspectorContent {
   y: number;
 }
 
+interface ActiveDownloadRow {
+  id: string;
+  title: string;
+  progress: number;
+  progressLabel: string;
+  rateLabel: string;
+}
+
+function activeDownloadRows(snapshot: DashboardSnapshot): ActiveDownloadRow[] {
+  return snapshot.acquisition.items
+    .filter(
+      (item) =>
+        item.state === "downloading" &&
+        (item.source === "qbittorrent" || Boolean(item.correlationKey)),
+    )
+    .map((item) => {
+      const progress = Number.isFinite(item.progress)
+        ? Math.min(1, Math.max(0, item.progress))
+        : 0;
+      return {
+        id: item.id,
+        title: item.title,
+        progress,
+        progressLabel: Number.isFinite(item.progress) ? `${Math.round(progress * 100)}%` : "—",
+        rateLabel: item.rateBps === null ? "—" : formatRate(item.rateBps),
+      };
+    });
+}
+
+function useStableDownloadRows(snapshot: DashboardSnapshot): ActiveDownloadRow[] {
+  const rows = useMemo(() => activeDownloadRows(snapshot), [snapshot]);
+  const orderRef = useRef<string[]>([]);
+  return useMemo(() => {
+    const current = new Set(rows.map((row) => row.id));
+    const order = orderRef.current.filter((id) => current.has(id));
+    for (const row of rows) {
+      if (!order.includes(row.id)) order.push(row.id);
+    }
+    orderRef.current = order;
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return order.map((id) => byId.get(id)!);
+  }, [rows]);
+}
+
+function useDownloadPanelPresence() {
+  const [phase, setPhase] = useState<"closed" | "open" | "closing">("closed");
+  const graceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearTimers = useCallback(() => {
+    if (graceTimer.current !== null) clearTimeout(graceTimer.current);
+    if (exitTimer.current !== null) clearTimeout(exitTimer.current);
+    graceTimer.current = null;
+    exitTimer.current = null;
+  }, []);
+  const open = useCallback(() => {
+    clearTimers();
+    setPhase("open");
+  }, [clearTimers]);
+  const close = useCallback(() => {
+    clearTimers();
+    setPhase("closed");
+  }, [clearTimers]);
+  const scheduleClose = useCallback(() => {
+    clearTimers();
+    graceTimer.current = setTimeout(() => {
+      setPhase("closing");
+      exitTimer.current = setTimeout(() => setPhase("closed"), 140);
+    }, 110);
+  }, [clearTimers]);
+  useEffect(() => clearTimers, [clearTimers]);
+  return { phase, open, close, scheduleClose };
+}
+
 const FLOW_KIND_WORDS: Record<KineticFlow["kind"], string> = {
   "wan-transfer": "WAN transfer",
   "storage-transfer": "staging I/O",
@@ -128,13 +221,16 @@ function flowLine(flow: KineticFlow): string {
       ? " · stale"
       : flow.treatment === "confirmed-zero"
         ? " · 0 B/s"
-        : flow.treatment === "state-only"
+        : flow.treatment === "state-only" && flow.tone !== "control"
           ? " · rate unknown"
           : "";
   return `${FLOW_KIND_WORDS[flow.kind]} — ${flow.label}${rate}${state}`;
 }
 
 function compactFlowLine(flow: KineticFlow): string {
+  if (flow.tone === "control") {
+    return `${FLOW_KIND_WORDS[flow.kind]} · ${flow.label}`;
+  }
   const rate =
     flow.rateBps !== null
       ? formatRate(flow.rateBps)
@@ -229,8 +325,8 @@ function inspectorFor(
               : "not running",
         metrics: metrics.slice(0, 3),
         relationships: [group.label],
-        x: placed.x,
-        y: placed.y,
+        x: placed.x + placed.w / 2,
+        y: placed.y + placed.h / 2,
       };
     }
   }
@@ -245,9 +341,10 @@ function statusWord(anchor: AnchorModel): string | null {
 }
 
 function formatBytesShort(bytes: number): string {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MiB`;
-  return `${Math.round(bytes / 1024)} KiB`;
+  return formatBytes(bytes, {
+    system: "binary",
+    digits: bytes >= 1024 ** 3 ? 1 : 0,
+  });
 }
 
 const FOCUS_RING =
@@ -265,11 +362,103 @@ export function KineticCanvas({
 }: KineticCanvasProps) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const baseCanvasValidRef = useRef(false);
+  const cellButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const cellButtonGeometryRef = useRef(
+    new WeakMap<HTMLButtonElement, TreemapBounds>(),
+  );
+  const treemapPlanRef = useRef<TreemapPlan | null>(null);
+  const cellLabelWidthsRef = useRef(
+    new Map<string, { label: string; width: number }>(),
+  );
   const { w, h } = useStageSize(stageRef);
   const reducedMotion = useReducedMotion();
   const pageVisible = usePageVisible();
   const [selection, setSelection] = useState<KineticSelection | null>(null);
   const [motionOn, setMotionOn] = useState(false);
+  const [hoveredCellId, setHoveredCellId] = useState<string | null>(null);
+  const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
+  const hoverExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const liveCellRectsRef = useRef(new Map<string, TreemapRect>());
+  const tooltipCellId = selection?.kind === "cell"
+    ? null
+    : hoveredCellId ?? focusedCellId;
+  const tooltipCellIdRef = useRef<string | null>(tooltipCellId);
+  tooltipCellIdRef.current = tooltipCellId;
+
+  const showHoveredCell = useCallback((id: string) => {
+    if (hoverExitTimerRef.current !== null) {
+      clearTimeout(hoverExitTimerRef.current);
+      hoverExitTimerRef.current = null;
+    }
+    setHoveredCellId(id);
+  }, []);
+  const hideHoveredCell = useCallback((id: string) => {
+    if (hoverExitTimerRef.current !== null) clearTimeout(hoverExitTimerRef.current);
+    hoverExitTimerRef.current = setTimeout(() => {
+      setHoveredCellId((current) => (current === id ? null : current));
+      hoverExitTimerRef.current = null;
+    }, HOVER_EXIT_DELAY_MS);
+  }, []);
+  const showFocusedCell = useCallback((id: string) => {
+    if (hoverExitTimerRef.current !== null) {
+      clearTimeout(hoverExitTimerRef.current);
+      hoverExitTimerRef.current = null;
+    }
+    setHoveredCellId(null);
+    setFocusedCellId(id);
+  }, []);
+  useEffect(
+    () => () => {
+      if (hoverExitTimerRef.current !== null) clearTimeout(hoverExitTimerRef.current);
+    },
+    [],
+  );
+  const downloadRows = useStableDownloadRows(snapshot);
+  const downloadPanel = useDownloadPanelPresence();
+  const downloadTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const downloadPanelRef = useRef<HTMLElement | null>(null);
+  const downloadListRef = useRef<HTMLUListElement | null>(null);
+  const pendingDownloadFocusRef = useRef(false);
+  const focusDownloadPanelTarget = useCallback(() => {
+    const target = downloadListRef.current ?? downloadPanelRef.current;
+    if (!target) return false;
+    target.focus();
+    pendingDownloadFocusRef.current = false;
+    return true;
+  }, []);
+  const downloadRegionContains = useCallback(
+    (target: EventTarget | null) =>
+      target instanceof Node &&
+      (downloadTriggerRef.current?.contains(target) === true ||
+        downloadPanelRef.current?.contains(target) === true),
+    [],
+  );
+  const blurDownloadRegion = useCallback(
+    (event: ReactFocusEvent<HTMLElement>) => {
+      if (!downloadRegionContains(event.relatedTarget)) {
+        downloadPanel.scheduleClose();
+      }
+    },
+    [downloadPanel, downloadRegionContains],
+  );
+  const enterDownloadPanel = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>) => {
+      if (event.key !== "Tab" || event.shiftKey) return;
+      event.preventDefault();
+      pendingDownloadFocusRef.current = true;
+      downloadPanel.open();
+      focusDownloadPanelTarget();
+    },
+    [downloadPanel, focusDownloadPanelTarget],
+  );
+
+  useEffect(() => {
+    if (downloadPanel.phase !== "open" || !pendingDownloadFocusRef.current) return;
+    focusDownloadPanelTarget();
+  }, [downloadPanel.phase, downloadRows.length, focusDownloadPanelTarget]);
 
   // ONE engine per mounted stage: its epoch — and therefore every particle's
   // phase — is established exactly once, here.
@@ -285,20 +474,9 @@ export function KineticCanvas({
     [snapshot, now, seerrConfigured],
   );
 
-  // STABLE geometry contract (V4 release blocker): stage placement is cached
-  // against a key that telemetry-only updates cannot change. Rates, CPU,
-  // memory and I/O move engine targets; only membership or viewport changes
-  // recompute where anything sits. Flow paths ride on the cached stage, so a
-  // flow appearing can never shift the composition either.
-  const stageCache = useRef<{ key: string; stage: KineticStage } | null>(null);
   const layout = useMemo<KineticLayout | null>(() => {
     if (w <= 0 || h <= 0) return null;
-    const key = stageGeometryKey(scene, w, h);
-    if (stageCache.current?.key !== key) {
-      stageCache.current = { key, stage: buildKineticStage(scene, w, h) };
-    }
-    const stage = stageCache.current.stage;
-    return { ...stage, flows: buildFlowPaths(scene.flows, stage) };
+    return buildKineticLayout(scene, w, h);
   }, [scene, w, h]);
 
   const layoutRef = useRef(layout);
@@ -317,11 +495,100 @@ export function KineticCanvas({
     if (canvas.width !== pixelW || canvas.height !== pixelH) {
       canvas.width = pixelW;
       canvas.height = pixelH;
+      baseCanvasValidRef.current = false;
     }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawKineticFrame(ctx, engine.visualState(), currentLayout, { t, still, marks });
+    const visualState = engine.visualState();
+    const treemap = layoutTreemapWithPlan(
+      visualState.cells,
+      currentLayout.field,
+      treemapPlanRef.current,
+    );
+    treemapPlanRef.current = treemap.plan;
+    const cellRects = treemap.rectById;
+    liveCellRectsRef.current = cellRects;
+    // Paint and interaction geometry share the same eased rectangles. Direct
+    // style writes avoid a React render on every animation frame while keeping
+    // pointer and focus targets attached to the tile a reviewer actually sees.
+    for (const [id, button] of cellButtonRefs.current) {
+      const rect = cellRects.get(id);
+      if (!rect) continue;
+      const previous = cellButtonGeometryRef.current.get(button);
+      if (
+        previous &&
+        previous.x === rect.x &&
+        previous.y === rect.y &&
+        previous.w === rect.w &&
+        previous.h === rect.h
+      ) {
+        continue;
+      }
+      button.style.left = `${rect.x}px`;
+      button.style.top = `${rect.y}px`;
+      button.style.width = `${rect.w}px`;
+      button.style.height = `${rect.h}px`;
+      if (previous) {
+        previous.x = rect.x;
+        previous.y = rect.y;
+        previous.w = rect.w;
+        previous.h = rect.h;
+      } else {
+        cellButtonGeometryRef.current.set(button, {
+          x: rect.x,
+          y: rect.y,
+          w: rect.w,
+          h: rect.h,
+        });
+      }
+    }
+    const tooltipElement = tooltipRef.current;
+    const activeTooltipId = tooltipCellIdRef.current;
+    const activeTooltipRect = activeTooltipId ? cellRects.get(activeTooltipId) : null;
+    if (tooltipElement && activeTooltipRect) {
+      const position = placeContainerTooltip(activeTooltipRect, currentLayout);
+      tooltipElement.style.transform = `translate3d(${position.left}px, ${position.top}px, 0)`;
+    }
+    const frameOptions = {
+      t,
+      still,
+      marks,
+      cellRects,
+      cellLabelWidths: cellLabelWidthsRef.current,
+    };
+    const baseIsTimeVariant =
+      !still &&
+      (visualState.strata.some((stratum) => stratum.scrubW > 0.01) ||
+        visualState.cells.some((cell) => cell.attentionW > 0.01));
+    const canRetainBase = engine.settled() && !baseIsTimeVariant;
+    let baseCanvas = baseCanvasRef.current;
+    if (!baseCanvas) {
+      baseCanvas = document.createElement("canvas");
+      baseCanvasRef.current = baseCanvas;
+    }
+    if (baseCanvas.width !== pixelW || baseCanvas.height !== pixelH) {
+      baseCanvas.width = pixelW;
+      baseCanvas.height = pixelH;
+      baseCanvasValidRef.current = false;
+    }
+    if (!baseCanvasValidRef.current || !canRetainBase) {
+      const baseCtx = baseCanvas.getContext("2d");
+      if (!baseCtx) {
+        drawKineticFrame(ctx, visualState, currentLayout, frameOptions);
+        return;
+      }
+      baseCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      baseCtx.clearRect(0, 0, currentLayout.w, currentLayout.h);
+      drawKineticBase(baseCtx, visualState, currentLayout, frameOptions);
+      baseCanvasValidRef.current = canRetainBase;
+    }
+    ctx.clearRect(0, 0, currentLayout.w, currentLayout.h);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(baseCanvas, 0, 0);
+    ctx.restore();
+    drawKineticFlows(ctx, visualState, frameOptions);
   }, []);
 
   // Single rAF loop, ref-guarded: at most one can ever exist, and it parks
@@ -371,7 +638,10 @@ export function KineticCanvas({
     const engine = engineRef.current;
     if (!engine || !layout) return;
     engine.setSelection(selection);
-    engine.syncTargets(scene, layout, { snap: frozen || reducedMotion });
+    engine.syncTargets(scene, layout, {
+      snap: frozen || reducedMotion,
+      nowMs: performance.now(),
+    });
     if (frozen || reducedMotion) {
       // Deterministic single frame: t derives from the explicit frozen clock,
       // never the live epoch. Reduced motion swaps particles for static
@@ -395,12 +665,41 @@ export function KineticCanvas({
   useEffect(() => {
     if (!debugHook) return;
     const devWindow = window as unknown as {
-      __homelabKineticDebug?: () => Record<string, number | boolean>;
+      __homelabKineticDebug?: () => {
+        flows: number;
+        decaying: number;
+        cells: number;
+        visibleParticles: number;
+        rafActive: boolean;
+        visualTime: number;
+        visuals: Array<{
+          id: string;
+          kind: KineticFlow["kind"];
+          treatment: KineticFlow["treatment"];
+          rateBps: number | null;
+          removed: boolean;
+          missingSinceMs: number | null;
+          particleSlots: number;
+        }>;
+      };
     };
     devWindow.__homelabKineticDebug = () => ({
       ...engineRef.current!.debugCounts(),
       rafActive: rafRef.current !== 0,
       visualTime: engineRef.current!.now(),
+      visuals: engineRef.current!.visualState().flows.map((visual) => ({
+        id: visual.id,
+        kind: visual.flow.kind,
+        treatment: visual.flow.treatment,
+        rateBps: visual.flow.rateBps,
+        removed: visual.removed,
+        missingSinceMs: visual.missingSinceMs,
+        particleSlots: visual.channels.reduce(
+          (sum, channel) =>
+            sum + channel.slotAlphas.filter((alpha) => alpha > 0.02).length,
+          0,
+        ),
+      })),
     });
     return () => {
       delete devWindow.__homelabKineticDebug;
@@ -455,6 +754,27 @@ export function KineticCanvas({
     return map;
   }, [scene]);
 
+  const tooltipCell = useMemo(
+    () =>
+      tooltipCellId === null
+        ? null
+        : scene.field
+            .flatMap((group) => group.cells)
+            .find((cell) => cell.id === tooltipCellId) ?? null,
+    [scene, tooltipCellId],
+  );
+  const tooltipContent = tooltipCell ? buildContainerTooltip(tooltipCell) : null;
+  const tooltipTarget =
+    tooltipCellId === null || layout === null
+      ? null
+      : liveCellRectsRef.current.get(tooltipCellId) ??
+        layout.groups
+          .flatMap((group) => group.cells)
+          .find((cell) => cell.id === tooltipCellId) ??
+        null;
+  const tooltipPosition =
+    tooltipTarget && layout ? placeContainerTooltip(tooltipTarget, layout) : null;
+
   const compact = layout !== null && layout.w < 768;
 
   return (
@@ -485,8 +805,70 @@ export function KineticCanvas({
           selection={selection}
           toggle={toggle}
           cellsById={cellsById}
+          cellRefs={cellButtonRefs}
+          activeTooltipId={tooltipCellId}
+          onCellPointerEnter={showHoveredCell}
+          onCellPointerLeave={hideHoveredCell}
+          onCellFocus={showFocusedCell}
+          onCellBlur={(id) => setFocusedCellId((current) => (current === id ? null : current))}
           surfaceLabel={surfaceLabel}
+          downloadPanelOpen={downloadPanel.phase !== "closed"}
+          openDownloadPanel={downloadPanel.open}
+          closeDownloadPanel={downloadPanel.scheduleClose}
+          dismissDownloadPanel={downloadPanel.close}
+          downloadTriggerRef={downloadTriggerRef}
+          enterDownloadPanel={enterDownloadPanel}
+          blurDownloadRegion={blurDownloadRegion}
         />
+      ) : null}
+
+      {layout && downloadPanel.phase !== "closed" ? (
+        <DownloadPanel
+          rows={downloadRows}
+          scene={scene}
+          layout={layout}
+          closing={downloadPanel.phase === "closing"}
+          onEnter={downloadPanel.open}
+          onLeave={downloadPanel.scheduleClose}
+          panelRef={downloadPanelRef}
+          listRef={downloadListRef}
+          triggerRef={downloadTriggerRef}
+          onBlur={blurDownloadRegion}
+        />
+      ) : null}
+
+      {tooltipContent && tooltipPosition ? (
+        <div
+          ref={tooltipRef}
+          id={CONTAINER_TOOLTIP_ID}
+          data-kinetic-container-tooltip
+          role="tooltip"
+          className="pointer-events-none absolute left-0 top-0 z-20 box-border h-[72px] w-[232px] rounded-md border border-white/[0.10] bg-[#0d1118]/[0.97] px-3.5 py-2.5 shadow-[0_10px_32px_rgba(0,0,0,0.48)] backdrop-blur-sm"
+          style={{
+            width: CONTAINER_TOOLTIP_WIDTH,
+            height: CONTAINER_TOOLTIP_HEIGHT,
+            transform: `translate3d(${tooltipPosition.left}px, ${tooltipPosition.top}px, 0)`,
+          }}
+        >
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3">
+            <div
+              title={tooltipContent.name}
+              className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[12px] font-medium tracking-[0.01em] text-fg"
+            >
+              {tooltipContent.name}
+            </div>
+            <div className="tnum shrink-0 whitespace-nowrap text-right text-[11px] text-muted">
+              {tooltipContent.uptime}
+            </div>
+          </div>
+          <div className="my-2 h-px bg-white/[0.08]" />
+          <div className="grid grid-cols-[1fr_auto] items-baseline gap-3 text-[11px]">
+            <div className="tnum whitespace-nowrap text-muted">{tooltipContent.cpu}</div>
+            <div className="tnum whitespace-nowrap text-right text-fg/90">
+              {tooltipContent.memory}
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {inspector && layout ? (
@@ -550,6 +932,144 @@ export function KineticCanvas({
   );
 }
 
+function DownloadPanel({
+  rows,
+  scene,
+  layout,
+  closing,
+  onEnter,
+  onLeave,
+  panelRef,
+  listRef,
+  triggerRef,
+  onBlur,
+}: {
+  rows: ActiveDownloadRow[];
+  scene: KineticScene;
+  layout: KineticLayout;
+  closing: boolean;
+  onEnter: () => void;
+  onLeave: () => void;
+  panelRef: RefObject<HTMLElement | null>;
+  listRef: RefObject<HTMLUListElement | null>;
+  triggerRef: RefObject<HTMLButtonElement | null>;
+  onBlur: (event: ReactFocusEvent<HTMLElement>) => void;
+}) {
+  const anchor = layout.anchors.find((candidate) => candidate.id === "qbittorrent")!;
+  const model = scene.anchors.find((candidate) => candidate.id === "qbittorrent")!;
+  const panelW = 320;
+  const gap = Math.max(62, anchor.r * 0.72);
+  const fitsRight = anchor.x + gap + panelW <= layout.w - 12;
+  const left = fitsRight
+    ? anchor.x + gap
+    : Math.max(12, anchor.x - gap - panelW);
+  const top = Math.min(
+    Math.max(layout.bandH + 12, anchor.y - 78),
+    Math.max(layout.bandH + 12, layout.h - 360),
+  );
+  const qualification =
+    model.status === "down"
+      ? "unavailable · last known"
+      : model.status === "degraded"
+        ? "data may be stale"
+        : null;
+
+  return (
+    <aside
+      ref={panelRef}
+      id="qbittorrent-download-panel"
+      role="region"
+      tabIndex={-1}
+      data-download-panel
+      aria-labelledby="qbittorrent-download-panel-title"
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
+      onFocus={onEnter}
+      onBlur={onBlur}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Tab" && event.shiftKey) {
+          event.preventDefault();
+          triggerRef.current?.focus();
+        }
+      }}
+      className={`absolute z-20 w-[320px] origin-top-left rounded-xl border border-white/[0.08] bg-[#0d1016]/[0.97] px-3 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.48)] backdrop-blur-sm transition-[opacity,transform] duration-[140ms] ease-out ${
+        closing ? "pointer-events-none translate-y-1 scale-[0.985] opacity-0" : "opacity-100"
+      }`}
+      style={{
+        left,
+        top,
+        pointerEvents: closing ? "none" : "auto",
+        animation: closing ? undefined : "kinetic-panel-in 140ms ease-out",
+      }}
+    >
+      <div className="flex items-baseline justify-between gap-3 px-1 pb-2">
+        <div>
+          <h2
+            id="qbittorrent-download-panel-title"
+            className="text-[13px] font-semibold tracking-tight text-fg"
+          >
+            Active downloads
+          </h2>
+          {qualification ? (
+            <p className="mt-0.5 text-[10px] tracking-wide text-warn">{qualification}</p>
+          ) : null}
+        </div>
+        {rows.length > 0 ? (
+          <span className="text-[11px] tabular-nums text-faint">{rows.length}</span>
+        ) : null}
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="border-t border-white/[0.06] px-1 py-3 text-[12px] text-faint">
+          No active downloads
+        </p>
+      ) : (
+        <ul
+          ref={listRef}
+          data-download-list
+          tabIndex={0}
+          aria-label="Active downloads list"
+          onKeyDown={(event) => {
+            if (event.key === "Tab" && event.shiftKey) {
+              event.preventDefault();
+              triggerRef.current?.focus();
+            }
+          }}
+          className={`max-h-64 overflow-y-auto overscroll-contain border-t border-white/[0.06] pr-1 [scrollbar-width:thin] ${FOCUS_RING}`}
+        >
+          {rows.map((row) => (
+            <li
+              key={row.id}
+              data-download-row={row.id}
+              className="relative grid min-h-10 grid-cols-[minmax(0,1fr)_48px_76px] items-center gap-2 border-b border-white/[0.045] px-1 last:border-b-0"
+              aria-label={`${row.title}; ${row.progressLabel}; ${row.rateLabel}`}
+            >
+              <span
+                title={row.title}
+                className="w-[13ch] max-w-full truncate whitespace-nowrap text-[12px] text-fg"
+              >
+                {row.title}
+              </span>
+              <span className="text-right text-[11px] tabular-nums text-muted">
+                {row.progressLabel}
+              </span>
+              <span className="text-right text-[11px] tabular-nums text-fg/85">
+                {row.rateLabel}
+              </span>
+              <span
+                aria-hidden="true"
+                className="absolute inset-x-1 bottom-0 h-px origin-left bg-accent/35 transition-transform duration-500"
+                style={{ transform: `scaleX(${row.progress})` }}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </aside>
+  );
+}
+
 // --- DOM overlay ----------------------------------------------------------------------------
 
 function KineticOverlay({
@@ -558,14 +1078,40 @@ function KineticOverlay({
   selection,
   toggle,
   cellsById,
+  cellRefs,
+  activeTooltipId,
+  onCellPointerEnter,
+  onCellPointerLeave,
+  onCellFocus,
+  onCellBlur,
   surfaceLabel,
+  downloadPanelOpen,
+  openDownloadPanel,
+  closeDownloadPanel,
+  dismissDownloadPanel,
+  downloadTriggerRef,
+  enterDownloadPanel,
+  blurDownloadRegion,
 }: {
   scene: KineticScene;
   layout: KineticLayout;
   selection: KineticSelection | null;
   toggle: (next: KineticSelection, initiator: HTMLElement | null) => void;
   cellsById: Map<string, { name: string; label: string }>;
+  cellRefs: React.MutableRefObject<Map<string, HTMLButtonElement>>;
+  activeTooltipId: string | null;
+  onCellPointerEnter: (id: string) => void;
+  onCellPointerLeave: (id: string) => void;
+  onCellFocus: (id: string) => void;
+  onCellBlur: (id: string) => void;
   surfaceLabel: string;
+  downloadPanelOpen: boolean;
+  openDownloadPanel: () => void;
+  closeDownloadPanel: () => void;
+  dismissDownloadPanel: () => void;
+  downloadTriggerRef: RefObject<HTMLButtonElement | null>;
+  enterDownloadPanel: (event: ReactKeyboardEvent<HTMLElement>) => void;
+  blurDownloadRegion: (event: ReactFocusEvent<HTMLElement>) => void;
 }) {
   const dimClass = (member: KineticSelection): string => {
     if (!selection) return "";
@@ -603,8 +1149,6 @@ function KineticOverlay({
   const [rovingId, setRovingId] = useState<string | null>(null);
   const activeRovingId =
     rovingId !== null && cellOrder.includes(rovingId) ? rovingId : cellOrder[0] ?? null;
-  const cellRefs = useRef(new Map<string, HTMLButtonElement>());
-
   const onFieldKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
       if (cellOrder.length === 0 || activeRovingId === null) return;
@@ -625,7 +1169,7 @@ function KineticOverlay({
       setRovingId(id);
       cellRefs.current.get(id)?.focus();
     },
-    [cellOrder, activeRovingId],
+    [cellOrder, activeRovingId, cellRefs],
   );
 
   return (
@@ -644,18 +1188,26 @@ function KineticOverlay({
         return (
           <div
             key={placed.id}
-            className={`absolute -translate-x-1/2 -translate-y-1/2 text-center transition-opacity duration-300 ${dimClass({ kind: "orchestrator", id: placed.id })}`}
+            data-kinetic-orchestrator={placed.id}
+            aria-label={`${model.label}; ${model.detail ?? "idle"}`}
+            className={`absolute -translate-x-1/2 -translate-y-1/2 text-center transition-[color,opacity,text-shadow] duration-500 ${dimClass({ kind: "orchestrator", id: placed.id })}`}
             style={{ left: placed.x, top: placed.y }}
           >
             <div
-              className={`text-[12px] font-medium uppercase tracking-[0.22em] ${
-                model.active ? "text-muted" : "text-faint/70"
+              className={`text-[20px] font-semibold tracking-[-0.015em] transition-colors duration-500 ${
+                model.active ? "text-fg" : "text-muted/75"
               }`}
             >
               {model.label}
             </div>
             {model.detail ? (
-              <div className="mt-0.5 text-[11px] tracking-wide text-faint">{model.detail}</div>
+              <div
+                className={`mt-1 text-[12px] tabular-nums tracking-wide transition-colors duration-500 ${
+                  model.active ? "text-muted" : "text-faint/75"
+                }`}
+              >
+                {model.detail}
+              </div>
             ) : null}
           </div>
         );
@@ -668,13 +1220,22 @@ function KineticOverlay({
         const idle = !model.active;
         return (
           <button
+            ref={placed.id === "qbittorrent" ? downloadTriggerRef : undefined}
             key={placed.id}
             type="button"
             data-kinetic-anchor={placed.id}
             aria-label={`${model.label}${model.headline ? `; ${model.headline}` : idle ? "; idle" : ""}`}
-            onClick={(event) =>
-              toggle({ kind: "anchor", id: placed.id }, event.currentTarget)
-            }
+            aria-expanded={placed.id === "qbittorrent" ? downloadPanelOpen : undefined}
+            aria-controls={placed.id === "qbittorrent" ? "qbittorrent-download-panel" : undefined}
+            onMouseEnter={placed.id === "qbittorrent" ? openDownloadPanel : undefined}
+            onMouseLeave={placed.id === "qbittorrent" ? closeDownloadPanel : undefined}
+            onFocus={placed.id === "qbittorrent" ? openDownloadPanel : undefined}
+            onBlur={placed.id === "qbittorrent" ? blurDownloadRegion : undefined}
+            onKeyDown={placed.id === "qbittorrent" ? enterDownloadPanel : undefined}
+            onClick={(event) => {
+              if (placed.id === "qbittorrent") dismissDownloadPanel();
+              toggle({ kind: "anchor", id: placed.id }, event.currentTarget);
+            }}
             className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-md text-center transition-opacity duration-300 ${FOCUS_RING} ${dimClass({ kind: "anchor", id: placed.id })}`}
             style={{ left: placed.x, top: placed.y, pointerEvents: "auto" }}
           >
@@ -730,7 +1291,8 @@ function KineticOverlay({
         );
       })}
 
-      {/* Workload field: one roving tab stop + selective labels + captions. */}
+      {/* Packed workload field: one roving tab stop; visible labels are drawn
+          on-canvas only after exact full-name fit checks. */}
       <div
         role="group"
         aria-label={`Workloads (${cellOrder.length}); use arrow keys to move between them`}
@@ -738,13 +1300,6 @@ function KineticOverlay({
       >
         {layout.groups.map((group) => (
           <div key={group.id}>
-            <div
-              className="absolute -translate-x-1/2 text-[11px] font-medium uppercase tracking-[0.26em] text-faint/55"
-              style={{ left: group.cx, top: group.labelY }}
-            >
-              {group.label}
-              {group.overflowCount > 0 ? ` +${group.overflowCount}` : ""}
-            </div>
             {group.cells.map((placed) => {
               const info = cellsById.get(placed.id);
               const cell = scene.field
@@ -762,41 +1317,30 @@ function KineticOverlay({
                   }}
                   tabIndex={placed.id === activeRovingId ? 0 : -1}
                   aria-label={`${info.name}; ${info.label}${cell.attention ? "; needs attention" : ""}`}
-                  onFocus={() => setRovingId(placed.id)}
+                  aria-describedby={
+                    activeTooltipId === placed.id ? CONTAINER_TOOLTIP_ID : undefined
+                  }
+                  onPointerEnter={() => onCellPointerEnter(placed.id)}
+                  onPointerLeave={() => onCellPointerLeave(placed.id)}
+                  onFocus={() => {
+                    setRovingId(placed.id);
+                    onCellFocus(placed.id);
+                  }}
+                  onBlur={() => onCellBlur(placed.id)}
                   onClick={(event) =>
                     toggle({ kind: "cell", id: placed.id }, event.currentTarget)
                   }
-                  className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-[8px] ${FOCUS_RING}`}
+                  className={`absolute rounded-[2px] ${FOCUS_RING}`}
                   style={{
                     left: placed.x,
                     top: placed.y,
-                    width: Math.max(placed.slot, 16),
-                    height: Math.max(placed.slot, 16),
+                    width: placed.w,
+                    height: placed.h,
                     pointerEvents: "auto",
                   }}
                 >
                   <span className="sr-only">{info.name}</span>
                 </button>
-              );
-            })}
-            {group.cells.map((placed, placedIndex) => {
-              const cell = scene.field
-                .flatMap((g) => g.cells)
-                .find((c) => c.id === placed.id);
-              if (!cell?.labelVisible) return null;
-              return (
-                <div
-                  key={`${placed.id}-label`}
-                  className={`absolute -translate-x-1/2 text-[10.5px] tracking-wide ${
-                    cell.attention ? "text-warn" : "text-faint"
-                  }`}
-                  style={{
-                    left: placed.x,
-                    top: placed.y + placed.r + 5 + (placedIndex % 2) * 10,
-                  }}
-                >
-                  {cell.name}
-                </div>
               );
             })}
           </div>
@@ -852,6 +1396,10 @@ function InstrumentBand({ scene, layout }: { scene: KineticScene; layout: Kineti
   const { instrument } = scene;
   const cpu = instrument.cpu;
   const cellCols = cpu.cells.length > 32 ? Math.ceil(cpu.cells.length / 2) : cpu.cells.length;
+  const containerSummary = formatContainerRuntimeSummary(
+    scene.fieldRunning,
+    scene.fieldTotal,
+  );
   return (
     <header
       className="absolute inset-x-0 top-0 flex items-center gap-8 whitespace-nowrap border-b border-white/[0.05] px-7"
@@ -907,9 +1455,9 @@ function InstrumentBand({ scene, layout }: { scene: KineticScene; layout: Kineti
             {scene.attention.headline}
           </span>
         ) : null}
-        {scene.fieldRunning !== null && scene.fieldTotal !== null ? (
+        {containerSummary ? (
           <span className="whitespace-nowrap text-[11px] uppercase tracking-[0.18em] text-faint/70">
-            {scene.fieldRunning}/{scene.fieldTotal} workloads
+            {containerSummary}
           </span>
         ) : null}
       </div>

@@ -3,6 +3,7 @@ import {
   formatBitRate,
   formatBytes,
   formatCapacityPair,
+  formatMemoryBytes,
   formatRate,
   scaleBytes,
 } from "@/lib/format/bytes";
@@ -58,6 +59,24 @@ describe("formatBytes — decimal vs binary semantics", () => {
     expect(formatBytes(-1)).toBe("—");
     expect(formatBytes(Number.NaN)).toBe("—");
     expect(formatBytes(Number.POSITIVE_INFINITY)).toBe("—");
+  });
+});
+
+describe("formatMemoryBytes — familiar primary memory labels", () => {
+  it("keeps recognizable memory magnitudes without IEC labels", () => {
+    expect(formatMemoryBytes(128 * 1024 ** 3, 0)).toBe("128 GB");
+    expect(formatMemoryBytes(44.7 * 1024 ** 3)).toBe("44.7 GB");
+    expect(formatMemoryBytes(846.1 * 1024 ** 2)).toBe("846.1 MB");
+  });
+
+  it("does not alter the decimal storage convention", () => {
+    expect(formatBytes(69.6 * 1000 ** 4)).toBe("69.6 TB");
+  });
+
+  it("preserves invalid and zero semantics", () => {
+    expect(formatMemoryBytes(0)).toBe("0 B");
+    expect(formatMemoryBytes(-1)).toBe("—");
+    expect(formatMemoryBytes(Number.NaN)).toBe("—");
   });
 });
 

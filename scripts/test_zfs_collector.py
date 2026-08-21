@@ -518,6 +518,27 @@ class BackgroundCacheTests(unittest.TestCase):
         self.assertIsNone(by_name["two"]["memoryBytes"])
         self.assertIsNone(by_name["three"]["cpuTotalNs"])
 
+    def test_parse_docker_uptime_seconds_only_accepts_truthful_running_status(self):
+        cases = [
+            ("running", "Up 2 hours", 7200),
+            ("running", "Up About an hour", 3600),
+            ("running", "Up About a minute (healthy)", 60),
+            ("running", "Up Less than a second", 0),
+            ("running", "Up 3 weeks", 1814400),
+            ("running", "Up 4 months", 10368000),
+            ("running", "Up mystery", None),
+            ("exited", "Up 2 hours", None),
+            ("restarting", "Up 2 hours", None),
+            ("running", "Exited (0) 2 hours ago", None),
+        ]
+
+        for state, status, expected in cases:
+            with self.subTest(state=state, status=status):
+                self.assertEqual(
+                    zfs_collector._parse_docker_uptime_seconds(state, status),
+                    expected,
+                )
+
     def test_docker_stats_capture_network_and_blkio_counters(self):
         listing = [
             {
@@ -593,6 +614,7 @@ class BackgroundCacheTests(unittest.TestCase):
         self.assertEqual(one["composeProject"], "media-stack")
         self.assertEqual(one["composeService"], "jellyfin")
         self.assertEqual(one["networkNames"], ["media_default", "bridge"])
+        self.assertEqual(one["uptimeSeconds"], 3600)
         self.assertEqual(one["netRxBytes"], 1200)  # summed across interfaces
         self.assertEqual(one["netTxBytes"], 500)
         self.assertEqual(one["blockReadBytes"], 5120)  # case-insensitive ops
@@ -602,6 +624,7 @@ class BackgroundCacheTests(unittest.TestCase):
         self.assertIsNone(two["composeProject"])
         self.assertIsNone(two["composeService"])
         self.assertEqual(two["networkNames"], ["bridge"])
+        self.assertEqual(two["uptimeSeconds"], 3600)
         self.assertIsNone(two["netRxBytes"])
         self.assertIsNone(two["netTxBytes"])
         self.assertIsNone(two["blockReadBytes"])
