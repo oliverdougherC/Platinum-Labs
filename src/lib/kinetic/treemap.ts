@@ -39,6 +39,8 @@ interface TreemapPlanLeaf {
   kind: "leaf";
   id: string;
   weight: number;
+  seenGeneration: number;
+  rect: TreemapRect;
 }
 
 interface TreemapPlanBranch {
@@ -55,10 +57,15 @@ export interface TreemapPlan {
   idsKey: string;
   aspectRatio: number;
   root: TreemapPlanNode;
+  generation: number;
+  leafById: Map<string, TreemapPlanLeaf>;
+  rects: TreemapRect[];
+  rectById: Map<string, TreemapRect>;
 }
 
 export interface PlannedTreemap {
   rects: TreemapRect[];
+  rectById: Map<string, TreemapRect>;
   plan: TreemapPlan | null;
 }
 
@@ -121,7 +128,14 @@ function buildPlanNode(
   bounds: TreemapBounds,
 ): TreemapPlanNode {
   if (items.length === 1) {
-    return { kind: "leaf", id: items[0]!.id, weight: items[0]!.weight };
+    const item = items[0]!;
+    return {
+      kind: "leaf",
+      id: item.id,
+      weight: item.weight,
+      seenGeneration: 0,
+      rect: { id: item.id, weight: item.weight, x: 0, y: 0, w: 0, h: 0 },
+    };
   }
   const combinedWeight = total(items);
   const splitIndex = balancedSplitIndex(items);
@@ -143,28 +157,55 @@ function buildPlanNode(
   };
 }
 
-function updatePlanWeights(
+function indexPlan(
   node: TreemapPlanNode,
-  items: ReadonlyMap<string, RankedItem>,
-): number {
+  leafById: Map<string, TreemapPlanLeaf>,
+  rects: TreemapRect[],
+  rectById: Map<string, TreemapRect>,
+): void {
   if (node.kind === "leaf") {
-    node.weight = items.get(node.id)?.weight ?? 0;
-    return node.weight;
+    leafById.set(node.id, node);
+    rects.push(node.rect);
+    rectById.set(node.id, node.rect);
+    return;
   }
-  node.weight =
-    updatePlanWeights(node.left, items) + updatePlanWeights(node.right, items);
+  indexPlan(node.left, leafById, rects, rectById);
+  indexPlan(node.right, leafById, rects, rectById);
+}
+
+function updateRetainedLeafWeights(
+  plan: TreemapPlan,
+  items: readonly TreemapItem[],
+): boolean {
+  const generation = ++plan.generation;
+  let measuredCount = 0;
+  for (const item of items) {
+    if (!positiveWeight(item.weight)) continue;
+    const leaf = plan.leafById.get(item.id);
+    if (!leaf || leaf.seenGeneration === generation) return false;
+    leaf.seenGeneration = generation;
+    leaf.weight = item.weight;
+    leaf.rect.weight = item.weight;
+    measuredCount += 1;
+  }
+  return measuredCount === plan.leafById.size;
+}
+
+function updateBranchWeights(node: TreemapPlanNode): number {
+  if (node.kind === "leaf") return node.weight;
+  node.weight = updateBranchWeights(node.left) + updateBranchWeights(node.right);
   return node.weight;
 }
 
 function placePlan(
   node: TreemapPlanNode,
-  items: ReadonlyMap<string, RankedItem>,
   bounds: TreemapBounds,
-  out: TreemapRect[],
 ): void {
   if (node.kind === "leaf") {
-    const item = items.get(node.id);
-    if (item) out.push({ id: item.id, weight: item.weight, ...bounds });
+    node.rect.x = bounds.x;
+    node.rect.y = bounds.y;
+    node.rect.w = bounds.w;
+    node.rect.h = bounds.h;
     return;
   }
   const leftWeight = node.left.weight;
@@ -175,8 +216,8 @@ function placePlan(
     combinedWeight > 0 ? leftWeight / combinedWeight : 0.5,
     node.splitWidth,
   );
-  placePlan(node.left, items, leftBounds, out);
-  placePlan(node.right, items, rightBounds, out);
+  placePlan(node.left, leftBounds);
+  placePlan(node.right, rightBounds);
 }
 
 function rankedItems(items: readonly TreemapItem[]): RankedItem[] {
@@ -195,27 +236,39 @@ export function layoutTreemapWithPlan(
   bounds: TreemapBounds,
   previous: TreemapPlan | null = null,
 ): PlannedTreemap {
-  const measured = rankedItems(items);
-  if (measured.length === 0 || bounds.w <= 0 || bounds.h <= 0) {
-    return { rects: [], plan: null };
+  if (bounds.w <= 0 || bounds.h <= 0) {
+    return { rects: [], rectById: new Map(), plan: null };
   }
-  const key = idsKey(measured);
   const aspectRatio = bounds.w / bounds.h;
-  const plan =
+  let plan =
     previous &&
-    previous.idsKey === key &&
-    Math.abs(previous.aspectRatio - aspectRatio) < 0.01
+    Math.abs(previous.aspectRatio - aspectRatio) < 0.01 &&
+    updateRetainedLeafWeights(previous, items)
       ? previous
-      : {
-          idsKey: key,
-          aspectRatio,
-          root: buildPlanNode(measured, bounds),
-        };
-  const byId = new Map(measured.map((item) => [item.id, item]));
-  updatePlanWeights(plan.root, byId);
-  const rects: TreemapRect[] = [];
-  placePlan(plan.root, byId, bounds, rects);
-  return { rects, plan };
+      : null;
+  if (!plan) {
+    const measured = rankedItems(items);
+    if (measured.length === 0) {
+      return { rects: [], rectById: new Map(), plan: null };
+    }
+    const root = buildPlanNode(measured, bounds);
+    const leafById = new Map<string, TreemapPlanLeaf>();
+    const rects: TreemapRect[] = [];
+    const rectById = new Map<string, TreemapRect>();
+    indexPlan(root, leafById, rects, rectById);
+    plan = {
+      idsKey: idsKey(measured),
+      aspectRatio,
+      root,
+      generation: 0,
+      leafById,
+      rects,
+      rectById,
+    };
+  }
+  updateBranchWeights(plan.root);
+  placePlan(plan.root, bounds);
+  return { rects: plan.rects, rectById: plan.rectById, plan };
 }
 
 export function layoutTreemap(

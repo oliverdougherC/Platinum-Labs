@@ -154,7 +154,11 @@ describe("layoutTreemap", () => {
     let plan: TreemapPlan | null = null;
     let first = layoutTreemapWithPlan(items, bounds, plan);
     plan = first.plan;
-    let previous = new Map(first.rects.map((rect) => [rect.id, rect]));
+    const retainedRects = first.rects;
+    const retainedRectIndex = first.rectById;
+    let previous = new Map(
+      first.rects.map((rect) => [rect.id, { ...rect }]),
+    );
     for (let scale = 1.005; scale <= 8; scale *= 1.005) {
       const result = layoutTreemapWithPlan(
         items.map((item) =>
@@ -163,6 +167,9 @@ describe("layoutTreemap", () => {
         bounds,
         plan,
       );
+      expect(result.plan).toBe(plan);
+      expect(result.rects).toBe(retainedRects);
+      expect(result.rectById).toBe(retainedRectIndex);
       plan = result.plan;
       const next = result.rects;
       for (const rect of next) {
@@ -175,7 +182,7 @@ describe("layoutTreemap", () => {
         );
         expect(largestEdgeStep).toBeLessThan(8);
       }
-      previous = new Map(next.map((rect) => [rect.id, rect]));
+      previous = new Map(next.map((rect) => [rect.id, { ...rect }]));
     }
   });
 });

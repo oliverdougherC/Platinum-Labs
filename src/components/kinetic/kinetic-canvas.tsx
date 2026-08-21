@@ -37,8 +37,8 @@ import {
 } from "@/lib/kinetic/layout";
 import {
   layoutTreemapWithPlan,
+  type TreemapBounds,
   type TreemapPlan,
-  type TreemapRect,
 } from "@/lib/kinetic/treemap";
 import { KineticEngine } from "@/lib/kinetic/engine";
 import {
@@ -263,6 +263,9 @@ export function KineticCanvas({
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const cellButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const cellButtonGeometryRef = useRef(
+    new WeakMap<HTMLButtonElement, TreemapBounds>(),
+  );
   const treemapPlanRef = useRef<TreemapPlan | null>(null);
   const { w, h } = useStageSize(stageRef);
   const reducedMotion = useReducedMotion();
@@ -311,24 +314,45 @@ export function KineticCanvas({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const visualState = engine.visualState();
     const treemap = layoutTreemapWithPlan(
-      visualState.cells.map((cell) => ({ id: cell.id, weight: cell.weight })),
+      visualState.cells,
       currentLayout.field,
       treemapPlanRef.current,
     );
     treemapPlanRef.current = treemap.plan;
-    const cellRects = new Map<string, TreemapRect>(
-      treemap.rects.map((rect) => [rect.id, rect]),
-    );
+    const cellRects = treemap.rectById;
     // Paint and interaction geometry share the same eased rectangles. Direct
     // style writes avoid a React render on every animation frame while keeping
     // pointer and focus targets attached to the tile a reviewer actually sees.
     for (const [id, button] of cellButtonRefs.current) {
       const rect = cellRects.get(id);
       if (!rect) continue;
+      const previous = cellButtonGeometryRef.current.get(button);
+      if (
+        previous &&
+        previous.x === rect.x &&
+        previous.y === rect.y &&
+        previous.w === rect.w &&
+        previous.h === rect.h
+      ) {
+        continue;
+      }
       button.style.left = `${rect.x}px`;
       button.style.top = `${rect.y}px`;
       button.style.width = `${rect.w}px`;
       button.style.height = `${rect.h}px`;
+      if (previous) {
+        previous.x = rect.x;
+        previous.y = rect.y;
+        previous.w = rect.w;
+        previous.h = rect.h;
+      } else {
+        cellButtonGeometryRef.current.set(button, {
+          x: rect.x,
+          y: rect.y,
+          w: rect.w,
+          h: rect.h,
+        });
+      }
     }
     drawKineticFrame(ctx, visualState, currentLayout, { t, still, marks, cellRects });
   }, []);
