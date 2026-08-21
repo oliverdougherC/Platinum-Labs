@@ -358,6 +358,9 @@ export function KineticCanvas({
     new WeakMap<HTMLButtonElement, TreemapBounds>(),
   );
   const treemapPlanRef = useRef<TreemapPlan | null>(null);
+  const cellLabelWidthsRef = useRef(
+    new Map<string, { label: string; width: number }>(),
+  );
   const { w, h } = useStageSize(stageRef);
   const reducedMotion = useReducedMotion();
   const pageVisible = usePageVisible();
@@ -535,7 +538,13 @@ export function KineticCanvas({
       const position = placeContainerTooltip(activeTooltipRect, currentLayout);
       tooltipElement.style.transform = `translate3d(${position.left}px, ${position.top}px, 0)`;
     }
-    drawKineticFrame(ctx, visualState, currentLayout, { t, still, marks, cellRects });
+    drawKineticFrame(ctx, visualState, currentLayout, {
+      t,
+      still,
+      marks,
+      cellRects,
+      cellLabelWidths: cellLabelWidthsRef.current,
+    });
   }, []);
 
   // Single rAF loop, ref-guarded: at most one can ever exist, and it parks

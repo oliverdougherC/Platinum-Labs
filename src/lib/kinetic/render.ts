@@ -60,6 +60,8 @@ export interface KineticFrameOptions {
   t: number;
   /** Eased tile geometry shared with the DOM interaction layer. */
   cellRects: ReadonlyMap<string, TreemapRect>;
+  /** Per-mounted-stage label measurements; names and font are stable between frames. */
+  cellLabelWidths?: Map<string, { label: string; width: number }>;
   /**
    * No phase motion: breathing and sweeps hold a fixed pose. Frozen
    * screenshots still show the particle field, placed at the given `t`.
@@ -340,6 +342,7 @@ function drawCell(
   rect: TreemapRect,
   t: number,
   still: boolean,
+  labelWidths?: Map<string, { label: string; width: number }>,
 ): void {
   const dim = visual.dim * visual.alpha;
   if (dim <= 0.01) return;
@@ -380,7 +383,20 @@ function drawCell(
     ctx.save();
     ctx.font = "500 11px ui-sans-serif, system-ui, -apple-system, sans-serif";
     ctx.textBaseline = "middle";
-    const textWidth = ctx.measureText(visual.cell.name).width;
+    const cachedLabel = labelWidths?.get(visual.id);
+    const textWidth =
+      cachedLabel?.label === visual.cell.name
+        ? cachedLabel.width
+        : ctx.measureText(visual.cell.name).width;
+    if (labelWidths && cachedLabel?.label !== visual.cell.name) {
+      // A mounted dashboard has a bounded container set in practice. Keep the
+      // defensive cap so repeated container renames cannot grow the cache for
+      // the lifetime of a 24/7 display.
+      if (labelWidths.size >= 512 && !labelWidths.has(visual.id)) {
+        labelWidths.clear();
+      }
+      labelWidths.set(visual.id, { label: visual.cell.name, width: textWidth });
+    }
     const fit = treemapLabelFitAlpha(w, h, textWidth);
     if (fit > 0) {
       ctx.fillStyle = rgba(tone, Math.min(1, (0.96 + visual.intensity * 0.04) * dim * fit));
@@ -531,7 +547,7 @@ export function drawKineticFrame(
   ctx.fillRect(layout.field.x, layout.field.y, layout.field.w, layout.field.h);
   for (const cell of state.cells) {
     const rect = options.cellRects.get(cell.id);
-    if (rect) drawCell(ctx, cell, rect, t, still);
+    if (rect) drawCell(ctx, cell, rect, t, still, options.cellLabelWidths);
   }
   ctx.strokeStyle = "rgba(214, 222, 232, 0.16)";
   ctx.lineWidth = 1;
