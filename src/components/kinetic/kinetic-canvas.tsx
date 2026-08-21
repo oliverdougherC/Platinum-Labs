@@ -798,10 +798,13 @@ export function KineticCanvas({
           }}
         >
           <div className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3">
-            <div className="whitespace-nowrap text-[12px] font-medium tracking-[0.01em] text-fg">
+            <div
+              title={tooltipContent.name}
+              className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[12px] font-medium tracking-[0.01em] text-fg"
+            >
               {tooltipContent.name}
             </div>
-            <div className="tnum whitespace-nowrap text-right text-[11px] text-muted">
+            <div className="tnum shrink-0 whitespace-nowrap text-right text-[11px] text-muted">
               {tooltipContent.uptime}
             </div>
           </div>

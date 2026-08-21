@@ -338,6 +338,34 @@ describe("KineticCanvas continuity", () => {
     expect(high.getAttribute("aria-describedby")).toBe("kinetic-container-metrics");
   });
 
+  it("constrains a long real container name without hiding its full accessible text", () => {
+    const snapshot = structuredClone(makeFakeSnapshot("container-field-real", NOW));
+    const imageMl = snapshot.telemetry.docker.value!.containers.find(
+      (container) => container.name === "immich-machine-learning",
+    )!;
+    const longName =
+      "immich-machine-learning-with-a-production-blue-green-deployment-suffix";
+    imageMl.name = longName;
+    imageMl.composeService = longName;
+
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    const target = container.querySelector<HTMLButtonElement>(
+      `[data-kinetic-cell][aria-label^="${longName};"]`,
+    )!;
+    act(() => target.focus());
+
+    const tooltip = container.querySelector<HTMLElement>(
+      "[data-kinetic-container-tooltip]",
+    )!;
+    const name = tooltip.querySelector<HTMLElement>(`[title="${longName}"]`)!;
+    expect(name).not.toBeNull();
+    expect(name.textContent).toBe(longName);
+    expect(name.className).toContain("overflow-hidden");
+    expect(name.className).toContain("text-ellipsis");
+    expect(target.getAttribute("aria-describedby")).toBe("kinetic-container-metrics");
+    expect(tooltip.textContent).toMatch(/\d+[dhms]/);
+  });
+
   it("describes a partial known-zero flow as rate-unknown activity, never as 0 B/s", () => {
     const snapshot = makeFakeSnapshot("partial-zero", NOW);
     const { container } = render(<KineticCanvas {...props(snapshot)} />);
