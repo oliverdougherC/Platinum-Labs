@@ -80,6 +80,27 @@ function props(snapshot: DashboardSnapshot, frozen = false) {
 }
 
 describe("KineticCanvas continuity", () => {
+  it("presents Sonarr and Radarr as readable idle or active orchestrators", () => {
+    const { container, rerender } = render(
+      <KineticCanvas {...props(makeFakeSnapshot("idle", NOW))} />,
+    );
+    const orchestratorText = () =>
+      [...container.querySelectorAll("[data-kinetic-orchestrator]")].map(
+        (node) => node.textContent,
+      );
+
+    expect(orchestratorText()).toEqual(["Sonarridle", "Radarridle"]);
+    expect(container.textContent).not.toContain("Requests");
+
+    rerender(<KineticCanvas {...props(makeFakeSnapshot("downloads", NOW))} />);
+    expect(orchestratorText()).toEqual(["Sonarr2 active", "Radarr1 active"]);
+
+    const flowList = container.querySelector('[aria-label="Active data flows"]')!;
+    expect(flowList.textContent).toContain("orchestration — Sonarr orchestrating qBittorrent");
+    expect(flowList.textContent).toContain("orchestration — Radarr orchestrating qBittorrent");
+    expect(flowList.textContent).not.toContain("orchestration — Sonarr orchestrating qBittorrent · rate unknown");
+  });
+
   it("keeps the same mounted stage and single canvas across rate-changing snapshot updates", () => {
     const { container, rerender } = render(
       <KineticCanvas {...props(snapshotWithRate(10_000_000))} />,

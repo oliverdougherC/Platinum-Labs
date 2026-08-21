@@ -123,13 +123,16 @@ function flowLine(flow: KineticFlow): string {
       ? " · stale"
       : flow.treatment === "confirmed-zero"
         ? " · 0 B/s"
-        : flow.treatment === "state-only"
+        : flow.treatment === "state-only" && flow.tone !== "control"
           ? " · rate unknown"
           : "";
   return `${FLOW_KIND_WORDS[flow.kind]} — ${flow.label}${rate}${state}`;
 }
 
 function compactFlowLine(flow: KineticFlow): string {
+  if (flow.tone === "control") {
+    return `${FLOW_KIND_WORDS[flow.kind]} · ${flow.label}`;
+  }
   const rate =
     flow.rateBps !== null
       ? formatRate(flow.rateBps)
@@ -671,18 +674,26 @@ function KineticOverlay({
         return (
           <div
             key={placed.id}
-            className={`absolute -translate-x-1/2 -translate-y-1/2 text-center transition-opacity duration-300 ${dimClass({ kind: "orchestrator", id: placed.id })}`}
+            data-kinetic-orchestrator={placed.id}
+            aria-label={`${model.label}; ${model.detail ?? "idle"}`}
+            className={`absolute -translate-x-1/2 -translate-y-1/2 text-center transition-[color,opacity,text-shadow] duration-500 ${dimClass({ kind: "orchestrator", id: placed.id })}`}
             style={{ left: placed.x, top: placed.y }}
           >
             <div
-              className={`text-[12px] font-medium uppercase tracking-[0.22em] ${
-                model.active ? "text-muted" : "text-faint/70"
+              className={`text-[20px] font-semibold tracking-[-0.015em] transition-colors duration-500 ${
+                model.active ? "text-fg" : "text-muted/75"
               }`}
             >
               {model.label}
             </div>
             {model.detail ? (
-              <div className="mt-0.5 text-[11px] tracking-wide text-faint">{model.detail}</div>
+              <div
+                className={`mt-1 text-[12px] tabular-nums tracking-wide transition-colors duration-500 ${
+                  model.active ? "text-muted" : "text-faint/75"
+                }`}
+              >
+                {model.detail}
+              </div>
             ) : null}
           </div>
         );

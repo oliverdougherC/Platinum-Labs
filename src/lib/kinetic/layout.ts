@@ -80,7 +80,7 @@ export interface AnchorPlacement {
 }
 
 export interface OrchestratorPlacement {
-  id: "seerr" | "sonarr" | "radarr";
+  id: "sonarr" | "radarr";
   x: number;
   y: number;
 }
@@ -245,7 +245,7 @@ function nodePoint(
     }
     case "orchestrator": {
       const orc = L.orchestrators.find((o) => o.id === ref.id)!;
-      return { x: orc.x, y: orc.y + 22 };
+      return { x: orc.x, y: orc.y + 30 };
     }
     case "pool": {
       const stratum = L.strata.find((s) => s.name === ref.name);
@@ -264,6 +264,17 @@ function nodePoint(
  */
 function flowPath(flow: KineticFlow, from: Pt, to: Pt, L: KineticStage): SampledPath {
   const anchorDrop = 58; // ribbons connect below the anchor typography
+  if (flow.kind === "control") {
+    const end = { x: to.x + 64, y: to.y - 44 };
+    const dx = end.x - from.x;
+    const dy = end.y - from.y;
+    return samplePath(
+      from,
+      { x: from.x + dx * 0.18, y: from.y + dy * 0.38 },
+      { x: end.x - dx * 0.2, y: end.y - dy * 0.28 },
+      end,
+    );
+  }
   if (flow.kind === "wan-transfer" || flow.kind === "egress") {
     const a = { ...from };
     const b = { ...to };
@@ -337,7 +348,7 @@ function flowPath(flow: KineticFlow, from: Pt, to: Pt, L: KineticStage): Sampled
 export function buildKineticStage(scene: KineticScene, w: number, h: number): KineticStage {
   const bandH = Math.min(Math.max(h * 0.088, 64), 108);
   const stageH = h - bandH;
-  const orchY = bandH + stageH * 0.135;
+  const orchY = bandH + stageH * 0.17;
   const anchorY = bandH + stageH * 0.34;
   // The pool name + capacity block below each stratum needs real pixels, not
   // a fraction: at small stage heights (200% zoom) a pure-percentage floor
@@ -350,9 +361,8 @@ export function buildKineticStage(scene: KineticScene, w: number, h: number): Ki
     { id: "jellyfin", x: w * 0.665, y: anchorY, r: Math.min(w, h * 1.6) * 0.085 },
   ];
   const orchestrators: OrchestratorPlacement[] = [
-    { id: "seerr", x: w * 0.4, y: orchY },
-    { id: "sonarr", x: w * 0.5, y: orchY },
-    { id: "radarr", x: w * 0.6, y: orchY },
+    { id: "sonarr", x: w * 0.44, y: orchY },
+    { id: "radarr", x: w * 0.56, y: orchY },
   ];
   const edges: EdgePlacement[] = [
     { id: "wan", x: w * 0.048, y: anchorY, side: "left" },
