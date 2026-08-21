@@ -983,7 +983,7 @@ async function captureKineticContinuityStress(browser, baseUrl) {
   await page.waitForTimeout(300);
   await page.evaluate(() => window.__homelabSetScenario("downloads"));
   await page.waitForTimeout(3_500);
-  // Final stop: the missing-sample grace and terminal decay complete undisturbed.
+  // Final confirmed stop: terminal decay completes undisturbed.
   await page.evaluate(() => window.__homelabSetScenario("idle"));
   await page.waitForTimeout(6_000);
   if (page.url() !== url0) {
@@ -1000,8 +1000,9 @@ async function captureKineticContinuityStress(browser, baseUrl) {
 
 /**
  * PLA-286 acceptance evidence: one real-shaped DataStore → eSATA flow stays
- * continuously visible across a 2.2s missing telemetry window, resumes on the
- * same mounted canvas, then disappears once after sustained inactivity. The
+ * continuously identifiable across a 2.2s ambiguous telemetry window (frozen
+ * as last-known, never a fresh rate), resumes on the same mounted canvas, then
+ * disappears once after confirmed inactivity. The
  * ~36s clip crosses many 2s simulator samples without navigation or remounting.
  */
 async function captureBackgroundFlowContinuity(browser, baseUrl) {
@@ -1025,11 +1026,11 @@ async function captureBackgroundFlowContinuity(browser, baseUrl) {
   const mountedStage = await page.locator("[data-kinetic-stage]").elementHandle();
 
   await page.waitForTimeout(8_000);
-  await page.evaluate(() => window.__homelabSetScenario("idle"));
+  await page.evaluate(() => window.__homelabSetScenario("background-copy-ambiguous"));
   await page.waitForTimeout(2_200);
   const gapCounts = await page.evaluate(() => window.__homelabKineticDebug());
   if (gapCounts.flows !== 1 || gapCounts.decaying !== 0) {
-    throw new Error(`transient gap did not retain one live flow: ${JSON.stringify(gapCounts)}`);
+    throw new Error(`ambiguous gap did not retain one flow identity: ${JSON.stringify(gapCounts)}`);
   }
 
   await page.evaluate(() => window.__homelabSetScenario("background-copy"));

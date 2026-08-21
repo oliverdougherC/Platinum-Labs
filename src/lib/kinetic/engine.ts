@@ -45,9 +45,9 @@ export const ONSET_SECONDS = 0.9;
 /** Flow decay: a stopped flow releases over this long. */
 export const DECAY_SECONDS = 0.7;
 /**
- * Missing-observation hysteresis for data flows. Host rates arrive every 2s;
- * 4.5s bridges one bursty/missing counter window (and its repeated cached
- * snapshot) but requires sustained absence before a terminal fade begins.
+ * Grace for an explicitly ambiguous inferred background-copy observation.
+ * Host rates arrive every 2s, so 4.5s bridges one inconclusive counter window
+ * while confirmed ends and unavailable sources still begin their exit now.
  */
 export const FLOW_MISSING_GRACE_SECONDS = 4.5;
 /**
@@ -126,6 +126,19 @@ export interface FlowVisual {
   rate: number;
   dim: number;
   channels: ChannelVisual[];
+}
+
+function retainedStaleFlow(flow: KineticFlow, reason: string): KineticFlow {
+  return {
+    ...flow,
+    treatment: "stale",
+    rateBps: null,
+    channels: flow.channels.map((channel) => ({
+      ...channel,
+      bytesPerSecond: null,
+    })),
+    provenance: `${flow.provenance}; ${reason}`,
+  };
 }
 
 export interface CellVisual {
@@ -412,14 +425,36 @@ export class KineticEngine {
     }
     for (const visual of this.flowVisuals.values()) {
       if (present.has(visual.id) || visual.removed) continue;
-      // `organize` is a short-lived control-plane whisper. Data flows receive
-      // one deliberate observation-gap grace so a bursty rate window cannot
-      // destroy their logical/visual identity between corroborating samples.
-      if (visual.flow.kind === "organize") {
-        visual.removed = true;
-      } else if (visual.missingSinceMs === null) {
-        visual.missingSinceMs = this.wallTimeMs;
+      const backgroundGap =
+        visual.flow.kind === "background-transfer" &&
+        scene.backgroundTransferObservation === "ambiguous-gap";
+      if (backgroundGap) {
+        if (visual.missingSinceMs === null) {
+          // Retain identity and phase, but freeze the visual as last-known truth:
+          // an ambiguous sample must never present the old rate as fresh.
+          visual.flow = retainedStaleFlow(
+            visual.flow,
+            "current disk sample cannot corroborate one unambiguous pool pair",
+          );
+          visual.missingSinceMs = this.wallTimeMs;
+        }
+        // Repeated samples from the same ambiguous interval must preserve the
+        // original gap start; expiry below remains monotonic and deterministic.
+        continue;
       }
+      if (
+        scene.unavailableFlowKinds.includes(visual.flow.kind) ||
+        (visual.flow.kind === "background-transfer" &&
+          scene.backgroundTransferObservation === "source-unavailable")
+      ) {
+        visual.flow = retainedStaleFlow(
+          visual.flow,
+          "authoritative telemetry source is unavailable",
+        );
+      }
+      // Confirmed semantic ends and unavailable sources decay immediately.
+      visual.missingSinceMs = null;
+      visual.removed = true;
     }
   }
 
