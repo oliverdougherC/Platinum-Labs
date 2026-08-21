@@ -192,12 +192,16 @@ function groupRank(label: string): number {
 }
 
 /** Stable four-bank grouping. Extra projects merge explicitly into Other. */
-export function groupWorkloads(containers: DockerContainerTelemetry[]): FabricWorkloadGroup[] {
+export function groupWorkloads(
+  containers: DockerContainerTelemetry[],
+  options: { includeFirstClass?: boolean } = {},
+): FabricWorkloadGroup[] {
   const buckets = new Map<string, FabricGroupMember[]>();
   for (const container of containers) {
     if (
-      FIRST_CLASS.has(container.name.toLowerCase()) ||
-      FIRST_CLASS.has(container.composeService?.toLowerCase() ?? "")
+      !options.includeFirstClass &&
+      (FIRST_CLASS.has(container.name.toLowerCase()) ||
+        FIRST_CLASS.has(container.composeService?.toLowerCase() ?? ""))
     ) continue;
     const key = groupKey(container);
     const existing = buckets.get(key) ?? [];

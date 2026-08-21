@@ -70,15 +70,34 @@ const TAU = {
   dim: 0.12,
   /** Workload cell brightness / halo / radius; anchor glow; storage wake. */
   telemetry: 0.45,
+  /** Treemap redistribution settles inside the normal two-second sample. */
+  geometry: 0.32,
   /** Storage fill level (changes rarely; a slow liquid settle). */
   fill: 0.9,
 } as const;
 
 const SETTLE_EPS = 0.004;
+const MEMORY_ABSOLUTE_DEADBAND_BYTES = 2 * 1024 ** 2;
+const MEMORY_RELATIVE_DEADBAND = 0.005;
 
 function approach(current: number, target: number, dt: number, tau: number): number {
   const next = current + (target - current) * (1 - Math.exp(-dt / tau));
   return Math.abs(next - target) < SETTLE_EPS ? target : next;
+}
+
+function approachMemory(current: number, target: number, dt: number): number {
+  const next = current + (target - current) * (1 - Math.exp(-dt / TAU.geometry));
+  const epsilon = Math.max(MEMORY_ABSOLUTE_DEADBAND_BYTES / 4, target * 0.005);
+  return Math.abs(next - target) < epsilon ? target : next;
+}
+
+function memoryTarget(previous: number, next: number): number {
+  const delta = Math.abs(next - previous);
+  const threshold = Math.max(
+    MEMORY_ABSOLUTE_DEADBAND_BYTES,
+    Math.max(previous, next) * MEMORY_RELATIVE_DEADBAND,
+  );
+  return delta < threshold ? previous : next;
 }
 
 /** Rate easing runs in log10 space so decade jumps feel proportional. */
@@ -144,10 +163,8 @@ function retainedStaleFlow(flow: KineticFlow, reason: string): KineticFlow {
 export interface CellVisual {
   id: string;
   cell: FieldCellModel;
-  x: number;
-  y: number;
-  /** Eased radius (memory changes resize gradually, never repack). */
-  r: number;
+  /** Eased raw memory bytes. The painter repacks these weights every frame. */
+  weight: number;
   intensity: number;
   halo: number;
   /** Crossfade toward the unknown (dashed ring) treatment. */
@@ -293,7 +310,7 @@ export class KineticEngine {
   private cellVisuals = new Map<string, CellVisual>();
   private cellTargets = new Map<
     string,
-    { r: number; intensity: number; halo: number; unknownW: number; attentionW: number; alpha: number; dim: number }
+    { weight: number; intensity: number; halo: number; unknownW: number; attentionW: number; alpha: number; dim: number }
   >();
   private strataVisuals = new Map<string, StratumVisual>();
   private anchorVisuals = new Map<string, AnchorVisual>();
@@ -492,16 +509,14 @@ export class KineticEngine {
         const existing = this.cellVisuals.get(placed.id);
         if (existing) {
           existing.cell = cell;
-          existing.x = placed.x;
-          existing.y = placed.y;
           existing.removed = false;
         } else {
           this.cellVisuals.set(placed.id, {
             id: placed.id,
             cell,
-            x: placed.x,
-            y: placed.y,
-            r: placed.r,
+            // Entry begins as a truthful sliver of the measured weight; its
+            // alpha and raw weight then rise together without a full-size pop.
+            weight: placed.weight * 0.002,
             intensity: cell.intensity ?? 0,
             halo: 0,
             unknownW: cell.unverified || cell.intensity === null ? 1 : 0,
@@ -511,11 +526,10 @@ export class KineticEngine {
             dim: 1,
           });
         }
-        // Position is cached stage geometry; the radius target tracks the
-        // CURRENT memory footprint so size changes ease gradually without
-        // ever repacking the constellation.
+        // A 0.5% / 2 MiB deadband prevents insignificant collector noise from
+        // keeping a 24/7 surface in perpetual redistribution.
         const target = this.cellTargets.get(placed.id) ?? {
-          r: placed.r,
+          weight: placed.weight,
           intensity: 0,
           halo: 0,
           unknownW: 0,
@@ -523,14 +537,16 @@ export class KineticEngine {
           alpha: 1,
           dim: 1,
         };
-        target.r =
-          layout.cellRMin +
-          (layout.cellRMax - layout.cellRMin) * Math.pow(cell.sizeScore, 0.9);
+        target.weight = memoryTarget(target.weight, placed.weight);
         this.cellTargets.set(placed.id, target);
       }
     }
     for (const visual of this.cellVisuals.values()) {
-      if (!present.has(visual.id)) visual.removed = true;
+      if (!present.has(visual.id)) {
+        visual.removed = true;
+        const target = this.cellTargets.get(visual.id);
+        if (target) target.weight = 0;
+      }
     }
   }
 
@@ -738,7 +754,7 @@ export class KineticEngine {
     for (const visual of this.cellVisuals.values()) {
       const target = this.cellTargets.get(visual.id);
       if (!target) continue;
-      visual.r = approach(visual.r, target.r, dt, TAU.telemetry);
+      visual.weight = approachMemory(visual.weight, target.weight, dt);
       visual.intensity = approach(visual.intensity, target.intensity, dt, TAU.telemetry);
       visual.halo = approach(visual.halo, target.halo, dt, TAU.telemetry);
       visual.unknownW = approach(visual.unknownW, target.unknownW, dt, TAU.treatment);
@@ -746,7 +762,7 @@ export class KineticEngine {
       visual.alpha = approach(visual.alpha, target.alpha, dt, TAU.treatment);
       visual.dim = approach(visual.dim, target.dim, dt, TAU.dim);
       if (
-        visual.r !== target.r ||
+        visual.weight !== target.weight ||
         visual.intensity !== target.intensity ||
         visual.halo !== target.halo ||
         visual.unknownW !== target.unknownW ||
@@ -758,7 +774,7 @@ export class KineticEngine {
       }
     }
     for (const [id, visual] of this.cellVisuals) {
-      if (visual.removed && visual.alpha <= 0) {
+      if (visual.removed && visual.alpha <= 0 && visual.weight <= 0) {
         this.cellVisuals.delete(id);
         this.cellTargets.delete(id);
         pruned = true;
@@ -837,7 +853,7 @@ export class KineticEngine {
     for (const visual of this.cellVisuals.values()) {
       const target = this.cellTargets.get(visual.id);
       if (!target) continue;
-      visual.r = target.r;
+      visual.weight = target.weight;
       visual.intensity = target.intensity;
       visual.halo = target.halo;
       visual.unknownW = target.unknownW;

@@ -115,7 +115,7 @@ const KINETIC_SHOTS = [
   { name: "16-v4-cpu-gpu-load-1920x1080", scenario: "gpu-workload", w: 1920, h: 1080 },
   { name: "17-v4-jellyfin-inspector-1920x1080", scenario: "active", w: 1920, h: 1080, action: "kinetic-anchor:jellyfin" },
   { name: "18-v4-qbittorrent-inspector-1920x1080", scenario: "downloads", w: 1920, h: 1080, action: "kinetic-anchor:qbittorrent" },
-  { name: "19-v4-workload-inspector-1920x1080", scenario: "container-field-real", w: 1920, h: 1080, action: "kinetic-cell:unpackerr" },
+  { name: "19-v4-workload-inspector-1920x1080", scenario: "container-field-real", w: 1920, h: 1080, action: "kinetic-cell:vaultwarden" },
   { name: "20-v4-reduced-motion-1920x1080", scenario: "active", w: 1920, h: 1080, reducedMotion: true },
   { name: "21-v4-stale-1920x1080", scenario: "stale", w: 1920, h: 1080 },
   { name: "22-v4-confirmed-zero-1920x1080", scenario: "confirmed-zero", w: 1920, h: 1080 },
@@ -371,12 +371,11 @@ async function performShotAction(page, action) {
   }
   if (action?.startsWith("kinetic-cell:")) {
     const cellName = action.slice("kinetic-cell:".length);
-    // Cells are keyed by container id; target them by accessible name so the
-    // evidence exercises exactly what a keyboard/screen-reader user gets.
+    // Treemap tiles intentionally keep small names out of visible pixels, but
+    // every tile retains its complete accessible name.
+    const escapedName = cellName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     await page
-      .locator("[data-kinetic-cell]")
-      .filter({ has: page.locator(`text="${cellName}"`) })
-      .first()
+      .getByRole("button", { name: new RegExp(`^${escapedName};`, "i") })
       .click();
     await page.waitForTimeout(200);
     return;
@@ -1067,6 +1066,51 @@ async function captureKineticContinuityStress(browser, baseUrl) {
 }
 
 /**
+ * PLA-281 treemap evidence: one stable container identity grows from a small
+ * measured footprint to the dominant resident workload, then yields the area
+ * back. Every step mutates the same mounted fake snapshot at the normal 2s
+ * sample rhythm; no navigation, remount, or fabricated production telemetry.
+ */
+async function captureContainerTreemapGrowth(browser, baseUrl) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+    recordVideo: { dir: OUT_DIR, size: { width: 1280, height: 720 } },
+    bypassCSP: true,
+  });
+  const page = await context.newPage();
+  console.log("recording container treemap growth (same tile identity): small → medium → dominant → small…");
+  await page.goto(`${baseUrl}/dev/kinetic-flow?scenario=container-field-real`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.waitForFunction(
+    () => typeof window.__homelabSetContainerMemoryScale === "function",
+    { timeout: 15_000 },
+  );
+  const stage = await page.locator("[data-kinetic-stage]").elementHandle();
+  const tile = await page
+    .locator('[data-kinetic-cell][aria-label^="immich-machine-learning;"]')
+    .elementHandle();
+  const scale = (value) =>
+    page.evaluate((next) => window.__homelabSetContainerMemoryScale(next), value);
+  await scale(0.15);
+  await page.waitForTimeout(2_500);
+  for (const value of [0.4, 1, 2, 4, 2, 0.7, 0.2]) {
+    await scale(value);
+    await page.waitForTimeout(2_200);
+  }
+  if (stage && !(await stage.evaluate((node) => node === document.querySelector("[data-kinetic-stage]")))) {
+    throw new Error("treemap growth capture remounted the kinetic stage");
+  }
+  if (tile && !(await tile.evaluate((node) => node.isConnected))) {
+    throw new Error("treemap growth capture replaced the stable container tile");
+  }
+  const video = page.video();
+  await page.close();
+  await context.close();
+  await saveMotionClip(await video.path(), "motion-container-memory-growth");
+}
+
+/**
  * PLA-286 acceptance evidence: one real-shaped DataStore → eSATA flow stays
  * continuously identifiable across a 2.2s ambiguous telemetry window (frozen
  * as last-known, never a fresh rate), resumes on the same mounted canvas, then
@@ -1185,6 +1229,10 @@ async function captureBackgroundFlowContinuity(browser, baseUrl) {
  * then easing back toward idle.
  */
 async function captureMotion(browser, baseUrl) {
+  if (KINETIC && ONLY === "container-memory-growth") {
+    await captureContainerTreemapGrowth(browser, baseUrl);
+    return;
+  }
   if (KINETIC && ONLY?.includes("qb-download-panel")) {
     await captureQbDownloadPanelMotion(browser, baseUrl);
     return;
@@ -1218,6 +1266,10 @@ async function captureMotion(browser, baseUrl) {
       "quiet-download-playback-simultaneous-quiet",
     );
     const wantsStress = wantsMotion("motion-continuity-stress", "continuity-stress");
+    const wantsGrowth = wantsMotion(
+      "motion-container-memory-growth",
+      "container-memory-growth",
+    );
     const wantsPla286 = wantsMotion(
       "motion-background-flow-continuity-pla-286",
       "background-flow-continuity-pla-286",
@@ -1250,6 +1302,7 @@ async function captureMotion(browser, baseUrl) {
       await context.close();
     }
     if (wantsStress) await captureKineticContinuityStress(browser, baseUrl);
+    if (wantsGrowth) await captureContainerTreemapGrowth(browser, baseUrl);
     if (wantsPla286) await captureBackgroundFlowContinuity(browser, baseUrl);
     return;
   }
