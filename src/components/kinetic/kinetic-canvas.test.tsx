@@ -80,6 +80,106 @@ function props(snapshot: DashboardSnapshot, frozen = false) {
 }
 
 describe("KineticCanvas continuity", () => {
+  it("opens a compact active-download panel on qBittorrent hover and focus", () => {
+    const snapshot = structuredClone(makeFakeSnapshot("downloads", NOW));
+    snapshot.acquisition.items.push({
+      id: "arr-only",
+      source: "sonarr",
+      title: "Uncorrelated usenet acquisition",
+      quality: null,
+      state: "downloading",
+      progress: 0.4,
+      rateBps: 900_000,
+      etaSeconds: null,
+      correlationKey: null,
+    });
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="qbittorrent"]',
+    )!;
+
+    expect(container.querySelector("[data-download-panel]")).toBeNull();
+    fireEvent.mouseEnter(anchor);
+    const panel = container.querySelector("[data-download-panel]")!;
+    expect(panel).not.toBeNull();
+    expect(panel.textContent).toContain("Severance — S02E07");
+    expect(panel.textContent).toContain("63%");
+    expect(panel.textContent).toContain("7.5 MB/s");
+    expect(panel.textContent).toContain("Sinners (2025)");
+    expect(panel.textContent).not.toContain("Shrinking — S02E10");
+    expect(panel.textContent).not.toContain("Uncorrelated usenet acquisition");
+
+    fireEvent.mouseLeave(anchor);
+    fireEvent.mouseEnter(panel);
+    expect(container.querySelector("[data-download-panel]")).toBe(panel);
+
+    fireEvent.mouseLeave(panel);
+    fireEvent.focus(anchor);
+    expect(container.querySelector("[data-download-panel]")).not.toBeNull();
+  });
+
+  it("keeps panel and row identity stable while live values update and input order changes", () => {
+    const initial = structuredClone(makeFakeSnapshot("downloads", NOW));
+    const { container, rerender } = render(<KineticCanvas {...props(initial)} />);
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="qbittorrent"]',
+    )!;
+    fireEvent.mouseEnter(anchor);
+    const panel = container.querySelector("[data-download-panel]")!;
+    const beforeRows = [...panel.querySelectorAll<HTMLElement>("[data-download-row]")];
+    const beforeIds = beforeRows.map((row) => row.dataset.downloadRow);
+
+    const next = structuredClone(initial);
+    next.acquisition.items.reverse();
+    const severance = next.acquisition.items.find((item) => item.id === "q-1")!;
+    severance.progress = 0.71;
+    severance.rateBps = 8_400_000;
+    rerender(<KineticCanvas {...props(next)} />);
+
+    const updatedPanel = container.querySelector("[data-download-panel]")!;
+    const afterRows = [...updatedPanel.querySelectorAll<HTMLElement>("[data-download-row]")];
+    expect(updatedPanel).toBe(panel);
+    expect(afterRows.map((row) => row.dataset.downloadRow)).toEqual(beforeIds);
+    for (let index = 0; index < beforeRows.length; index++) {
+      expect(afterRows[index]).toBe(beforeRows[index]);
+    }
+    expect(updatedPanel.textContent).toContain("71%");
+    expect(updatedPanel.textContent).toContain("8.4 MB/s");
+  });
+
+  it("uses an internally scrollable list for the deterministic long-download fixture", () => {
+    const { container } = render(
+      <KineticCanvas {...props(makeFakeSnapshot("downloads-many", NOW))} />,
+    );
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="qbittorrent"]',
+    )!;
+    fireEvent.focus(anchor);
+    const panel = container.querySelector("[data-download-panel]")!;
+    expect(panel.querySelectorAll("[data-download-row]")).toHaveLength(12);
+    const list = panel.querySelector("[data-download-list]")!;
+    expect(list.className).toContain("max-h-");
+    expect(list.className).toContain("overflow-y-auto");
+  });
+
+  it("shows a quiet empty state instead of seeders or fabricated zero values", () => {
+    const { container, rerender } = render(
+      <KineticCanvas {...props(makeFakeSnapshot("seed-only", NOW))} />,
+    );
+    const anchor = container.querySelector<HTMLButtonElement>(
+      '[data-kinetic-anchor="qbittorrent"]',
+    )!;
+    fireEvent.mouseEnter(anchor);
+    let panel = container.querySelector("[data-download-panel]")!;
+    expect(panel.textContent).toContain("No active downloads");
+    expect(panel.querySelectorAll("[data-download-row]")).toHaveLength(0);
+
+    rerender(<KineticCanvas {...props(makeFakeSnapshot("download-rate-unknown", NOW))} />);
+    panel = container.querySelector("[data-download-panel]")!;
+    expect(panel.textContent).toContain("—");
+    expect(panel.textContent).not.toContain("0 B/s");
+  });
+
   it("keeps the same mounted stage and single canvas across rate-changing snapshot updates", () => {
     const { container, rerender } = render(
       <KineticCanvas {...props(snapshotWithRate(10_000_000))} />,

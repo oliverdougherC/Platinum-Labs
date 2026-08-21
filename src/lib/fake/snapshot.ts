@@ -164,6 +164,7 @@ function acquisitionActive(): AcquisitionSnapshot {
       progress: 0.63,
       rateBps: 7_500_000,
       etaSeconds: 320,
+      correlationKey: "fake-severance-s02e07",
     },
     {
       id: "q-2",
@@ -174,6 +175,7 @@ function acquisitionActive(): AcquisitionSnapshot {
       progress: 0.18,
       rateBps: 4_200_000,
       etaSeconds: 1_450,
+      correlationKey: "fake-sinners-2025",
     },
     {
       id: "q-3",
@@ -184,8 +186,38 @@ function acquisitionActive(): AcquisitionSnapshot {
       progress: 1,
       rateBps: null,
       etaSeconds: null,
+      correlationKey: "fake-shrinking-s02e10",
     },
   ];
+  return { items, rollup: rollup(items) };
+}
+
+/** Twelve measured torrent downloads: deterministic overflow evidence for PLA-288. */
+function acquisitionMany(): AcquisitionSnapshot {
+  const items: AcquisitionItem[] = Array.from({ length: 12 }, (_, index) => ({
+    id: `q-many-${index + 1}`,
+    source: index % 2 === 0 ? "sonarr" : "radarr",
+    title:
+      index % 2 === 0
+        ? `Constellation — S01E${String(index + 1).padStart(2, "0")} Extended Release`
+        : `Archive Feature ${String(index + 1).padStart(2, "0")} (2026) Remux`,
+    quality: index % 2 === 0 ? "WEB-DL 1080p" : "Remux-2160p",
+    state: "downloading",
+    progress: Math.min(0.96, 0.08 + index * 0.073),
+    rateBps: 640_000 + index * 510_000,
+    etaSeconds: 2_400 - index * 110,
+    correlationKey: `fake-many-${index + 1}`,
+  }));
+  return { items, rollup: rollup(items) };
+}
+
+/** Same torrent identities at a later live poll, with changed progress and rates. */
+function acquisitionProgressed(): AcquisitionSnapshot {
+  const items = acquisitionActive().items.map((item) => {
+    if (item.id === "q-1") return { ...item, progress: 0.71, rateBps: 8_400_000 };
+    if (item.id === "q-2") return { ...item, progress: 0.24, rateBps: 3_600_000 };
+    return item;
+  });
   return { items, rollup: rollup(items) };
 }
 
@@ -541,6 +573,8 @@ export const SCENARIOS = [
   "mixed-session",
   "partial-zero",
   "downloads",
+  "downloads-progressed",
+  "downloads-many",
   "seeding",
   "seed-only",
   "importing",
@@ -600,6 +634,8 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "mixed-session": "Mixed known / unknown sessions",
   "partial-zero": "Jellyfin — partial zero (total unknown)",
   downloads: "Active downloads / imports",
+  "downloads-progressed": "Active downloads — progressed poll",
+  "downloads-many": "Active downloads — scroll overflow",
   seeding: "Download + seed upload",
   "seed-only": "Seed upload only",
   importing: "Sonarr import (organizing)",
@@ -1052,6 +1088,22 @@ const BUILDERS: Record<FakeScenario, Builder> = {
     compose(now, {
       jellyfin: jellyfinIdle(now),
       acquisition: acquisitionActive(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "downloads",
+    }),
+
+  "downloads-progressed": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionProgressed(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "downloads",
+    }),
+
+  "downloads-many": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionMany(),
       zfs: zfsHealthy(now),
       telemetryProfile: "downloads",
     }),

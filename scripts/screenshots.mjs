@@ -162,6 +162,20 @@ const KINETIC_SHOTS = [
     w: 1920,
     h: 1080,
   },
+  {
+    name: "36-v42-qb-download-panel-short-1920x1080",
+    scenario: "downloads",
+    w: 1920,
+    h: 1080,
+    action: "kinetic-download-hover",
+  },
+  {
+    name: "37-v42-qb-download-panel-scroll-1920x1080",
+    scenario: "downloads-many",
+    w: 1920,
+    h: 1080,
+    action: "kinetic-download-hover",
+  },
 ];
 
 /**
@@ -306,6 +320,16 @@ async function validateKineticShot(page, shot) {
       throw new Error(`Escape did not close the kinetic inspector (${shot.name})`);
     }
   }
+  if (shot.action === "kinetic-download-hover") {
+    const panel = page.locator("[data-download-panel]");
+    if ((await panel.count()) !== 1) {
+      throw new Error(`qBittorrent download panel did not open (${shot.name})`);
+    }
+    const expectedRows = shot.scenario === "downloads-many" ? 12 : 2;
+    if ((await panel.locator("[data-download-row]").count()) !== expectedRows) {
+      throw new Error(`qBittorrent download panel row count drifted (${shot.name})`);
+    }
+  }
   if (shot.transitionScenario === "docker-unavailable") {
     // Retained-identity contract: the field must persist as explicit
     // unknowns, with no live workload count asserted.
@@ -336,6 +360,12 @@ async function performShotAction(page, action) {
       .first()
       .click();
     await page.waitForTimeout(200);
+    return;
+  }
+  if (action === "kinetic-download-hover") {
+    await page.locator('[data-kinetic-anchor="qbittorrent"]').hover();
+    await page.locator("[data-download-panel]").waitFor({ state: "visible" });
+    await page.waitForTimeout(220);
     return;
   }
   switch (action) {
@@ -1007,6 +1037,10 @@ async function captureKineticContinuityStress(browser, baseUrl) {
  * then easing back toward idle.
  */
 async function captureMotion(browser, baseUrl) {
+  if (KINETIC && ONLY?.includes("qb-download-panel")) {
+    await captureQbDownloadPanelMotion(browser, baseUrl);
+    return;
+  }
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
     recordVideo: { dir: OUT_DIR, size: { width: 1280, height: 720 } },
@@ -1068,6 +1102,44 @@ async function captureMotion(browser, baseUrl) {
   await page.close();
   await context.close();
   await saveMotionClip(await video.path(), "motion-idle-to-active");
+}
+
+async function captureQbDownloadPanelMotion(browser, baseUrl) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+    recordVideo: { dir: OUT_DIR, size: { width: 1280, height: 720 } },
+    bypassCSP: true,
+  });
+  const page = await context.newPage();
+  console.log("recording qBittorrent panel (same mounted rows): live values update in place…");
+  await page.goto(`${baseUrl}/?ui=kinetic&scenario=downloads&switcher=off`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.waitForFunction(() => typeof window.__homelabSetScenario === "function", {
+    timeout: 15_000,
+  });
+  await page.locator('[data-kinetic-anchor="qbittorrent"]').hover();
+  const panel = page.locator("[data-download-panel]");
+  await panel.waitFor({ state: "visible" });
+  const mountedPanel = await panel.elementHandle();
+  const mountedRows = await panel.locator("[data-download-row]").elementHandles();
+  await page.waitForTimeout(2_500);
+  await page.evaluate(() => window.__homelabSetScenario("downloads-progressed"));
+  await page.waitForTimeout(3_000);
+  await page.evaluate(() => window.__homelabSetScenario("downloads"));
+  await page.waitForTimeout(2_500);
+  if (!(await mountedPanel.evaluate((node) => node === document.querySelector("[data-download-panel]")))) {
+    throw new Error("qBittorrent download panel remounted during a live update");
+  }
+  for (const row of mountedRows) {
+    if (!(await row.evaluate((node) => node.isConnected))) {
+      throw new Error("qBittorrent download row remounted during a live update");
+    }
+  }
+  const video = page.video();
+  await page.close();
+  await context.close();
+  await saveMotionClip(await video.path(), "motion-qb-download-panel-live-update");
 }
 
 if (!existsSync("package.json")) {
