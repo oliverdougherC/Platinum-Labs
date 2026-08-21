@@ -332,8 +332,13 @@ async function validateKineticShot(page, shot) {
     if ((await panel.getAttribute("role")) !== "region") {
       throw new Error(`qBittorrent download panel is not a non-modal region (${shot.name})`);
     }
-    if (!(await panel.evaluate((node) => node === document.activeElement))) {
-      throw new Error(`keyboard focus did not enter the download panel (${shot.name})`);
+    if (
+      !(await panel.evaluate((node) => {
+        const scrollTarget = node.querySelector("[data-download-list]");
+        return document.activeElement === (scrollTarget ?? node);
+      }))
+    ) {
+      throw new Error(`keyboard focus did not enter the keyboard-scroll target (${shot.name})`);
     }
   }
   if (shot.transitionScenario === "docker-unavailable") {
@@ -369,9 +374,27 @@ async function performShotAction(page, action) {
     return;
   }
   if (action === "kinetic-download-panel") {
-    await page.locator('[data-kinetic-anchor="qbittorrent"]').focus();
+    const anchor = page.locator('[data-kinetic-anchor="qbittorrent"]');
+    await anchor.waitFor();
+    await anchor.focus();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-kinetic-anchor="qbittorrent"]')?.getAttribute(
+          "aria-expanded",
+        ) === "true" && document.querySelector("[data-download-panel]"),
+      { timeout: 5_000 },
+    );
     await page.keyboard.press("Tab");
     await page.locator("[data-download-panel]").waitFor({ state: "visible" });
+    await page.waitForFunction(
+      () => {
+        const panel = document.querySelector("[data-download-panel]");
+        if (!(panel instanceof HTMLElement)) return false;
+        const scrollTarget = panel.querySelector("[data-download-list]");
+        return document.activeElement === (scrollTarget ?? panel);
+      },
+      { timeout: 5_000 },
+    );
     await page.waitForTimeout(220);
     return;
   }
@@ -1125,10 +1148,28 @@ async function captureQbDownloadPanelMotion(browser, baseUrl) {
   await page.waitForFunction(() => typeof window.__homelabSetScenario === "function", {
     timeout: 15_000,
   });
-  await page.locator('[data-kinetic-anchor="qbittorrent"]').focus();
+  const anchor = page.locator('[data-kinetic-anchor="qbittorrent"]');
+  await anchor.waitFor();
+  await anchor.focus();
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[data-kinetic-anchor="qbittorrent"]')?.getAttribute(
+        "aria-expanded",
+      ) === "true" && document.querySelector("[data-download-panel]"),
+    { timeout: 5_000 },
+  );
   await page.keyboard.press("Tab");
   const panel = page.locator("[data-download-panel]");
   await panel.waitFor({ state: "visible" });
+  await page.waitForFunction(
+    () => {
+      const mountedPanel = document.querySelector("[data-download-panel]");
+      if (!(mountedPanel instanceof HTMLElement)) return false;
+      const scrollTarget = mountedPanel.querySelector("[data-download-list]");
+      return document.activeElement === (scrollTarget ?? mountedPanel);
+    },
+    { timeout: 5_000 },
+  );
   const mountedPanel = await panel.elementHandle();
   const mountedRows = await panel.locator("[data-download-row]").elementHandles();
   await page.waitForTimeout(2_500);

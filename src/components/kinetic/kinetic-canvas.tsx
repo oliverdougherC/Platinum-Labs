@@ -347,6 +347,15 @@ export function KineticCanvas({
   const downloadPanel = useDownloadPanelPresence();
   const downloadTriggerRef = useRef<HTMLButtonElement | null>(null);
   const downloadPanelRef = useRef<HTMLElement | null>(null);
+  const downloadListRef = useRef<HTMLUListElement | null>(null);
+  const pendingDownloadFocusRef = useRef(false);
+  const focusDownloadPanelTarget = useCallback(() => {
+    const target = downloadListRef.current ?? downloadPanelRef.current;
+    if (!target) return false;
+    target.focus();
+    pendingDownloadFocusRef.current = false;
+    return true;
+  }, []);
   const downloadRegionContains = useCallback(
     (target: EventTarget | null) =>
       target instanceof Node &&
@@ -366,11 +375,17 @@ export function KineticCanvas({
     (event: ReactKeyboardEvent<HTMLElement>) => {
       if (event.key !== "Tab" || event.shiftKey) return;
       event.preventDefault();
+      pendingDownloadFocusRef.current = true;
       downloadPanel.open();
-      downloadPanelRef.current?.focus();
+      focusDownloadPanelTarget();
     },
-    [downloadPanel],
+    [downloadPanel, focusDownloadPanelTarget],
   );
+
+  useEffect(() => {
+    if (downloadPanel.phase !== "open" || !pendingDownloadFocusRef.current) return;
+    focusDownloadPanelTarget();
+  }, [downloadPanel.phase, downloadRows.length, focusDownloadPanelTarget]);
 
   // ONE engine per mounted stage: its epoch — and therefore every particle's
   // phase — is established exactly once, here.
@@ -606,6 +621,7 @@ export function KineticCanvas({
           onEnter={downloadPanel.open}
           onLeave={downloadPanel.scheduleClose}
           panelRef={downloadPanelRef}
+          listRef={downloadListRef}
           triggerRef={downloadTriggerRef}
           onBlur={blurDownloadRegion}
         />
@@ -680,6 +696,7 @@ function DownloadPanel({
   onEnter,
   onLeave,
   panelRef,
+  listRef,
   triggerRef,
   onBlur,
 }: {
@@ -690,6 +707,7 @@ function DownloadPanel({
   onEnter: () => void;
   onLeave: () => void;
   panelRef: RefObject<HTMLElement | null>;
+  listRef: RefObject<HTMLUListElement | null>;
   triggerRef: RefObject<HTMLButtonElement | null>;
   onBlur: (event: ReactFocusEvent<HTMLElement>) => void;
 }) {
@@ -725,6 +743,7 @@ function DownloadPanel({
       onFocus={onEnter}
       onBlur={onBlur}
       onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
         if (event.key === "Tab" && event.shiftKey) {
           event.preventDefault();
           triggerRef.current?.focus();
@@ -763,8 +782,17 @@ function DownloadPanel({
         </p>
       ) : (
         <ul
+          ref={listRef}
           data-download-list
-          className="max-h-64 overflow-y-auto overscroll-contain border-t border-white/[0.06] pr-1 [scrollbar-width:thin]"
+          tabIndex={0}
+          aria-label="Active downloads list"
+          onKeyDown={(event) => {
+            if (event.key === "Tab" && event.shiftKey) {
+              event.preventDefault();
+              triggerRef.current?.focus();
+            }
+          }}
+          className={`max-h-64 overflow-y-auto overscroll-contain border-t border-white/[0.06] pr-1 [scrollbar-width:thin] ${FOCUS_RING}`}
         >
           {rows.map((row) => (
             <li

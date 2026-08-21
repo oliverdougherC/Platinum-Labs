@@ -138,16 +138,18 @@ describe("KineticCanvas continuity", () => {
       "qbittorrent-download-panel-title",
     );
     expect(anchor.hasAttribute("aria-haspopup")).toBe(false);
+    const list = panel.querySelector<HTMLElement>("[data-download-list]")!;
     expect(panel.querySelectorAll("li[data-download-row]")).toHaveLength(2);
+    expect(list.tabIndex).toBe(0);
 
     fireEvent.keyDown(anchor, { key: "Tab" });
-    expect(document.activeElement).toBe(panel);
+    expect(document.activeElement).toBe(list);
     act(() => vi.advanceTimersByTime(300));
     expect(container.querySelector("[data-download-panel]")).toBe(panel);
 
-    fireEvent.keyDown(panel, { key: "Tab", shiftKey: true });
+    fireEvent.keyDown(list, { key: "Tab", shiftKey: true });
     expect(document.activeElement).toBe(anchor);
-    expect(fireEvent.keyDown(panel, { key: "Tab" })).toBe(true);
+    expect(fireEvent.keyDown(list, { key: "Tab" })).toBe(true);
 
     const outside = document.createElement("button");
     container.append(outside);
@@ -185,7 +187,7 @@ describe("KineticCanvas continuity", () => {
     expect(updatedPanel.textContent).toContain("8.4 MB/s");
   });
 
-  it("uses an internally scrollable list for the deterministic long-download fixture", () => {
+  it("focuses the actual scroll container for the deterministic long-download fixture", () => {
     const { container } = render(
       <KineticCanvas {...props(makeFakeSnapshot("downloads-many", NOW))} />,
     );
@@ -195,9 +197,13 @@ describe("KineticCanvas continuity", () => {
     fireEvent.focus(anchor);
     const panel = container.querySelector("[data-download-panel]")!;
     expect(panel.querySelectorAll("[data-download-row]")).toHaveLength(12);
-    const list = panel.querySelector("[data-download-list]")!;
+    const list = panel.querySelector<HTMLElement>("[data-download-list]")!;
     expect(list.className).toContain("max-h-");
     expect(list.className).toContain("overflow-y-auto");
+    fireEvent.keyDown(anchor, { key: "Tab" });
+    expect(document.activeElement).toBe(list);
+    expect(fireEvent.keyDown(list, { key: "End" })).toBe(true);
+    expect(fireEvent.keyDown(list, { key: "PageDown" })).toBe(true);
   });
 
   it("shows a quiet empty state instead of seeders or fabricated zero values", () => {
