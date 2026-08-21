@@ -999,6 +999,51 @@ async function captureKineticContinuityStress(browser, baseUrl) {
 }
 
 /**
+ * PLA-281 treemap evidence: one stable container identity grows from a small
+ * measured footprint to the dominant resident workload, then yields the area
+ * back. Every step mutates the same mounted fake snapshot at the normal 2s
+ * sample rhythm; no navigation, remount, or fabricated production telemetry.
+ */
+async function captureContainerTreemapGrowth(browser, baseUrl) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+    recordVideo: { dir: OUT_DIR, size: { width: 1280, height: 720 } },
+    bypassCSP: true,
+  });
+  const page = await context.newPage();
+  console.log("recording container treemap growth (same tile identity): small → medium → dominant → small…");
+  await page.goto(`${baseUrl}/dev/kinetic-flow?scenario=container-field-real`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.waitForFunction(
+    () => typeof window.__homelabSetContainerMemoryScale === "function",
+    { timeout: 15_000 },
+  );
+  const stage = await page.locator("[data-kinetic-stage]").elementHandle();
+  const tile = await page
+    .locator('[data-kinetic-cell][aria-label^="immich-machine-learning;"]')
+    .elementHandle();
+  const scale = (value) =>
+    page.evaluate((next) => window.__homelabSetContainerMemoryScale(next), value);
+  await scale(0.15);
+  await page.waitForTimeout(2_500);
+  for (const value of [0.4, 1, 2, 4, 2, 0.7, 0.2]) {
+    await scale(value);
+    await page.waitForTimeout(2_200);
+  }
+  if (stage && !(await stage.evaluate((node) => node === document.querySelector("[data-kinetic-stage]")))) {
+    throw new Error("treemap growth capture remounted the kinetic stage");
+  }
+  if (tile && !(await tile.evaluate((node) => node.isConnected))) {
+    throw new Error("treemap growth capture replaced the stable container tile");
+  }
+  const video = page.video();
+  await page.close();
+  await context.close();
+  await saveMotionClip(await video.path(), "motion-container-memory-growth");
+}
+
+/**
  * Motion capture (PLA-270): ONE mounted renderer, telemetry changing in
  * place. The scenario switches through the dev fixture hook
  * (`window.__homelabSetScenario`) — never via navigation or reload — so the
@@ -1007,6 +1052,10 @@ async function captureKineticContinuityStress(browser, baseUrl) {
  * then easing back toward idle.
  */
 async function captureMotion(browser, baseUrl) {
+  if (KINETIC && ONLY === "container-memory-growth") {
+    await captureContainerTreemapGrowth(browser, baseUrl);
+    return;
+  }
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
     recordVideo: { dir: OUT_DIR, size: { width: 1280, height: 720 } },
@@ -1053,6 +1102,7 @@ async function captureMotion(browser, baseUrl) {
     await context.close();
     await saveMotionClip(await kineticVideo.path(), "motion-quiet-download-playback-simultaneous-quiet");
     await captureKineticContinuityStress(browser, baseUrl);
+    await captureContainerTreemapGrowth(browser, baseUrl);
     return;
   }
 

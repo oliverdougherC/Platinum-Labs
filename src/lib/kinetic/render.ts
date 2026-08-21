@@ -6,18 +6,19 @@
  * layer whose weights the engine eases, so state transitions morph instead of
  * snapping and a frozen frame is a pure function of (scene, layout, t).
  *
- * All text lives in the DOM overlay; the canvas draws only light: glow pools,
- * flow ribbons, particles, the workload field, and the storage strata.
- * Per-frame allocation is deliberately minimal: comet heads, halos and
+ * Interactive text lives in the DOM overlay; exact-fit treemap labels are
+ * painted in-canvas with their tiles. The canvas also draws glow pools, flow
+ * ribbons, particles, the workload field, and the storage strata.
+ * Per-frame allocation is deliberately bounded: comet heads, halos and
  * endpoint wakes are pre-rendered tone sprites drawn with drawImage, and the
- * frame loop iterates compiled visual arrays — no per-frame Maps, finds, or
- * radial-gradient construction in the hot path.
+ * frame loop reuses the one eased rectangle index shared by canvas and DOM.
  */
 
 import type { KineticScene } from "./model";
 import { rateIntensity } from "./model";
 import type { KineticLayout, SampledPath } from "./layout";
 import { pointAt } from "./layout";
+import type { TreemapRect } from "./treemap";
 import { widthFromRate } from "@/lib/topology/smoothing";
 import {
   slotPosition,
@@ -57,6 +58,8 @@ export interface KineticSelection {
 
 export interface KineticFrameOptions {
   t: number;
+  /** Eased tile geometry shared with the DOM interaction layer. */
+  cellRects: ReadonlyMap<string, TreemapRect>;
   /**
    * No phase motion: breathing and sweeps hold a fixed pose. Frozen
    * screenshots still show the particle field, placed at the given `t`.
@@ -219,6 +222,16 @@ function toneOf(flow: FlowVisual["flow"]): Rgb {
   return KINETIC_TONES[flow.tone] ?? KINETIC_TONES.neutral!;
 }
 
+export function treemapLabelFitAlpha(
+  tileWidth: number,
+  tileHeight: number,
+  textWidth: number,
+): number {
+  const widthRoom = tileWidth - (textWidth + 20);
+  const heightRoom = tileHeight - 29;
+  return Math.min(1, Math.max(0, Math.min(widthRoom, heightRoom) / 10));
+}
+
 function drawParticles(
   ctx: CanvasRenderingContext2D,
   visual: FlowVisual,
@@ -324,55 +337,56 @@ function drawFlow(
 function drawCell(
   ctx: CanvasRenderingContext2D,
   visual: CellVisual,
+  rect: TreemapRect,
   t: number,
   still: boolean,
 ): void {
   const dim = visual.dim * visual.alpha;
   if (dim <= 0.01) return;
-  const { x, y, r } = visual;
+  const { x, y, w, h } = rect;
+  const tone = KINETIC_TONES[visual.cell.tone] ?? KINETIC_TONES.neutral!;
   const neutral = KINETIC_TONES.neutral!;
+
+  ctx.fillStyle = rgba(tone, (0.07 + visual.intensity * 0.16) * dim);
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = rgba(tone, 0.12 * dim);
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
 
   if (visual.attentionW > 0.01) {
     const amber = KINETIC_TONES.attention!;
     const a = dim * visual.attentionW;
     const pulse = still ? 0.75 : 0.65 + 0.35 * Math.sin(t * 2.1 + x * 0.05);
-    roundedRectPath(ctx, x - (r + 3.4), y - (r + 3.4), (r + 3.4) * 2, (r + 3.4) * 2, 6);
     ctx.strokeStyle = rgba(amber, 0.55 * pulse * a);
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-    roundedRectPath(ctx, x - r, y - r, r * 2, r * 2, 5);
-    ctx.fillStyle = rgba(amber, 0.5 * a);
-    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 1, y + 1, Math.max(0, w - 2), Math.max(0, h - 2));
+    ctx.fillStyle = rgba(amber, 0.18 * a);
+    ctx.fillRect(x, y, w, h);
   }
 
   if (visual.unknownW > 0.01) {
-    // Unknown ≠ proven quiet: hollow dashed ring, never a dim confirmed dot.
-    const inner = Math.max(r - 0.5, 1.6);
-    roundedRectPath(ctx, x - inner, y - inner, inner * 2, inner * 2, 4);
+    // Unknown ≠ proven quiet: last-known area stays dashed and desaturated.
     ctx.strokeStyle = rgba(neutral, 0.22 * dim * visual.unknownW);
     ctx.lineWidth = 1;
-    ctx.setLineDash([2, 3]);
-    ctx.stroke();
+    ctx.setLineDash([3, 4]);
+    ctx.strokeRect(x + 1.5, y + 1.5, Math.max(0, w - 3), Math.max(0, h - 3));
     ctx.setLineDash([]);
   }
 
-  const knownW = Math.max(0, 1 - visual.unknownW - visual.attentionW);
-  if (knownW > 0.01) {
-    if (visual.halo > 0.04) {
-      drawSprite(
-        ctx,
-        KINETIC_TONES.in!,
-        "halo",
-        x,
-        y,
-        r + 3 + visual.halo * 7,
-        visual.halo * dim * knownW,
-      );
+  // Full-name labels are measured at their actual font. The 10px horizontal
+  // padding and 29px height floor are hard gates: no maxWidth, ellipsis,
+  // wrapping, or clipping is ever used. A 10px fit band fades labels subtly.
+  if (visual.cell.labelVisible) {
+    ctx.save();
+    ctx.font = "500 11px ui-sans-serif, system-ui, -apple-system, sans-serif";
+    ctx.textBaseline = "middle";
+    const textWidth = ctx.measureText(visual.cell.name).width;
+    const fit = treemapLabelFitAlpha(w, h, textWidth);
+    if (fit > 0) {
+      ctx.fillStyle = rgba(tone, Math.min(1, (0.96 + visual.intensity * 0.04) * dim * fit));
+      ctx.fillText(visual.cell.name, x + 10, y + h / 2);
     }
-    const glow = 0.16 + visual.intensity * 0.72;
-    roundedRectPath(ctx, x - r, y - r, r * 2, r * 2, 5);
-    ctx.fillStyle = rgba(neutral, glow * dim * knownW);
-    ctx.fill();
+    ctx.restore();
   }
 }
 
@@ -513,9 +527,20 @@ export function drawKineticFrame(
   }
 
   // Workload field.
+  ctx.fillStyle = "rgba(13, 17, 24, 0.96)";
+  ctx.fillRect(layout.field.x, layout.field.y, layout.field.w, layout.field.h);
   for (const cell of state.cells) {
-    drawCell(ctx, cell, t, still);
+    const rect = options.cellRects.get(cell.id);
+    if (rect) drawCell(ctx, cell, rect, t, still);
   }
+  ctx.strokeStyle = "rgba(214, 222, 232, 0.16)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(
+    layout.field.x + 0.5,
+    layout.field.y + 0.5,
+    Math.max(0, layout.field.w - 1),
+    Math.max(0, layout.field.h - 1),
+  );
 
   // Flows above everything else on the canvas.
   for (const flow of state.flows) {

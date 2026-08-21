@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeFakeSnapshot } from "@/lib/fake/snapshot";
 import { FAKE_CPU_TOPOLOGY } from "@/lib/fake/telemetry";
+import { contrastRatio } from "@/lib/design/contrast";
 import {
   classifyFlowRate,
   deriveFlows,
@@ -15,7 +16,7 @@ import {
   type KineticScene,
 } from "./model";
 import { buildKineticLayout, stageGeometryKey } from "./layout";
-import { sceneAnimates } from "./render";
+import { KINETIC_TONES, sceneAnimates, treemapLabelFitAlpha } from "./render";
 
 const NOW = Date.UTC(2026, 7, 15, 12, 0, 0);
 
@@ -199,20 +200,37 @@ describe("buildKineticScene", () => {
     expect(s.critical).toBe(true);
   });
 
-  it("carries the full 44-container population as field cells with capped labels", () => {
+  it("carries the full 44-container population with stable friendly identities", () => {
     const s = scene("container-field-real");
     const cells = s.field.flatMap((g) => g.cells);
-    // Everything except the first-class services (which are anchors and
-    // orchestrators, not field cells) must be represented.
     expect(s.fieldTotal).toBe(44);
-    expect(cells.length).toBeGreaterThanOrEqual(38);
-    for (const group of s.field) {
-      const plainLabels = group.cells.filter((c) => c.labelVisible && !c.attention);
-      expect(plainLabels.length).toBeLessThanOrEqual(2);
-    }
-    // Attention names itself.
-    for (const cell of cells.filter((c) => c.attention)) {
-      expect(cell.labelVisible).toBe(true);
+    expect(cells).toHaveLength(44);
+    expect(cells.find((cell) => cell.name === "Jellyfin")).toBeDefined();
+    expect(cells.find((cell) => cell.name === "qBittorrent")).toBeDefined();
+    expect(new Set(cells.map((cell) => cell.id)).size).toBe(cells.length);
+  });
+
+  it("shows a treemap label only after the complete name and padding fit", () => {
+    expect(treemapLabelFitAlpha(119.9, 40, 100)).toBe(0);
+    expect(treemapLabelFitAlpha(130, 40, 100)).toBe(1);
+    expect(treemapLabelFitAlpha(160, 28.9, 100)).toBe(0);
+  });
+
+  it("keeps every tile-related label tone above AA contrast at peak fill", () => {
+    const field: [number, number, number] = [13, 17, 24];
+    const composite = (
+      foreground: readonly [number, number, number],
+      background: readonly [number, number, number],
+      alpha: number,
+    ): [number, number, number] =>
+      foreground.map((channel, index) =>
+        channel * alpha + background[index]! * (1 - alpha),
+      ) as [number, number, number];
+    for (const toneName of ["neutral", "in", "out", "import"] as const) {
+      const tone = KINETIC_TONES[toneName]!;
+      const peakFill = composite(tone, field, 0.23);
+      const labelInk = composite(tone, peakFill, 0.96);
+      expect(contrastRatio(labelInk, peakFill), toneName).toBeGreaterThanOrEqual(4.5);
     }
   });
 
@@ -685,29 +703,40 @@ describe("buildKineticLayout", () => {
     }
   });
 
-  it("separates the 44-container field with no visible cell overlap, including at 1280×720", () => {
+  it("fully packs raw-memory tiles without overlap, including at 1280×720", () => {
     const s = scene("container-field-real");
     for (const [w, h] of [
       [1920, 1080],
       [1280, 720],
     ] as const) {
       const layout = buildKineticLayout(s, w, h);
-      const all = layout.groups.flatMap((g) =>
-        g.cells.map((c) => ({ ...c, group: g.id, labelY: g.labelY })),
+      const all = layout.groups.flatMap((g) => g.cells);
+      const fieldArea = layout.field.w * layout.field.h;
+      expect(all.reduce((sum, cell) => sum + cell.w * cell.h, 0)).toBeCloseTo(
+        fieldArea,
+        5,
       );
+      const weightTotal = all.reduce((sum, cell) => sum + cell.weight, 0);
       for (let i = 0; i < all.length; i++) {
+        const cell = all[i]!;
+        expect((cell.w * cell.h) / fieldArea).toBeCloseTo(
+          cell.weight / weightTotal,
+          7,
+        );
+        expect(cell.x).toBeGreaterThanOrEqual(layout.field.x);
+        expect(cell.y).toBeGreaterThanOrEqual(layout.field.y);
+        expect(cell.x + cell.w).toBeLessThanOrEqual(layout.field.x + layout.field.w + 1e-7);
+        expect(cell.y + cell.h).toBeLessThanOrEqual(layout.field.y + layout.field.h + 1e-7);
         for (let j = i + 1; j < all.length; j++) {
           const a = all[i]!;
           const b = all[j]!;
-          const d = Math.hypot(a.x - b.x, a.y - b.y);
-          expect(d, `${a.id} vs ${b.id} at ${w}x${h}`).toBeGreaterThanOrEqual(
-            a.r + b.r + 1,
+          const overlap =
+            Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) *
+            Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+          expect(overlap, `${a.id} vs ${b.id} at ${w}x${h}`).toBeLessThan(
+            1e-7,
           );
         }
-      }
-      // Cells never sit on their group caption row.
-      for (const cell of all) {
-        expect(cell.y + cell.r).toBeLessThanOrEqual(cell.labelY - 2);
       }
     }
   });

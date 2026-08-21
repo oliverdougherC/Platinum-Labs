@@ -48,6 +48,34 @@ function wanVisual(engine: KineticEngine) {
 }
 
 describe("KineticEngine phase continuity", () => {
+  it("keeps one tile object while raw memory weight redistributes smoothly", () => {
+    const initial = sceneAndLayout("container-field-real");
+    const engine = new KineticEngine(0);
+    engine.syncTargets(initial.scene, initial.layout, { snap: true });
+    const before = engine
+      .visualState()
+      .cells.find((cell) => cell.cell.name === "immich-machine-learning")!;
+    const initialWeight = before.weight;
+
+    const grown = sceneAndLayout("container-field-real", (snapshot) => {
+      const container = snapshot.telemetry.docker.value!.containers.find(
+        (item) => item.name === "immich-machine-learning",
+      )!;
+      container.memoryBytes = container.memoryBytes! * 4;
+    });
+    const targetWeight = grown.layout.groups
+      .flatMap((group) => group.cells)
+      .find((cell) => cell.id === before.id)!.weight;
+    engine.syncTargets(grown.scene, grown.layout);
+    expect(engine.visualState().cells.find((cell) => cell.id === before.id)).toBe(before);
+    expect(before.weight).toBe(initialWeight);
+    engine.frame(160);
+    expect(before.weight).toBeGreaterThan(initialWeight);
+    expect(before.weight).toBeLessThan(targetWeight);
+    run(engine, 160, 2);
+    expect(before.weight).toBe(targetWeight);
+  });
+
   it("keeps visual time monotonic and phase continuous across telemetry target updates", () => {
     const a = sceneAndLayout("downloads", (s) => setDownloadRate(s, 10_000_000));
     const engine = new KineticEngine(0);

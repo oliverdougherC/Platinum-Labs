@@ -3,9 +3,9 @@
 /**
  * V4 Kinetic Flow Canvas — the stage component.
  *
- * Hybrid rendering: one Canvas 2D layer for light (glow pools, ribbons,
- * particles, workload field, storage strata) and a DOM overlay for every
- * piece of text and every interactive/accessible target.
+ * Hybrid rendering: one Canvas 2D layer for light and exact-fit workload
+ * labels, plus a DOM overlay for every interactive/accessible target and the
+ * remaining interface text.
  *
  * React never runs at frame cadence. Snapshots, selection and layout are
  * React's; frame time, interpolation, particle phase and every visual
@@ -32,12 +32,10 @@ import {
   type KineticScene,
 } from "@/lib/kinetic/model";
 import {
-  buildFlowPaths,
-  buildKineticStage,
-  stageGeometryKey,
+  buildKineticLayout,
   type KineticLayout,
-  type KineticStage,
 } from "@/lib/kinetic/layout";
+import { layoutTreemap, type TreemapRect } from "@/lib/kinetic/treemap";
 import { KineticEngine } from "@/lib/kinetic/engine";
 import {
   drawKineticFrame,
@@ -224,8 +222,8 @@ function inspectorFor(
               : "not running",
         metrics: metrics.slice(0, 3),
         relationships: [group.label],
-        x: placed.x,
-        y: placed.y,
+        x: placed.x + placed.w / 2,
+        y: placed.y + placed.h / 2,
       };
     }
   }
@@ -260,6 +258,7 @@ export function KineticCanvas({
 }: KineticCanvasProps) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cellButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const { w, h } = useStageSize(stageRef);
   const reducedMotion = useReducedMotion();
   const pageVisible = usePageVisible();
@@ -280,20 +279,9 @@ export function KineticCanvas({
     [snapshot, now, seerrConfigured],
   );
 
-  // STABLE geometry contract (V4 release blocker): stage placement is cached
-  // against a key that telemetry-only updates cannot change. Rates, CPU,
-  // memory and I/O move engine targets; only membership or viewport changes
-  // recompute where anything sits. Flow paths ride on the cached stage, so a
-  // flow appearing can never shift the composition either.
-  const stageCache = useRef<{ key: string; stage: KineticStage } | null>(null);
   const layout = useMemo<KineticLayout | null>(() => {
     if (w <= 0 || h <= 0) return null;
-    const key = stageGeometryKey(scene, w, h);
-    if (stageCache.current?.key !== key) {
-      stageCache.current = { key, stage: buildKineticStage(scene, w, h) };
-    }
-    const stage = stageCache.current.stage;
-    return { ...stage, flows: buildFlowPaths(scene.flows, stage) };
+    return buildKineticLayout(scene, w, h);
   }, [scene, w, h]);
 
   const layoutRef = useRef(layout);
@@ -316,7 +304,25 @@ export function KineticCanvas({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawKineticFrame(ctx, engine.visualState(), currentLayout, { t, still, marks });
+    const visualState = engine.visualState();
+    const cellRects = new Map<string, TreemapRect>(
+      layoutTreemap(
+        visualState.cells.map((cell) => ({ id: cell.id, weight: cell.weight })),
+        currentLayout.field,
+      ).map((rect) => [rect.id, rect]),
+    );
+    // Paint and interaction geometry share the same eased rectangles. Direct
+    // style writes avoid a React render on every animation frame while keeping
+    // pointer and focus targets attached to the tile a reviewer actually sees.
+    for (const [id, button] of cellButtonRefs.current) {
+      const rect = cellRects.get(id);
+      if (!rect) continue;
+      button.style.left = `${rect.x}px`;
+      button.style.top = `${rect.y}px`;
+      button.style.width = `${rect.w}px`;
+      button.style.height = `${rect.h}px`;
+    }
+    drawKineticFrame(ctx, visualState, currentLayout, { t, still, marks, cellRects });
   }, []);
 
   // Single rAF loop, ref-guarded: at most one can ever exist, and it parks
@@ -480,6 +486,7 @@ export function KineticCanvas({
           selection={selection}
           toggle={toggle}
           cellsById={cellsById}
+          cellRefs={cellButtonRefs}
           surfaceLabel={surfaceLabel}
         />
       ) : null}
@@ -553,6 +560,7 @@ function KineticOverlay({
   selection,
   toggle,
   cellsById,
+  cellRefs,
   surfaceLabel,
 }: {
   scene: KineticScene;
@@ -560,6 +568,7 @@ function KineticOverlay({
   selection: KineticSelection | null;
   toggle: (next: KineticSelection, initiator: HTMLElement | null) => void;
   cellsById: Map<string, { name: string; label: string }>;
+  cellRefs: React.MutableRefObject<Map<string, HTMLButtonElement>>;
   surfaceLabel: string;
 }) {
   const dimClass = (member: KineticSelection): string => {
@@ -598,8 +607,6 @@ function KineticOverlay({
   const [rovingId, setRovingId] = useState<string | null>(null);
   const activeRovingId =
     rovingId !== null && cellOrder.includes(rovingId) ? rovingId : cellOrder[0] ?? null;
-  const cellRefs = useRef(new Map<string, HTMLButtonElement>());
-
   const onFieldKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
       if (cellOrder.length === 0 || activeRovingId === null) return;
@@ -620,7 +627,7 @@ function KineticOverlay({
       setRovingId(id);
       cellRefs.current.get(id)?.focus();
     },
-    [cellOrder, activeRovingId],
+    [cellOrder, activeRovingId, cellRefs],
   );
 
   return (
@@ -725,7 +732,8 @@ function KineticOverlay({
         );
       })}
 
-      {/* Workload field: one roving tab stop + selective labels + captions. */}
+      {/* Packed workload field: one roving tab stop; visible labels are drawn
+          on-canvas only after exact full-name fit checks. */}
       <div
         role="group"
         aria-label={`Workloads (${cellOrder.length}); use arrow keys to move between them`}
@@ -733,13 +741,6 @@ function KineticOverlay({
       >
         {layout.groups.map((group) => (
           <div key={group.id}>
-            <div
-              className="absolute -translate-x-1/2 text-[11px] font-medium uppercase tracking-[0.26em] text-faint/55"
-              style={{ left: group.cx, top: group.labelY }}
-            >
-              {group.label}
-              {group.overflowCount > 0 ? ` +${group.overflowCount}` : ""}
-            </div>
             {group.cells.map((placed) => {
               const info = cellsById.get(placed.id);
               const cell = scene.field
@@ -761,37 +762,17 @@ function KineticOverlay({
                   onClick={(event) =>
                     toggle({ kind: "cell", id: placed.id }, event.currentTarget)
                   }
-                  className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-[8px] ${FOCUS_RING}`}
+                  className={`absolute rounded-[2px] ${FOCUS_RING}`}
                   style={{
                     left: placed.x,
                     top: placed.y,
-                    width: Math.max(placed.slot, 16),
-                    height: Math.max(placed.slot, 16),
+                    width: placed.w,
+                    height: placed.h,
                     pointerEvents: "auto",
                   }}
                 >
                   <span className="sr-only">{info.name}</span>
                 </button>
-              );
-            })}
-            {group.cells.map((placed, placedIndex) => {
-              const cell = scene.field
-                .flatMap((g) => g.cells)
-                .find((c) => c.id === placed.id);
-              if (!cell?.labelVisible) return null;
-              return (
-                <div
-                  key={`${placed.id}-label`}
-                  className={`absolute -translate-x-1/2 text-[10.5px] tracking-wide ${
-                    cell.attention ? "text-warn" : "text-faint"
-                  }`}
-                  style={{
-                    left: placed.x,
-                    top: placed.y + placed.r + 5 + (placedIndex % 2) * 10,
-                  }}
-                >
-                  {cell.name}
-                </div>
               );
             })}
           </div>

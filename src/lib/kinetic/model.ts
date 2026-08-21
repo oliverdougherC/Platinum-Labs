@@ -12,6 +12,7 @@
 import type { DashboardSnapshot, CpuTopology } from "@/lib/types";
 import {
   buildSceneModel,
+  SERVICE_LABELS,
   type BodyStatus,
   type DockerContainerModel,
   type SceneModel,
@@ -108,8 +109,10 @@ export interface FieldCellModel {
   attention: boolean;
   unverified: boolean;
   running: boolean;
-  /** Labels appear only for attention or materially active cells. */
+  /** Exact-fit candidate; final visibility is decided from live tile geometry. */
   labelVisible: boolean;
+  /** Existing kinetic palette family used for tile fill and related label ink. */
+  tone: "neutral" | "in" | "out" | "import";
   cpuFraction: number | null;
   memoryBytes: number | null;
 }
@@ -464,23 +467,43 @@ function orchestration(scene: SceneModel): OrchestratorModel[] {
 
 // --- workload field ------------------------------------------------------------------
 
-const FIELD_LABEL_INTENSITY = 0.45;
+function friendlyContainerName(name: string, composeService: string | null): string {
+  const key = (composeService || name).toLowerCase();
+  if (key === "jellyfin") return SERVICE_LABELS.jellyfin;
+  if (key === "qbittorrent") return SERVICE_LABELS.qbittorrent;
+  if (key === "sonarr") return SERVICE_LABELS.sonarr;
+  if (key === "radarr") return SERVICE_LABELS.radarr;
+  if (key === "jellyseerr" || key === "seerr") return SERVICE_LABELS.seerr;
+  return name;
+}
 
-function fieldCell(c: DockerContainerModel, id: string): FieldCellModel {
+function groupTone(groupId: string): FieldCellModel["tone"] {
+  if (groupId.includes("media")) return "import";
+  if (groupId.includes("observability")) return "in";
+  if (groupId.includes("network")) return "out";
+  return "neutral";
+}
+
+function fieldCell(
+  c: DockerContainerModel,
+  id: string,
+  name: string,
+  tone: FieldCellModel["tone"],
+): FieldCellModel {
   const intensity =
     c.cpuFraction === null ? null : clamp01(1 - Math.exp(-Math.max(0, c.cpuFraction) / 0.5));
   const running = c.state === "running";
   return {
     id,
-    name: c.name,
+    name,
     sizeScore: c.memoryScore,
     intensity,
     ioHalo: c.ioIntensity,
     attention: c.bad,
     unverified: c.unverified,
     running,
-    labelVisible:
-      c.bad || (intensity !== null && intensity >= FIELD_LABEL_INTENSITY) || c.ioIntensity >= 0.5,
+    labelVisible: true,
+    tone,
     cpuFraction: c.cpuFraction,
     memoryBytes: c.memoryBytes,
   };
@@ -488,28 +511,23 @@ function fieldCell(c: DockerContainerModel, id: string): FieldCellModel {
 
 function buildField(snapshot: DashboardSnapshot, scene: SceneModel): FieldGroupModel[] {
   const containers = snapshot.telemetry.docker.value?.containers ?? [];
-  const groups = groupWorkloads(containers);
+  const groups = groupWorkloads(containers, { includeFirstClass: true });
   const byName = new Map(scene.docker.containers.map((c) => [c.name, c]));
   return groups
     .map((group) => {
       const cells = group.members
         .map((member) => {
           const model = byName.get(member.name);
-          return model ? fieldCell(model, member.id) : null;
+          return model
+            ? fieldCell(
+                model,
+                member.id,
+                friendlyContainerName(member.name, member.composeService ?? null),
+                groupTone(group.id),
+              )
+            : null;
         })
         .filter((cell): cell is FieldCellModel => cell !== null);
-      // Declutter: attention always names itself; beyond that only the two
-      // most active cells per group carry a label.
-      const labeled = cells
-        .filter((c) => c.labelVisible && !c.attention)
-        .sort((a, b) => (b.intensity ?? 0) - (a.intensity ?? 0) || a.id.localeCompare(b.id))
-        .slice(0, 2);
-      const keep = new Set(labeled.map((c) => c.id));
-      for (const cell of cells) {
-        if (!cell.attention && cell.labelVisible && !keep.has(cell.id)) {
-          cell.labelVisible = false;
-        }
-      }
       return {
         id: group.id,
         label: group.label,
