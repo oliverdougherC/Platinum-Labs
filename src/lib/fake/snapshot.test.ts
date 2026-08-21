@@ -74,6 +74,13 @@ describe("required scenario characteristics", () => {
     expect(r.aggregateRateBps).toBeGreaterThan(0);
   });
 
+  it("downloads-many provides a deterministic scroll-overflow fixture", () => {
+    const snapshot = makeFakeSnapshot("downloads-many", NOW);
+    expect(snapshot.acquisition.items.filter((item) => item.state === "downloading"))
+      .toHaveLength(12);
+    expect(snapshot.acquisition.items.every((item) => item.correlationKey)).toBe(true);
+  });
+
   it("background-copy exactly replays the sanitized normalized production pool I/O", () => {
     expect(makeFakeSnapshot("background-copy", NOW).telemetry.disk.value?.pools).toEqual([
       { pool: "DataStore", readBps: 53_833_435, writeBps: 0 },

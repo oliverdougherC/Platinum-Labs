@@ -555,7 +555,13 @@ export function drawKineticFrame(
  * component consults both.
  */
 export function sceneAnimates(scene: KineticScene): boolean {
-  if (scene.flows.some((f) => f.treatment === "particles" || f.treatment === "state-only")) {
+  if (
+    scene.flows.some(
+      (f) =>
+        f.treatment === "particles" ||
+        (f.treatment === "state-only" && f.tone !== "control"),
+    )
+  ) {
     return true;
   }
   if (scene.storage.some((s) => s.scrubbing)) return true;

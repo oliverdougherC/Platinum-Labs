@@ -85,10 +85,33 @@ describe("buildKineticScene", () => {
     expect(sceneAnimates(s)).toBe(true);
   });
 
-  it("never draws control-plane orchestration as a flow in overview", () => {
-    for (const id of ["downloads", "active", "importing"] as const) {
-      expect(scene(id).flows.some((f) => f.kind === "control")).toBe(false);
+  it("shows truthful Arr control cues without inventing throughput", () => {
+    const controls = scene("downloads").flows.filter((flow) => flow.kind === "control");
+    expect(controls).toHaveLength(2);
+    expect(controls.map((flow) => flow.id).sort()).toEqual([
+      "control:radarr->qbittorrent",
+      "control:sonarr->qbittorrent",
+    ]);
+    for (const flow of controls) {
+      expect(flow).toMatchObject({
+        treatment: "state-only",
+        tone: "control",
+        rateBps: null,
+      });
+      expect(flow.from.kind).toBe("orchestrator");
+      expect(flow.to).toEqual({ kind: "anchor", id: "qbittorrent" });
     }
+  });
+
+  it("centers only Sonarr and Radarr with explicit idle or active detail", () => {
+    expect(scene("idle").orchestration).toEqual([
+      expect.objectContaining({ id: "sonarr", active: false, detail: "idle" }),
+      expect.objectContaining({ id: "radarr", active: false, detail: "idle" }),
+    ]);
+    expect(scene("downloads").orchestration).toEqual([
+      expect.objectContaining({ id: "sonarr", active: true, detail: "2 active" }),
+      expect.objectContaining({ id: "radarr", active: true, detail: "1 active" }),
+    ]);
   });
 
   it("models cross-pool import as a pool-to-pool copy plus an organize whisper", () => {
@@ -155,6 +178,48 @@ describe("buildKineticScene", () => {
     });
     expect(stale.treatment).not.toBe("particles");
     expect(sceneAnimates(staleScene)).toBe(false);
+  });
+
+  it("distinguishes ambiguous background evidence, confirmed end, and source loss", () => {
+    expect(scene("background-copy").backgroundTransferObservation).toBe("observed");
+    expect(scene("background-copy-ambiguous").backgroundTransferObservation).toBe(
+      "ambiguous-gap",
+    );
+    expect(scene("background-copy-under-deadband").backgroundTransferObservation).toBe(
+      "confirmed-end",
+    );
+    expect(scene("idle").backgroundTransferObservation).toBe("confirmed-end");
+
+    const unavailable = makeFakeSnapshot("idle", NOW);
+    unavailable.telemetry.disk = {
+      status: "unavailable",
+      value: null,
+      updatedAt: null,
+    };
+    expect(
+      buildKineticScene(unavailable, { now: NOW, seerrConfigured: true })
+        .backgroundTransferObservation,
+    ).toBe("source-unavailable");
+
+    const connectorUnavailable = scene("connector-unavailable");
+    expect(connectorUnavailable.unavailableFlowKinds).toEqual(
+      expect.arrayContaining(["playback", "egress"]),
+    );
+
+    const zero = scene("confirmed-zero").flows.find(
+      (flow) => flow.kind === "wan-transfer",
+    );
+    expect(zero).toMatchObject({ treatment: "confirmed-zero", rateBps: 0 });
+  });
+
+  it("retains an observed background copy ambiguously during concurrent playback", () => {
+    const s = scene("background-copy-playback-ambiguous");
+    expect(s.backgroundTransferObservation).toBe("ambiguous-gap");
+    expect(s.flows.some((flow) => flow.kind === "background-transfer")).toBe(false);
+    expect(s.flows.find((flow) => flow.kind === "playback")).toMatchObject({
+      treatment: "state-only",
+      rateBps: null,
+    });
   });
 
   it("freezes stale work instead of animating it", () => {
