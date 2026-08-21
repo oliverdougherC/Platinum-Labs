@@ -54,6 +54,8 @@ import {
 } from "@/lib/kinetic/container-tooltip";
 import { KineticEngine } from "@/lib/kinetic/engine";
 import {
+  drawKineticBase,
+  drawKineticFlows,
   drawKineticFrame,
   type KineticSelection,
 } from "@/lib/kinetic/render";
@@ -353,6 +355,8 @@ export function KineticCanvas({
 }: KineticCanvasProps) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const baseCanvasValidRef = useRef(false);
   const cellButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const cellButtonGeometryRef = useRef(
     new WeakMap<HTMLButtonElement, TreemapBounds>(),
@@ -484,6 +488,7 @@ export function KineticCanvas({
     if (canvas.width !== pixelW || canvas.height !== pixelH) {
       canvas.width = pixelW;
       canvas.height = pixelH;
+      baseCanvasValidRef.current = false;
     }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -538,13 +543,45 @@ export function KineticCanvas({
       const position = placeContainerTooltip(activeTooltipRect, currentLayout);
       tooltipElement.style.transform = `translate3d(${position.left}px, ${position.top}px, 0)`;
     }
-    drawKineticFrame(ctx, visualState, currentLayout, {
+    const frameOptions = {
       t,
       still,
       marks,
       cellRects,
       cellLabelWidths: cellLabelWidthsRef.current,
-    });
+    };
+    const baseIsTimeVariant =
+      !still &&
+      (visualState.strata.some((stratum) => stratum.scrubW > 0.01) ||
+        visualState.cells.some((cell) => cell.attentionW > 0.01));
+    const canRetainBase = engine.settled() && !baseIsTimeVariant;
+    let baseCanvas = baseCanvasRef.current;
+    if (!baseCanvas) {
+      baseCanvas = document.createElement("canvas");
+      baseCanvasRef.current = baseCanvas;
+    }
+    if (baseCanvas.width !== pixelW || baseCanvas.height !== pixelH) {
+      baseCanvas.width = pixelW;
+      baseCanvas.height = pixelH;
+      baseCanvasValidRef.current = false;
+    }
+    if (!baseCanvasValidRef.current || !canRetainBase) {
+      const baseCtx = baseCanvas.getContext("2d");
+      if (!baseCtx) {
+        drawKineticFrame(ctx, visualState, currentLayout, frameOptions);
+        return;
+      }
+      baseCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      baseCtx.clearRect(0, 0, currentLayout.w, currentLayout.h);
+      drawKineticBase(baseCtx, visualState, currentLayout, frameOptions);
+      baseCanvasValidRef.current = canRetainBase;
+    }
+    ctx.clearRect(0, 0, currentLayout.w, currentLayout.h);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(baseCanvas, 0, 0);
+    ctx.restore();
+    drawKineticFlows(ctx, visualState, frameOptions);
   }, []);
 
   // Single rAF loop, ref-guarded: at most one can ever exist, and it parks

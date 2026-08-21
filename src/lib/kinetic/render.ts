@@ -81,6 +81,19 @@ type SpriteShape = "comet" | "halo" | "wake";
 
 const SPRITE_SIZE = 64;
 const spriteCache = new Map<string, CanvasImageSource>();
+const flowPathCache = new WeakMap<SampledPath, Path2D>();
+
+function retainedFlowPath(path: SampledPath): Path2D {
+  const cached = flowPathCache.get(path);
+  if (cached) return cached;
+  const retained = new Path2D();
+  retained.moveTo(path.points[0]!.x, path.points[0]!.y);
+  for (let i = 1; i < path.points.length; i++) {
+    retained.lineTo(path.points[i]!.x, path.points[i]!.y);
+  }
+  flowPathCache.set(path, retained);
+  return retained;
+}
 
 function sprite(tone: Rgb, shape: SpriteShape): CanvasImageSource | null {
   const key = `${shape}:${tone[0]},${tone[1]},${tone[2]}`;
@@ -164,16 +177,11 @@ function strokePath(
   style: string,
   dash?: number[],
 ): void {
-  ctx.beginPath();
-  ctx.moveTo(path.points[0]!.x, path.points[0]!.y);
-  for (let i = 1; i < path.points.length; i++) {
-    ctx.lineTo(path.points[i]!.x, path.points[i]!.y);
-  }
   ctx.lineWidth = width;
   ctx.strokeStyle = style;
   ctx.lineCap = "round";
   if (dash) ctx.setLineDash(dash);
-  ctx.stroke();
+  ctx.stroke(retainedFlowPath(path));
   if (dash) ctx.setLineDash([]);
 }
 
@@ -520,10 +528,20 @@ export function drawKineticFrame(
   layout: KineticLayout,
   options: KineticFrameOptions,
 ): void {
+  ctx.clearRect(0, 0, layout.w, layout.h);
+  drawKineticBase(ctx, state, layout, options);
+  drawKineticFlows(ctx, state, options);
+}
+
+/** Paint the non-flow scene so a mounted canvas can retain it between frames. */
+export function drawKineticBase(
+  ctx: CanvasRenderingContext2D,
+  state: KineticVisualState,
+  layout: KineticLayout,
+  options: KineticFrameOptions,
+): void {
   const { t } = options;
   const still = options.still ?? false;
-  const marks = options.marks ?? false;
-  ctx.clearRect(0, 0, layout.w, layout.h);
 
   // Anchor glow pools (always present as a soft ground; energy from truth).
   for (const anchor of state.anchors) {
@@ -557,10 +575,18 @@ export function drawKineticFrame(
     Math.max(0, layout.field.w - 1),
     Math.max(0, layout.field.h - 1),
   );
+}
 
-  // Flows above everything else on the canvas.
+/** Paint the time-varying flow layer above the retained base scene. */
+export function drawKineticFlows(
+  ctx: CanvasRenderingContext2D,
+  state: KineticVisualState,
+  options: KineticFrameOptions,
+): void {
+  const still = options.still ?? false;
+  const marks = options.marks ?? false;
   for (const flow of state.flows) {
-    drawFlow(ctx, flow, t, still, marks);
+    drawFlow(ctx, flow, options.t, still, marks);
   }
 }
 
