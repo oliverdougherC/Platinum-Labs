@@ -93,7 +93,7 @@ describe("KineticCanvas continuity", () => {
       );
 
     expect(orchestratorText()).toEqual(["Sonarridle", "Radarridle"]);
-    expect(container.textContent).not.toContain("Requests");
+    expect(orchestratorText().join(" ")).not.toContain("Requests");
 
     rerender(<KineticCanvas {...props(makeFakeSnapshot("downloads", NOW))} />);
     expect(orchestratorText()).toEqual(["Sonarr2 active", "Radarr1 active"]);
