@@ -37,6 +37,44 @@ function mutableSnapshot(
   return structuredClone(makeFakeSnapshot(scenario, NOW));
 }
 
+function setPoolIo(
+  snapshot: DashboardSnapshot,
+  pools: Array<{ pool: string; readBps: number; writeBps: number }>,
+): void {
+  const disk = snapshot.telemetry.disk;
+  if (disk.status !== "available" || !disk.value) {
+    throw new Error("fixture requires available disk telemetry");
+  }
+  const byPool = new Map(pools.map((pool) => [pool.pool, pool] as const));
+  const seen = new Set<string>();
+  for (const pool of disk.value.pools) {
+    if (pool.pool === "other") continue;
+    seen.add(pool.pool);
+    const override = byPool.get(pool.pool);
+    pool.readBps = override?.readBps ?? 0;
+    pool.writeBps = override?.writeBps ?? 0;
+  }
+  for (const override of pools) {
+    if (seen.has(override.pool)) continue;
+    if (!snapshot.zfs.pools.some((pool) => pool.name === override.pool)) continue;
+    disk.value.pools.push({
+      pool: override.pool,
+      readBps: override.readBps,
+      writeBps: override.writeBps,
+    });
+  }
+}
+
+function concurrentPlaybackAmbiguousSnapshot(): DashboardSnapshot {
+  const snapshot = mutableSnapshot("transcode-unknown-rate");
+  setPoolIo(snapshot, [
+    { pool: "DataStore", readBps: 48_000_000, writeBps: 0 },
+    { pool: "eSATA", readBps: 0, writeBps: 28_000_000 },
+    { pool: "NVME", readBps: 0, writeBps: 0 },
+  ]);
+  return snapshot;
+}
+
 function setJellyfinContainerEgress(
   snapshot: DashboardSnapshot,
   netTxBps: number | null,
@@ -186,6 +224,16 @@ describe("buildKineticScene", () => {
       (flow) => flow.kind === "wan-transfer",
     );
     expect(zero).toMatchObject({ treatment: "confirmed-zero", rateBps: 0 });
+  });
+
+  it("retains an observed background copy ambiguously during concurrent playback", () => {
+    const s = sceneOf(concurrentPlaybackAmbiguousSnapshot());
+    expect(s.backgroundTransferObservation).toBe("ambiguous-gap");
+    expect(s.flows.some((flow) => flow.kind === "background-transfer")).toBe(false);
+    expect(s.flows.find((flow) => flow.kind === "playback")).toMatchObject({
+      treatment: "state-only",
+      rateBps: null,
+    });
   });
 
   it("freezes stale work instead of animating it", () => {

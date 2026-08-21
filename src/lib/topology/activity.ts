@@ -259,6 +259,9 @@ interface PoolDirectionClaim {
 }
 
 type PoolDirectionClaims = Map<string, PoolDirectionClaim>;
+interface PoolCandidateOptions {
+  excludeUnknownContributors?: boolean;
+}
 
 function claimPoolDirection(
   claims: PoolDirectionClaims,
@@ -286,22 +289,24 @@ const POOL_DIRECTION_DOMINANCE_SHARE = 0.8;
 const POOL_DIRECTION_RUNNER_UP_RATIO = 4;
 const POOL_TRANSFER_LEG_BALANCE_RATIO = 0.25;
 
-function dominantNamedPoolCandidate(
+function residualNamedPoolCandidates(
   snapshot: DashboardSnapshot,
   field: "readBps" | "writeBps",
   claims: ReadonlyMap<string, PoolDirectionClaim>,
-): NamedPoolFlowCandidate | null {
+  options: PoolCandidateOptions = {},
+): NamedPoolFlowCandidate[] {
   const disk = snapshot.telemetry.disk;
   if ((disk.status !== "available" && disk.status !== "stale") || !disk.value) {
-    return null;
+    return [];
   }
+  const { excludeUnknownContributors = true } = options;
   const realPools = new Set(snapshot.zfs.pools.map((pool) => pool.name));
-  const eligible = disk.value.pools
+  return disk.value.pools
     .filter(
       (pool) =>
         pool.pool !== "other" &&
         realPools.has(pool.pool) &&
-        !claims.get(pool.pool)?.hasUnknownContributor,
+        (!excludeUnknownContributors || !claims.get(pool.pool)?.hasUnknownContributor),
     )
     .map((pool) => {
       const measured = rate(pool[field]) ?? 0;
@@ -313,6 +318,11 @@ function dominantNamedPoolCandidate(
       };
     })
     .sort((a, b) => b.bytesPerSecond - a.bytesPerSecond);
+}
+
+function dominantPoolCandidate(
+  eligible: readonly NamedPoolFlowCandidate[],
+): NamedPoolFlowCandidate | null {
   const top = eligible[0];
   if (!top || top.bytesPerSecond < FLOW_DEADBAND_BPS) return null;
 
@@ -333,6 +343,127 @@ function dominantNamedPoolCandidate(
     bytesPerSecond: top.bytesPerSecond,
     explainedBytesPerSecond: top.explainedBytesPerSecond,
   };
+}
+
+function dominantNamedPoolCandidate(
+  snapshot: DashboardSnapshot,
+  field: "readBps" | "writeBps",
+  claims: ReadonlyMap<string, PoolDirectionClaim>,
+): NamedPoolFlowCandidate | null {
+  return dominantPoolCandidate(residualNamedPoolCandidates(snapshot, field, claims));
+}
+
+function backgroundTransferClaims(
+  snapshot: DashboardSnapshot,
+  now: number,
+): {
+  readClaims: PoolDirectionClaims;
+  writeClaims: PoolDirectionClaims;
+} {
+  const resolvedPlayback = resolveJellyfinPlayback(snapshot, now);
+  const downloadStorage = downloadStorageEndpoint(snapshot);
+  const mediaStorage = mediaStorageEndpoint(snapshot);
+  const qb = sourceState(snapshot, "qbittorrent", now);
+  const acq = snapshot.acquisition;
+  const crossPool =
+    downloadStorage.kind === "pool" &&
+    mediaStorage.kind === "pool" &&
+    downloadStorage.name !== mediaStorage.name;
+
+  let crossPoolImportActive = false;
+  let explicitImportCopyRate: number | null = null;
+  if (crossPool) {
+    const importing = snapshot.acquisition.items.filter((item) => item.state === "importing");
+    if (importing.length > 0) {
+      crossPoolImportActive = true;
+      const src = sourceState(snapshot, "qbittorrent", now);
+      if (src.usable && src.freshness === "live") {
+        const sourceRead = poolReadBps(snapshot, downloadStorage);
+        const destWrite = poolWriteBps(snapshot, mediaStorage);
+        if (
+          sourceRead !== null &&
+          sourceRead >= FLOW_DEADBAND_BPS &&
+          destWrite !== null &&
+          destWrite >= FLOW_DEADBAND_BPS
+        ) {
+          explicitImportCopyRate = Math.min(sourceRead, destWrite);
+        }
+      }
+    }
+  }
+
+  const readClaims: PoolDirectionClaims = new Map();
+  const writeClaims: PoolDirectionClaims = new Map();
+  if (crossPool && crossPoolImportActive) {
+    claimPoolDirection(readClaims, downloadStorage.name, explicitImportCopyRate);
+    claimPoolDirection(writeClaims, mediaStorage.name, explicitImportCopyRate);
+  }
+  if (qb.usable && downloadStorage.kind === "pool") {
+    if (acq.rollup.downloading > 0) {
+      claimPoolDirection(
+        writeClaims,
+        downloadStorage.name,
+        qb.freshness === "live" && snapshot.telemetry.disk.status === "available"
+          ? rate(acq.rollup.aggregateRateBps)
+          : null,
+      );
+    }
+    if ((acq.rollup.seeding ?? 0) > 0) {
+      claimPoolDirection(
+        readClaims,
+        downloadStorage.name,
+        qb.freshness === "live" && snapshot.telemetry.disk.status === "available"
+          ? rate(acq.rollup.uploadRateBps ?? null)
+          : null,
+      );
+    }
+  }
+  if (resolvedPlayback && mediaStorage.kind === "pool") {
+    const playbackRate = resolvedPlayback.playback.headline;
+    claimPoolDirection(
+      readClaims,
+      mediaStorage.name,
+      resolvedPlayback.playbackFreshness === "live" &&
+        snapshot.telemetry.disk.status === "available" &&
+        playbackRate.unknownContributors === 0
+        ? playbackRate.knownBytesPerSecond
+        : null,
+    );
+  }
+  return { readClaims, writeClaims };
+}
+
+export type BackgroundTransferResidualSupport = "clear" | "ambiguous" | "none";
+
+export function backgroundTransferResidualSupport(
+  snapshot: DashboardSnapshot,
+  now: number,
+): BackgroundTransferResidualSupport {
+  const { readClaims, writeClaims } = backgroundTransferClaims(snapshot, now);
+  const clearReader = dominantNamedPoolCandidate(snapshot, "readBps", readClaims);
+  const clearWriter = dominantNamedPoolCandidate(snapshot, "writeBps", writeClaims);
+  if (
+    clearReader &&
+    clearWriter &&
+    clearReader.pool !== clearWriter.pool &&
+    Math.min(clearReader.bytesPerSecond, clearWriter.bytesPerSecond) /
+      Math.max(clearReader.bytesPerSecond, clearWriter.bytesPerSecond) >=
+      POOL_TRANSFER_LEG_BALANCE_RATIO
+  ) {
+    return "clear";
+  }
+
+  const plausibleReaders = residualNamedPoolCandidates(snapshot, "readBps", readClaims, {
+    excludeUnknownContributors: false,
+  }).filter((candidate) => candidate.bytesPerSecond >= FLOW_DEADBAND_BPS);
+  const plausibleWriters = residualNamedPoolCandidates(snapshot, "writeBps", writeClaims, {
+    excludeUnknownContributors: false,
+  }).filter((candidate) => candidate.bytesPerSecond >= FLOW_DEADBAND_BPS);
+  return plausibleReaders.some((reader) =>
+    plausibleWriters.some((writer) => writer.pool !== reader.pool),
+  )
+    ? "ambiguous"
+    : "none";
 }
 
 /**
@@ -749,8 +880,6 @@ export function deriveFlows(
     mediaStorage.name !== downloadStorage.name;
 
   let importCopyEmitted = false;
-  let crossPoolImportActive = false;
-  let explicitImportCopyRate: number | null = null;
   for (const arr of ["sonarr", "radarr"] as const) {
     const src = arr === "sonarr" ? sonarr : radarr;
     if (!src.usable) continue;
@@ -759,8 +888,6 @@ export function deriveFlows(
     );
     if (!importing) continue;
     const arrName = arr === "sonarr" ? "Sonarr" : "Radarr";
-
-    if (crossPool) crossPoolImportActive = true;
 
     // The organizing signal is always present while importing: the Arr is
     // doing real work whose byte rate is not measured on this lane.
@@ -791,7 +918,6 @@ export function deriveFlows(
       ) {
         const copyRate = Math.min(sourceRead, destWrite);
         importCopyEmitted = true;
-        explicitImportCopyRate = copyRate;
         flows.push(
           makeFlow("import-copy", downloadStorage, mediaStorage, {
             plane: "data",
@@ -823,52 +949,10 @@ export function deriveFlows(
   // pretending the residual is exact. A stale disk domain retains the last
   // supportable unclaimed pair as a frozen observation.
   const resolvedPlayback = resolveJellyfinPlayback(snapshot, now);
-  const backgroundReadClaims: PoolDirectionClaims = new Map();
-  const backgroundWriteClaims: PoolDirectionClaims = new Map();
-  if (crossPool && crossPoolImportActive) {
-    claimPoolDirection(
-      backgroundReadClaims,
-      downloadStorage.name,
-      explicitImportCopyRate,
-    );
-    claimPoolDirection(
-      backgroundWriteClaims,
-      mediaStorage.name,
-      explicitImportCopyRate,
-    );
-  }
-  if (qb.usable && downloadStorage.kind === "pool") {
-    if (acq.rollup.downloading > 0) {
-      claimPoolDirection(
-        backgroundWriteClaims,
-        downloadStorage.name,
-        qb.freshness === "live" && snapshot.telemetry.disk.status === "available"
-          ? rate(acq.rollup.aggregateRateBps)
-          : null,
-      );
-    }
-    if ((acq.rollup.seeding ?? 0) > 0) {
-      claimPoolDirection(
-        backgroundReadClaims,
-        downloadStorage.name,
-        qb.freshness === "live" && snapshot.telemetry.disk.status === "available"
-          ? rate(acq.rollup.uploadRateBps ?? null)
-          : null,
-      );
-    }
-  }
-  if (resolvedPlayback && mediaStorage.kind === "pool") {
-    const playbackRate = resolvedPlayback.playback.headline;
-    claimPoolDirection(
-      backgroundReadClaims,
-      mediaStorage.name,
-      resolvedPlayback.playbackFreshness === "live" &&
-        snapshot.telemetry.disk.status === "available" &&
-        playbackRate.unknownContributors === 0
-        ? playbackRate.knownBytesPerSecond
-        : null,
-    );
-  }
+  const {
+    readClaims: backgroundReadClaims,
+    writeClaims: backgroundWriteClaims,
+  } = backgroundTransferClaims(snapshot, now);
 
   const backgroundReader = dominantNamedPoolCandidate(
     snapshot,

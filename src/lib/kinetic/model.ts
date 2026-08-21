@@ -18,6 +18,7 @@ import {
   type StorageBodyModel,
 } from "@/lib/scene/model";
 import {
+  backgroundTransferResidualSupport,
   classifyFlowRate,
   flowNetworkBoundary,
   isAuthoritativeZero,
@@ -211,6 +212,11 @@ export interface KineticScene {
     | "ambiguous-gap"
     | "confirmed-end"
     | "source-unavailable";
+  /** Material raw disk legs that can still plausibly support a retained copy. */
+  backgroundTransferPlausiblePools: {
+    readers: string[];
+    writers: string[];
+  };
   /** Flow families whose authoritative connector cannot confirm current truth. */
   unavailableFlowKinds: FlowKind[];
   attention: AttentionSummaryModel;
@@ -243,32 +249,37 @@ function unavailableFlowKinds(snapshot: DashboardSnapshot): FlowKind[] {
 function backgroundTransferObservation(
   snapshot: DashboardSnapshot,
   flows: readonly KineticFlow[],
+  now: number,
 ): KineticScene["backgroundTransferObservation"] {
   if (flows.some((flow) => flow.kind === "background-transfer")) return "observed";
   const disk = snapshot.telemetry.disk;
   if (disk.status !== "available" || !disk.value) return "source-unavailable";
-
-  // A currently attributed storage flow is positive semantic evidence that a
-  // formerly inferred background copy is no longer the right explanation.
-  if (
-    flows.some(
-      (flow) =>
-        flow.kind === "storage-transfer" ||
-        flow.kind === "import-copy" ||
-        flow.kind === "playback",
-    )
-  ) {
-    return "confirmed-end";
+  if (backgroundTransferResidualSupport(snapshot, now) !== "none") {
+    return "ambiguous-gap";
   }
-
   const namedPools = disk.value.pools.filter((pool) => pool.pool !== "other");
   const readers = namedPools.filter((pool) => pool.readBps >= FLOW_DEADBAND_BPS);
   const writers = namedPools.filter((pool) => pool.writeBps >= FLOW_DEADBAND_BPS);
-  return readers.some((reader) =>
-    writers.some((writer) => writer.pool !== reader.pool),
-  )
+  return readers.some((reader) => writers.some((writer) => writer.pool !== reader.pool))
     ? "ambiguous-gap"
     : "confirmed-end";
+}
+
+function backgroundTransferPlausiblePools(
+  snapshot: DashboardSnapshot,
+): KineticScene["backgroundTransferPlausiblePools"] {
+  const disk = snapshot.telemetry.disk;
+  if (disk.status !== "available" || !disk.value) {
+    return { readers: [], writers: [] };
+  }
+  return {
+    readers: disk.value.pools
+      .filter((pool) => pool.pool !== "other" && pool.readBps >= FLOW_DEADBAND_BPS)
+      .map((pool) => pool.pool),
+    writers: disk.value.pools
+      .filter((pool) => pool.pool !== "other" && pool.writeBps >= FLOW_DEADBAND_BPS)
+      .map((pool) => pool.pool),
+  };
 }
 
 export interface KineticSceneOptions {
@@ -809,7 +820,8 @@ export function buildKineticScene(
         : null,
     storage: buildStorage(scene),
     flows,
-    backgroundTransferObservation: backgroundTransferObservation(snapshot, flows),
+    backgroundTransferObservation: backgroundTransferObservation(snapshot, flows, options.now),
+    backgroundTransferPlausiblePools: backgroundTransferPlausiblePools(snapshot),
     unavailableFlowKinds: unavailableFlowKinds(snapshot),
     attention: buildAttention(snapshot),
     critical: scene.critical,

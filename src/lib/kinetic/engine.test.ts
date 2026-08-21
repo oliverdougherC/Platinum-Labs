@@ -29,6 +29,42 @@ function setDownloadRate(snapshot: DashboardSnapshot, bps: number): void {
   snapshot.acquisition.rollup.aggregateRateBps = bps;
 }
 
+function setPoolIo(
+  snapshot: DashboardSnapshot,
+  pools: Array<{ pool: string; readBps: number; writeBps: number }>,
+): void {
+  const disk = snapshot.telemetry.disk;
+  if (disk.status !== "available" || !disk.value) {
+    throw new Error("fixture requires available disk telemetry");
+  }
+  const byPool = new Map(pools.map((pool) => [pool.pool, pool] as const));
+  const seen = new Set<string>();
+  for (const pool of disk.value.pools) {
+    if (pool.pool === "other") continue;
+    seen.add(pool.pool);
+    const override = byPool.get(pool.pool);
+    pool.readBps = override?.readBps ?? 0;
+    pool.writeBps = override?.writeBps ?? 0;
+  }
+  for (const override of pools) {
+    if (seen.has(override.pool)) continue;
+    if (!snapshot.zfs.pools.some((pool) => pool.name === override.pool)) continue;
+    disk.value.pools.push({
+      pool: override.pool,
+      readBps: override.readBps,
+      writeBps: override.writeBps,
+    });
+  }
+}
+
+function makeConcurrentPlaybackAmbiguous(snapshot: DashboardSnapshot): void {
+  setPoolIo(snapshot, [
+    { pool: "DataStore", readBps: 48_000_000, writeBps: 0 },
+    { pool: "eSATA", readBps: 0, writeBps: 28_000_000 },
+    { pool: "NVME", readBps: 0, writeBps: 0 },
+  ]);
+}
+
 /** Advance the engine with regular 16 ms frames for `seconds`. */
 function run(engine: KineticEngine, fromMs: number, seconds: number): number {
   let at = fromMs;
@@ -243,6 +279,42 @@ describe("KineticEngine phase continuity", () => {
     expect(resumed.channels[0]!.seed).toBe(seed);
     expect(resumed.removed).toBe(false);
     expect(resumed.flow.treatment).toBe("particles");
+  });
+
+  it("retains a background copy through concurrent playback ambiguity without restarting grace", () => {
+    const engine = new KineticEngine(0);
+    const active = sceneAndLayout("background-copy");
+    const ambiguous = sceneAndLayout("transcode-unknown-rate", makeConcurrentPlaybackAmbiguous);
+    const idle = sceneAndLayout("idle");
+    engine.syncTargets(active.scene, active.layout);
+    let at = run(engine, 0, 3);
+    const before = backgroundVisual(engine);
+    const seed = before.channels[0]!.seed;
+
+    engine.syncTargets(ambiguous.scene, ambiguous.layout);
+    expect(backgroundVisual(engine)).toBe(before);
+    expect(before.flow.treatment).toBe("stale");
+    expect(before.flow.rateBps).toBeNull();
+    expect(before.flow.channels.every((channel) => channel.bytesPerSecond === null)).toBe(
+      true,
+    );
+    const missingSince = before.missingSinceMs;
+    at = run(engine, at, FLOW_MISSING_GRACE_SECONDS * 0.5);
+    engine.syncTargets(ambiguous.scene, ambiguous.layout);
+    expect(before.missingSinceMs).toBe(missingSince);
+
+    engine.syncTargets(active.scene, active.layout);
+    at += 16;
+    engine.frame(at);
+    const resumed = backgroundVisual(engine);
+    expect(resumed).toBe(before);
+    expect(resumed.channels[0]!.seed).toBe(seed);
+    expect(resumed.flow.treatment).toBe("particles");
+    expect(resumed.removed).toBe(false);
+
+    engine.syncTargets(idle.scene, idle.layout);
+    expect(before.removed).toBe(true);
+    expect(before.missingSinceMs).toBeNull();
   });
 
   it("does not let an unavailable disk source masquerade as fresh traffic", () => {

@@ -427,7 +427,11 @@ export class KineticEngine {
       if (present.has(visual.id) || visual.removed) continue;
       const backgroundGap =
         visual.flow.kind === "background-transfer" &&
-        scene.backgroundTransferObservation === "ambiguous-gap";
+        scene.backgroundTransferObservation === "ambiguous-gap" &&
+        visual.flow.from.kind === "pool" &&
+        visual.flow.to.kind === "pool" &&
+        scene.backgroundTransferPlausiblePools.readers.includes(visual.flow.from.name) &&
+        scene.backgroundTransferPlausiblePools.writers.includes(visual.flow.to.name);
       if (backgroundGap) {
         if (visual.missingSinceMs === null) {
           // Retain identity and phase, but freeze the visual as last-known truth:
