@@ -122,18 +122,18 @@ describe("KineticApp retained topology", () => {
     const { container, rerender } = render(<KineticApp {...props("container-field-real")} />);
     const populated = container.querySelectorAll("[data-kinetic-cell]").length;
     expect(populated).toBeGreaterThan(30);
-    expect(container.textContent).toMatch(/\d+\/\d+ workloads/);
+    expect(container.textContent).toMatch(/\d+ \/ \d+ containers running/);
 
     rerender(<KineticApp {...props("docker-unavailable")} />);
     // Identity is retained — the field does not vanish…
     expect(container.querySelectorAll("[data-kinetic-cell]").length).toBe(populated);
     // …but no live workload count is asserted while telemetry is unavailable.
-    expect(container.textContent).not.toMatch(/\d+\/\d+ workloads/);
+    expect(container.textContent).not.toMatch(/containers running/);
   });
 
   it("starts explicitly incomplete on a cold start without any Docker inventory", () => {
     const { container } = render(<KineticApp {...props("docker-unavailable")} />);
     expect(container.querySelectorAll("[data-kinetic-cell]").length).toBe(0);
-    expect(container.textContent).not.toMatch(/\d+\/\d+ workloads/);
+    expect(container.textContent).not.toMatch(/containers running/);
   });
 });
