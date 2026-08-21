@@ -196,6 +196,7 @@ const KINETIC = process.argv.includes("--kinetic");
 const SHOTS = KINETIC ? KINETIC_SHOTS : TOPOLOGY_SHOTS;
 const OUT_DIR = arg("--out", KINETIC ? "docs/review/v4-kinetic-flow" : "docs/review/v21-living-topology");
 const ONLY = arg("--only");
+const ONLY_LOWER = ONLY?.toLowerCase() ?? null;
 const MOTION = process.argv.includes("--motion");
 const PERFORMANCE = process.argv.includes("--performance");
 const LAB = process.argv.includes("--lab");
@@ -203,6 +204,13 @@ const DETERMINISM = process.argv.includes("--determinism");
 const PROD = process.argv.includes("--prod");
 const HEADLESS_PERF = process.argv.includes("--headless");
 const PORT = 3911;
+
+function wantsMotion(name, ...aliases) {
+  if (!ONLY_LOWER) return true;
+  return [name, ...aliases]
+    .map((value) => value.toLowerCase())
+    .some((value) => value.includes(ONLY_LOWER) || ONLY_LOWER.includes(value));
+}
 
 async function waitForServer(url, timeoutMs = 60_000) {
   const start = Date.now();
@@ -1012,7 +1020,7 @@ async function captureBackgroundFlowContinuity(browser, baseUrl) {
     bypassCSP: true,
   });
   const page = await context.newPage();
-  console.log("recording PLA-286 continuity: DataStore→eSATA → transient gap → resume → confirmed stop…");
+  console.log("recording PLA-286 continuity: DataStore→eSATA → concurrent playback ambiguity → resume → confirmed stop…");
   await page.goto(`${baseUrl}/dev/kinetic-flow?scenario=background-copy`, {
     waitUntil: "domcontentloaded",
   });
@@ -1024,19 +1032,59 @@ async function captureBackgroundFlowContinuity(browser, baseUrl) {
   );
   const url0 = page.url();
   const mountedStage = await page.locator("[data-kinetic-stage]").elementHandle();
+  const activeCounts = await page.evaluate(() => window.__homelabKineticDebug());
+  const activeTransfer = activeCounts.visuals.find(
+    (visual) => visual.kind === "background-transfer" && !visual.removed,
+  );
+  if (
+    !activeTransfer ||
+    activeTransfer.id !== "background-transfer:pool:DataStore->pool:eSATA" ||
+    activeTransfer.treatment !== "particles" ||
+    activeTransfer.rateBps === null
+  ) {
+    throw new Error(`baseline transfer did not start live: ${JSON.stringify(activeCounts)}`);
+  }
 
   await page.waitForTimeout(8_000);
-  await page.evaluate(() => window.__homelabSetScenario("background-copy-ambiguous"));
+  await page.evaluate(() =>
+    window.__homelabSetScenario("background-copy-playback-ambiguous"),
+  );
   await page.waitForTimeout(2_200);
   const gapCounts = await page.evaluate(() => window.__homelabKineticDebug());
-  if (gapCounts.flows !== 1 || gapCounts.decaying !== 0) {
-    throw new Error(`ambiguous gap did not retain one flow identity: ${JSON.stringify(gapCounts)}`);
+  const gapTransfer = gapCounts.visuals.find(
+    (visual) => visual.kind === "background-transfer" && !visual.removed,
+  );
+  const gapPlayback = gapCounts.visuals.find(
+    (visual) => visual.kind === "playback" && !visual.removed,
+  );
+  if (
+    !gapTransfer ||
+    gapTransfer.id !== activeTransfer.id ||
+    gapTransfer.treatment !== "stale" ||
+    gapTransfer.rateBps !== null ||
+    gapTransfer.particleSlots !== 0 ||
+    gapCounts.visibleParticles !== 0 ||
+    gapCounts.decaying !== 0 ||
+    !gapPlayback ||
+    gapPlayback.treatment !== "state-only" ||
+    gapPlayback.rateBps !== null
+  ) {
+    throw new Error(`concurrent playback ambiguity broke continuity: ${JSON.stringify(gapCounts)}`);
   }
 
   await page.evaluate(() => window.__homelabSetScenario("background-copy"));
   await page.waitForTimeout(12_000);
   const resumedCounts = await page.evaluate(() => window.__homelabKineticDebug());
-  if (resumedCounts.flows !== 1 || resumedCounts.decaying !== 0) {
+  const resumedTransfer = resumedCounts.visuals.find(
+    (visual) => visual.kind === "background-transfer" && !visual.removed,
+  );
+  if (
+    !resumedTransfer ||
+    resumedTransfer.id !== activeTransfer.id ||
+    resumedTransfer.treatment !== "particles" ||
+    resumedTransfer.rateBps === null ||
+    resumedCounts.decaying !== 0
+  ) {
     throw new Error(`resumed transfer lost continuity: ${JSON.stringify(resumedCounts)}`);
   }
 
@@ -1101,29 +1149,44 @@ async function captureMotion(browser, baseUrl) {
   const url0 = page.url();
   const mountedKineticStage = KINETIC ? await page.locator("[data-kinetic-stage]").elementHandle() : null;
   if (KINETIC) {
+    const wantsStory = wantsMotion(
+      "motion-quiet-download-playback-simultaneous-quiet",
+      "quiet-download-playback-simultaneous-quiet",
+    );
+    const wantsStress = wantsMotion("motion-continuity-stress", "continuity-stress");
+    const wantsPla286 = wantsMotion(
+      "motion-background-flow-continuity-pla-286",
+      "background-flow-continuity-pla-286",
+      "pla-286",
+    );
     // Story clip — the required same-mounted V4 sequence, no reloads:
     // quiet → qBittorrent download → Jellyfin playback → simultaneous → quiet.
-    await page.waitForTimeout(3_500);
-    await page.evaluate(() => window.__homelabSetScenario("downloads"));
-    await page.waitForTimeout(4_500);
-    await page.evaluate(() => window.__homelabSetScenario("direct-play"));
-    await page.waitForTimeout(4_500);
-    await page.evaluate(() => window.__homelabSetScenario("active"));
-    await page.waitForTimeout(4_500);
-    await page.evaluate(() => window.__homelabSetScenario("idle"));
-    await page.waitForTimeout(4_000);
-    if (page.url() !== url0) {
-      throw new Error("motion capture navigated — the same-page contract is broken");
+    if (wantsStory) {
+      await page.waitForTimeout(3_500);
+      await page.evaluate(() => window.__homelabSetScenario("downloads"));
+      await page.waitForTimeout(4_500);
+      await page.evaluate(() => window.__homelabSetScenario("direct-play"));
+      await page.waitForTimeout(4_500);
+      await page.evaluate(() => window.__homelabSetScenario("active"));
+      await page.waitForTimeout(4_500);
+      await page.evaluate(() => window.__homelabSetScenario("idle"));
+      await page.waitForTimeout(4_000);
+      if (page.url() !== url0) {
+        throw new Error("motion capture navigated — the same-page contract is broken");
+      }
+      if (mountedKineticStage && !(await mountedKineticStage.evaluate((stage) => stage === document.querySelector("[data-kinetic-stage]")))) {
+        throw new Error("motion capture remounted the kinetic stage — the same-mounted contract is broken");
+      }
+      const kineticVideo = page.video();
+      await page.close();
+      await context.close();
+      await saveMotionClip(await kineticVideo.path(), "motion-quiet-download-playback-simultaneous-quiet");
+    } else {
+      await page.close();
+      await context.close();
     }
-    if (mountedKineticStage && !(await mountedKineticStage.evaluate((stage) => stage === document.querySelector("[data-kinetic-stage]")))) {
-      throw new Error("motion capture remounted the kinetic stage — the same-mounted contract is broken");
-    }
-    const kineticVideo = page.video();
-    await page.close();
-    await context.close();
-    await saveMotionClip(await kineticVideo.path(), "motion-quiet-download-playback-simultaneous-quiet");
-    await captureKineticContinuityStress(browser, baseUrl);
-    await captureBackgroundFlowContinuity(browser, baseUrl);
+    if (wantsStress) await captureKineticContinuityStress(browser, baseUrl);
+    if (wantsPla286) await captureBackgroundFlowContinuity(browser, baseUrl);
     return;
   }
 
