@@ -108,6 +108,48 @@ describe("KineticCanvas continuity", () => {
     expect(rafCb).toBeNull();
   });
 
+  it("uses the same rounded percentage for Memory and ARC copy and fill", () => {
+    const snapshot = structuredClone(makeFakeSnapshot("container-field-real", NOW));
+    const memory = snapshot.telemetry.memory.value!;
+    memory.totalBytes = 1_000;
+    memory.usedBytes = 375;
+    memory.availableBytes = 625;
+    const arc = snapshot.telemetry.arc.value!;
+    arc.sizeBytes = 25;
+    arc.targetBytes = 40;
+
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    const memoryGauge = container.querySelector<HTMLElement>(
+      '[data-band-gauge="memory"]',
+    )!;
+    const arcGauge = container.querySelector<HTMLElement>(
+      '[data-band-gauge="arc"]',
+    )!;
+    expect(memoryGauge.textContent).toContain("38%");
+    expect(
+      memoryGauge.querySelector<HTMLElement>("[data-gauge-fill]")!.style.width,
+    ).toBe("38%");
+    expect(arcGauge.textContent).toContain("63%");
+    expect(
+      arcGauge.querySelector<HTMLElement>("[data-gauge-fill]")!.style.width,
+    ).toBe("63%");
+  });
+
+  it("labels stale Memory and ARC utilization without making a zero claim", () => {
+    const snapshot = structuredClone(makeFakeSnapshot("container-field-real", NOW));
+    snapshot.telemetry.memory.status = "stale";
+    snapshot.telemetry.arc.status = "stale";
+
+    const { container } = render(<KineticCanvas {...props(snapshot)} />);
+    for (const label of ["memory", "arc"]) {
+      const gauge = container.querySelector<HTMLElement>(
+        `[data-band-gauge="${label}"]`,
+      )!;
+      expect(gauge.textContent).toContain("stale");
+      expect(gauge.textContent).not.toMatch(/0%\s*$/);
+    }
+  });
+
   it("gives the workload field one roving tab stop and arrow-key movement", () => {
     const snapshot = makeFakeSnapshot("container-field-real", NOW);
     const { container } = render(<KineticCanvas {...props(snapshot)} />);

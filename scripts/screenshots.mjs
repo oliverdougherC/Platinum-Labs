@@ -279,6 +279,21 @@ async function validateKineticShot(page, shot) {
   if (!bandText.includes("44C / 88T")) {
     throw new Error(`instrument band lacks the detected CPU topology (${shot.name})`);
   }
+  if (shot.scenario === "container-field-real") {
+    for (const label of ["memory", "arc"]) {
+      const gauge = page.locator(`[data-band-gauge="${label}"]`);
+      const text = (await gauge.innerText()).trim();
+      const displayed = text.match(/(\d+)%\s*$/)?.[1];
+      const width = await gauge.locator("[data-gauge-fill]").evaluate(
+        (element) => element.style.width,
+      );
+      if (!displayed || width !== `${displayed}%`) {
+        throw new Error(
+          `${label} fill and utilization copy disagree (${shot.name}): ${width} vs ${text}`,
+        );
+      }
+    }
+  }
   if (shot.scenario === "download-rate-unknown") {
     const anchorLabel =
       (await page.locator('[data-kinetic-anchor="qbittorrent"]').getAttribute("aria-label")) ?? "";
