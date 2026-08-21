@@ -45,6 +45,12 @@ export const ONSET_SECONDS = 0.9;
 /** Flow decay: a stopped flow releases over this long. */
 export const DECAY_SECONDS = 0.7;
 /**
+ * Missing-observation hysteresis for data flows. Host rates arrive every 2s;
+ * 4.5s bridges one bursty/missing counter window (and its repeated cached
+ * snapshot) but requires sustained absence before a terminal fade begins.
+ */
+export const FLOW_MISSING_GRACE_SECONDS = 4.5;
+/**
  * Per-frame delta clamp. A hidden tab, sleeping laptop, or 30-second
  * scheduling pause resumes as ONE bounded step — no particle can cross the
  * stage on a giant delta, and no easing can explode. Visual time simply does
@@ -109,6 +115,8 @@ export interface FlowVisual {
   presence: number;
   /** True while the flow has left the truth model and is releasing. */
   removed: boolean;
+  /** Monotonic wall-clock start of an unconfirmed observation gap. */
+  missingSinceMs: number | null;
   /** Treatment layer weights — crossfade, never snap. */
   liveness: number;
   breath: number;
@@ -260,6 +268,8 @@ export class KineticEngine {
   /** Monotonic visual time in seconds. Only frames advance it; never resets. */
   private time: number;
   private lastFrameAt: number | null = null;
+  /** Monotonic wall time ages lifecycle grace even when frame deltas clamp. */
+  private wallTimeMs: number;
 
   private scene: KineticScene | null = null;
   private layout: KineticLayout | null = null;
@@ -284,6 +294,7 @@ export class KineticEngine {
     // stage. Everything downstream is relative visual time.
     this.time = 0;
     this.lastFrameAt = epochMs;
+    this.wallTimeMs = epochMs;
   }
 
   /** Current visual time (seconds). */
@@ -306,7 +317,14 @@ export class KineticEngine {
    * (their last path retained); a flow that returns mid-decay simply reverses
    * its envelope — one visual object, no duplicate populations.
    */
-  syncTargets(scene: KineticScene, layout: KineticLayout, opts?: { snap?: boolean }): void {
+  syncTargets(
+    scene: KineticScene,
+    layout: KineticLayout,
+    opts?: { snap?: boolean; nowMs?: number },
+  ): void {
+    if (typeof opts?.nowMs === "number" && Number.isFinite(opts.nowMs)) {
+      this.wallTimeMs = Math.max(this.wallTimeMs, opts.nowMs);
+    }
     const stageChanged =
       this.layout !== null && (this.layout.w !== layout.w || this.layout.h !== layout.h);
     this.scene = scene;
@@ -317,7 +335,7 @@ export class KineticEngine {
     // than painting geometry from another stage size.
     if (stageChanged) {
       for (const [id, visual] of this.flowVisuals) {
-        if (visual.removed) {
+        if (visual.removed || visual.missingSinceMs !== null) {
           this.flowVisuals.delete(id);
           this.flowTargets.delete(id);
         }
@@ -331,6 +349,7 @@ export class KineticEngine {
     }
 
     this.syncFlows(scene, layout);
+    this.expireMissingFlows();
     this.syncCells(scene, layout);
     this.syncStrata(scene, layout);
     this.syncAnchors(scene, layout);
@@ -354,6 +373,7 @@ export class KineticEngine {
         existing.flow = flow;
         existing.path = path;
         existing.removed = false;
+        existing.missingSinceMs = null;
       } else {
         this.flowVisuals.set(flow.id, {
           id: flow.id,
@@ -361,6 +381,7 @@ export class KineticEngine {
           path,
           presence: 0,
           removed: false,
+          missingSinceMs: null,
           liveness: 0,
           breath: 0,
           staleW: 0,
@@ -390,7 +411,31 @@ export class KineticEngine {
       );
     }
     for (const visual of this.flowVisuals.values()) {
-      if (!present.has(visual.id)) visual.removed = true;
+      if (present.has(visual.id) || visual.removed) continue;
+      // `organize` is a short-lived control-plane whisper. Data flows receive
+      // one deliberate observation-gap grace so a bursty rate window cannot
+      // destroy their logical/visual identity between corroborating samples.
+      if (visual.flow.kind === "organize") {
+        visual.removed = true;
+      } else if (visual.missingSinceMs === null) {
+        visual.missingSinceMs = this.wallTimeMs;
+      }
+    }
+  }
+
+  private expireMissingFlows(): void {
+    const graceMs = FLOW_MISSING_GRACE_SECONDS * 1000;
+    for (const visual of this.flowVisuals.values()) {
+      if (
+        visual.removed ||
+        visual.missingSinceMs === null ||
+        this.wallTimeMs - visual.missingSinceMs < graceMs
+      ) {
+        continue;
+      }
+      visual.removed = true;
+      const targets = this.flowTargets.get(visual.id);
+      if (targets) targets.presence = 0;
     }
   }
 
@@ -590,12 +635,14 @@ export class KineticEngine {
       dt = Math.min(Math.max((nowMs - this.lastFrameAt) / 1000, 0), MAX_FRAME_DELTA_SECONDS);
     }
     this.lastFrameAt = nowMs;
+    this.wallTimeMs = Math.max(this.wallTimeMs, nowMs);
     this.time += dt;
     if (dt > 0) this.ease(dt);
     return this.time;
   }
 
   private ease(dt: number): void {
+    this.expireMissingFlows();
     const scene = this.scene;
     let settled = true;
     for (const visual of this.flowVisuals.values()) {
@@ -811,6 +858,7 @@ export class KineticEngine {
     if (!this.settledFlag) return true;
     for (const visual of this.flowVisuals.values()) {
       if (visual.presence <= 0) continue;
+      if (visual.missingSinceMs !== null) return true;
       if (visual.liveness > 0.02 && visual.rate >= FLOW_DEADBAND_BPS) return true;
       if (visual.breath > 0.02) return true;
     }

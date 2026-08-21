@@ -25,8 +25,8 @@
  * numbers include compilation/HMR overhead and are not production claims.
  * Every artifact records which build mode produced it.
  *
- * `--motion` records a ~24s idle→active webm (and a GIF when ffmpeg is
- * available) instead of PNGs. `--lab` captures the flow-design contact
+ * `--motion` records the renderer story plus continuity webms (and GIFs when
+ * ffmpeg is available) instead of PNGs. `--lab` captures the flow-design contact
  * sheets. `--performance` samples per-scenario browser cost — headFUL by
  * default because headless Chromium has no real GPU raster path and its
  * numbers mislead (pass --headless only for rough smoke runs; the JSON
@@ -983,9 +983,9 @@ async function captureKineticContinuityStress(browser, baseUrl) {
   await page.waitForTimeout(300);
   await page.evaluate(() => window.__homelabSetScenario("downloads"));
   await page.waitForTimeout(3_500);
-  // Final stop: the decay completes undisturbed.
+  // Final stop: the missing-sample grace and terminal decay complete undisturbed.
   await page.evaluate(() => window.__homelabSetScenario("idle"));
-  await page.waitForTimeout(2_500);
+  await page.waitForTimeout(6_000);
   if (page.url() !== url0) {
     throw new Error("continuity capture navigated — the same-page contract is broken");
   }
@@ -996,6 +996,75 @@ async function captureKineticContinuityStress(browser, baseUrl) {
   await page.close();
   await context.close();
   await saveMotionClip(await video.path(), "motion-continuity-stress");
+}
+
+/**
+ * PLA-286 acceptance evidence: one real-shaped DataStore → eSATA flow stays
+ * continuously visible across a 2.2s missing telemetry window, resumes on the
+ * same mounted canvas, then disappears once after sustained inactivity. The
+ * ~36s clip crosses many 2s simulator samples without navigation or remounting.
+ */
+async function captureBackgroundFlowContinuity(browser, baseUrl) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+    recordVideo: { dir: OUT_DIR, size: { width: 1280, height: 720 } },
+    bypassCSP: true,
+  });
+  const page = await context.newPage();
+  console.log("recording PLA-286 continuity: DataStore→eSATA → transient gap → resume → confirmed stop…");
+  await page.goto(`${baseUrl}/dev/kinetic-flow?scenario=background-copy`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.waitForFunction(
+    () =>
+      typeof window.__homelabSetScenario === "function" &&
+      typeof window.__homelabKineticDebug === "function",
+    { timeout: 15_000 },
+  );
+  const url0 = page.url();
+  const mountedStage = await page.locator("[data-kinetic-stage]").elementHandle();
+
+  await page.waitForTimeout(8_000);
+  await page.evaluate(() => window.__homelabSetScenario("idle"));
+  await page.waitForTimeout(2_200);
+  const gapCounts = await page.evaluate(() => window.__homelabKineticDebug());
+  if (gapCounts.flows !== 1 || gapCounts.decaying !== 0) {
+    throw new Error(`transient gap did not retain one live flow: ${JSON.stringify(gapCounts)}`);
+  }
+
+  await page.evaluate(() => window.__homelabSetScenario("background-copy"));
+  await page.waitForTimeout(12_000);
+  const resumedCounts = await page.evaluate(() => window.__homelabKineticDebug());
+  if (resumedCounts.flows !== 1 || resumedCounts.decaying !== 0) {
+    throw new Error(`resumed transfer lost continuity: ${JSON.stringify(resumedCounts)}`);
+  }
+
+  await page.evaluate(() => window.__homelabSetScenario("idle"));
+  await page.waitForTimeout(7_000);
+  const stoppedCounts = await page.evaluate(() => window.__homelabKineticDebug());
+  if (stoppedCounts.flows !== 0 || stoppedCounts.decaying !== 0) {
+    throw new Error(`confirmed stop left a ghost flow: ${JSON.stringify(stoppedCounts)}`);
+  }
+  await page.waitForTimeout(5_000);
+
+  if (page.url() !== url0) {
+    throw new Error("PLA-286 capture navigated — the same-page contract is broken");
+  }
+  if (
+    mountedStage &&
+    !(await mountedStage.evaluate(
+      (stage) => stage === document.querySelector("[data-kinetic-stage]"),
+    ))
+  ) {
+    throw new Error("PLA-286 capture remounted the kinetic stage");
+  }
+  const video = page.video();
+  await page.close();
+  await context.close();
+  await saveMotionClip(
+    await video.path(),
+    "motion-background-flow-continuity-pla-286",
+  );
 }
 
 /**
@@ -1053,6 +1122,7 @@ async function captureMotion(browser, baseUrl) {
     await context.close();
     await saveMotionClip(await kineticVideo.path(), "motion-quiet-download-playback-simultaneous-quiet");
     await captureKineticContinuityStress(browser, baseUrl);
+    await captureBackgroundFlowContinuity(browser, baseUrl);
     return;
   }
 

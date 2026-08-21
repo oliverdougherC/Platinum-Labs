@@ -366,7 +366,10 @@ export function KineticCanvas({
     const engine = engineRef.current;
     if (!engine || !layout) return;
     engine.setSelection(selection);
-    engine.syncTargets(scene, layout, { snap: frozen || reducedMotion });
+    engine.syncTargets(scene, layout, {
+      snap: frozen || reducedMotion,
+      nowMs: performance.now(),
+    });
     if (frozen || reducedMotion) {
       // Deterministic single frame: t derives from the explicit frozen clock,
       // never the live epoch. Reduced motion swaps particles for static

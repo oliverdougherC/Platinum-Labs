@@ -5,6 +5,7 @@ import { buildKineticScene, type KineticScene } from "./model";
 import { buildKineticLayout, type KineticLayout } from "./layout";
 import {
   KineticEngine,
+  FLOW_MISSING_GRACE_SECONDS,
   MAX_FRAME_DELTA_SECONDS,
   MAX_PARTICLE_SLOTS,
   PARTICLE_SPEED,
@@ -44,6 +45,14 @@ function wanVisual(engine: KineticEngine) {
     .visualState()
     .flows.find((f) => f.flow.kind === "wan-transfer");
   if (!visual) throw new Error("no wan-transfer visual");
+  return visual;
+}
+
+function backgroundVisual(engine: KineticEngine) {
+  const visual = engine
+    .visualState()
+    .flows.find((f) => f.flow.kind === "background-transfer");
+  if (!visual) throw new Error("no background-transfer visual");
   return visual;
 }
 
@@ -135,41 +144,126 @@ describe("KineticEngine phase continuity", () => {
     expect(fastCount).toBeLessThanOrEqual(MAX_PARTICLE_SLOTS);
   });
 
-  it("decays a stopped flow gracefully and reverses cleanly when it reappears mid-decay", () => {
+  it("keeps one transient missing sample on the same visual and particle phase", () => {
     const engine = new KineticEngine(0);
     const active = sceneAndLayout("downloads");
     engine.syncTargets(active.scene, active.layout);
     let at = run(engine, 0, 3);
-    expect(wanVisual(engine).presence).toBe(1);
+    const before = wanVisual(engine);
+    const seedBefore = before.channels[0]!.seed;
+    const positionBefore = slotPosition(
+      seedBefore,
+      0,
+      engine.now(),
+      before.path.total,
+    );
+    const timeBefore = engine.now();
+    expect(before.presence).toBe(1);
 
     const idle = sceneAndLayout("idle");
     engine.syncTargets(idle.scene, idle.layout);
-    at = run(engine, at, 0.3);
-    const fading = wanVisual(engine);
-    expect(fading.removed).toBe(true);
-    expect(fading.presence).toBeGreaterThan(0);
-    expect(fading.presence).toBeLessThan(1);
-    const midPresence = fading.presence;
+    at = run(engine, at, 2.2);
+    const held = wanVisual(engine);
+    expect(held).toBe(before);
+    expect(held.removed).toBe(false);
+    expect(held.presence).toBe(1);
 
-    // Same flow returns 300 ms into its decay: ONE visual object reverses —
-    // no duplicate populations, no brightness spike, no phase reset.
+    // The next corroborating sample returns within the grace window. It updates
+    // the same visual object and its particles continue from the global clock.
     engine.syncTargets(active.scene, active.layout);
     at += 16;
     engine.frame(at);
     const back = wanVisual(engine);
-    expect(back).toBe(fading);
+    expect(back).toBe(before);
     expect(back.removed).toBe(false);
-    expect(back.presence).toBeGreaterThanOrEqual(midPresence);
-    expect(back.presence).toBeLessThan(1);
+    expect(back.presence).toBe(1);
+    expect(back.channels[0]!.seed).toBe(seedBefore);
+    const expectedPosition =
+      (positionBefore +
+        ((engine.now() - timeBefore) * PARTICLE_SPEED) / back.path.total) %
+      1;
+    expect(
+      slotPosition(seedBefore, 0, engine.now(), back.path.total),
+    ).toBeCloseTo(expectedPosition, 5);
     expect(
       engine.visualState().flows.filter((f) => f.flow.kind === "wan-transfer"),
     ).toHaveLength(1);
+  });
 
-    // And a completed decay removes the visual entirely.
+  it("requires sustained absence, then performs one terminal fade without a ghost", () => {
+    const engine = new KineticEngine(0);
+    const active = sceneAndLayout("downloads");
+    const idle = sceneAndLayout("idle");
+    engine.syncTargets(active.scene, active.layout);
+    let at = run(engine, 0, 3);
+    const before = wanVisual(engine);
+
     engine.syncTargets(idle.scene, idle.layout);
+    at = run(engine, at, FLOW_MISSING_GRACE_SECONDS - 0.1);
+    expect(wanVisual(engine)).toBe(before);
+    expect(before.removed).toBe(false);
+    expect(before.presence).toBe(1);
+
+    at = run(engine, at, 0.2);
+    const fading = wanVisual(engine);
+    expect(fading).toBe(before);
+    expect(fading.removed).toBe(true);
+    expect(fading.presence).toBeGreaterThan(0);
+    expect(fading.presence).toBeLessThan(1);
+
     run(engine, at, 2);
     expect(
       engine.visualState().flows.some((f) => f.flow.kind === "wan-transfer"),
+    ).toBe(false);
+  });
+
+  it("keeps the real DataStore to eSATA identity through a missing disk-rate window", () => {
+    const engine = new KineticEngine(0);
+    const active = sceneAndLayout("background-copy");
+    const missing = sceneAndLayout("idle");
+    engine.syncTargets(active.scene, active.layout);
+    let at = run(engine, 0, 3);
+    const before = backgroundVisual(engine);
+    const seed = before.channels[0]!.seed;
+
+    engine.syncTargets(missing.scene, missing.layout);
+    at = run(engine, at, 2.2);
+    expect(backgroundVisual(engine)).toBe(before);
+    expect(before.presence).toBe(1);
+
+    engine.syncTargets(active.scene, active.layout);
+    at += 16;
+    engine.frame(at);
+    const resumed = backgroundVisual(engine);
+    expect(resumed).toBe(before);
+    expect(resumed.id).toBe(
+      "background-transfer:pool:DataStore->pool:eSATA",
+    );
+    expect(resumed.channels[0]!.seed).toBe(seed);
+    expect(resumed.removed).toBe(false);
+  });
+
+  it("expires the grace by monotonic wall time when reduced motion snaps frames", () => {
+    const engine = new KineticEngine(0);
+    const active = sceneAndLayout("background-copy");
+    const missing = sceneAndLayout("idle");
+    engine.syncTargets(active.scene, active.layout, { snap: true, nowMs: 0 });
+    const before = backgroundVisual(engine);
+
+    engine.syncTargets(missing.scene, missing.layout, {
+      snap: true,
+      nowMs: 2_000,
+    });
+    expect(backgroundVisual(engine)).toBe(before);
+
+    engine.syncTargets(missing.scene, missing.layout, {
+      snap: true,
+      nowMs: 2_000 + FLOW_MISSING_GRACE_SECONDS * 1000 + 1,
+    });
+    expect(
+      engine.visualState().flows.some(
+        (flow) => flow.flow.kind === "background-transfer",
+      ),
     ).toBe(false);
   });
 
