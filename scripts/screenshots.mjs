@@ -162,6 +162,13 @@ const KINETIC_SHOTS = [
     w: 1920,
     h: 1080,
   },
+  {
+    name: "36-v42-container-runtime-summary-1920x1080",
+    scenario: "container-field-real",
+    w: 1920,
+    h: 1080,
+    crop: "instrument-band",
+  },
 ];
 
 /**
@@ -279,6 +286,16 @@ async function validateKineticShot(page, shot) {
   if (!bandText.includes("44C / 88T")) {
     throw new Error(`instrument band lacks the detected CPU topology (${shot.name})`);
   }
+  if (/\bworkloads\b/i.test(bandText)) {
+    throw new Error(`instrument band still uses ambiguous workload copy (${shot.name})`);
+  }
+  if (
+    shot.scenario === "container-field-real" &&
+    !shot.transitionScenario &&
+    !/41 \/ 44 containers running/i.test(bandText)
+  ) {
+    throw new Error(`instrument band lacks the explicit running/total summary (${shot.name})`);
+  }
   if (shot.scenario === "download-rate-unknown") {
     const anchorLabel =
       (await page.locator('[data-kinetic-anchor="qbittorrent"]').getAttribute("aria-label")) ?? "";
@@ -313,8 +330,8 @@ async function validateKineticShot(page, shot) {
       throw new Error(`retained topology lost the workload field (${shot.name})`);
     }
     const band = await page.locator("[data-kinetic-stage] header").innerText();
-    if (/\d+\/\d+ workloads/i.test(band)) {
-      throw new Error(`unavailable Docker telemetry still claims a workload count (${shot.name})`);
+    if (/\d+ \/ \d+ containers running/i.test(band)) {
+      throw new Error(`unavailable Docker telemetry still claims a container count (${shot.name})`);
     }
   }
 }
@@ -586,6 +603,8 @@ async function main() {
             await page
               .getByRole("group", { name: "Observatory controls" })
               .screenshot({ path });
+          } else if (shot.crop === "instrument-band") {
+            await page.locator("[data-kinetic-stage] header").screenshot({ path });
           } else {
             await page.screenshot({ path });
           }

@@ -39,6 +39,7 @@ import {
   type KineticStage,
 } from "@/lib/kinetic/layout";
 import { KineticEngine } from "@/lib/kinetic/engine";
+import { formatContainerRuntimeSummary } from "@/lib/kinetic/container-summary";
 import {
   drawKineticFrame,
   type KineticSelection,
@@ -847,6 +848,10 @@ function InstrumentBand({ scene, layout }: { scene: KineticScene; layout: Kineti
   const { instrument } = scene;
   const cpu = instrument.cpu;
   const cellCols = cpu.cells.length > 32 ? Math.ceil(cpu.cells.length / 2) : cpu.cells.length;
+  const containerSummary = formatContainerRuntimeSummary(
+    scene.fieldRunning,
+    scene.fieldTotal,
+  );
   return (
     <header
       className="absolute inset-x-0 top-0 flex items-center gap-8 whitespace-nowrap border-b border-white/[0.05] px-7"
@@ -902,9 +907,9 @@ function InstrumentBand({ scene, layout }: { scene: KineticScene; layout: Kineti
             {scene.attention.headline}
           </span>
         ) : null}
-        {scene.fieldRunning !== null && scene.fieldTotal !== null ? (
+        {containerSummary ? (
           <span className="whitespace-nowrap text-[11px] uppercase tracking-[0.18em] text-faint/70">
-            {scene.fieldRunning}/{scene.fieldTotal} workloads
+            {containerSummary}
           </span>
         ) : null}
       </div>
