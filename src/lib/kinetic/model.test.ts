@@ -309,7 +309,7 @@ describe("buildKineticScene", () => {
     expect(media.capacityFraction).toBeLessThanOrEqual(1);
   });
 
-  it("shows installed RAM in binary units and keeps usable RAM separate when available", () => {
+  it("shows installed and usable RAM with familiar primary memory labels", () => {
     const snapshot = mutableSnapshot("idle");
     if (snapshot.telemetry.memory.value === null) throw new Error("fixture memory missing");
     snapshot.telemetry.memory.value.installedBytes = 128 * 1024 ** 3;
@@ -318,17 +318,19 @@ describe("buildKineticScene", () => {
     snapshot.telemetry.memory.value.availableBytes =
       snapshot.telemetry.memory.value.totalBytes - snapshot.telemetry.memory.value.usedBytes;
     const s = sceneOf(snapshot);
-    expect(s.instrument.memory.primary).toBe("128 GiB");
-    expect(s.instrument.memory.secondary).toBe("usable 126 GiB");
+    expect(s.instrument.memory.primary).toBe("128 GB");
+    expect(s.instrument.memory.secondary).toBe("usable 126 GB");
+    expect(s.instrument.arc.primary).toMatch(/ GB$/);
+    expect(s.instrument.arc.secondary).toMatch(/ GB target$/);
   });
 
-  it("labels kernel MemTotal as binary usable memory when installed RAM is unknown", () => {
+  it("labels kernel MemTotal as familiar usable memory when installed RAM is unknown", () => {
     const snapshot = mutableSnapshot("idle");
     if (snapshot.telemetry.memory.value === null) throw new Error("fixture memory missing");
     snapshot.telemetry.memory.value.installedBytes = null;
     snapshot.telemetry.memory.value.totalBytes = 135_025_201_152;
     const s = sceneOf(snapshot);
-    expect(s.instrument.memory.primary).toBe("126 GiB");
+    expect(s.instrument.memory.primary).toBe("126 GB");
     expect(s.instrument.memory.secondary).toBe("usable memory");
   });
 });

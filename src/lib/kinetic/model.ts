@@ -30,7 +30,7 @@ import {
   primaryRate,
 } from "@/lib/topology/activity";
 import { groupWorkloads } from "@/lib/fabric/groups";
-import { formatBytes, formatRate } from "@/lib/format/bytes";
+import { formatBytes, formatMemoryBytes, formatRate } from "@/lib/format/bytes";
 import { FLOW_DEADBAND_BPS } from "@/lib/topology/smoothing";
 
 // --- instrument band ----------------------------------------------------------
@@ -363,15 +363,15 @@ function buildInstrument(snapshot: DashboardSnapshot, scene: SceneModel): Instru
       fraction: scene.core.memFraction,
       primary:
         memory.value?.installedBytes !== null && memory.value?.installedBytes !== undefined
-          ? formatBytes(memory.value.installedBytes, { system: "binary", digits: 0 })
+          ? formatMemoryBytes(memory.value.installedBytes, 0)
           : scene.core.memTotalBytes !== null
-            ? formatBytes(scene.core.memTotalBytes, { system: "binary", digits: 0 })
+            ? formatMemoryBytes(scene.core.memTotalBytes, 0)
             : null,
       secondary:
         memory.value?.installedBytes !== null &&
         memory.value?.installedBytes !== undefined &&
         scene.core.memTotalBytes !== null
-          ? `usable ${formatBytes(scene.core.memTotalBytes, { system: "binary", digits: 0 })}`
+          ? `usable ${formatMemoryBytes(scene.core.memTotalBytes, 0)}`
           : scene.core.memTotalBytes !== null
             ? "usable memory"
             : null,
@@ -390,15 +390,15 @@ function buildInstrument(snapshot: DashboardSnapshot, scene: SceneModel): Instru
           : null,
       secondary:
         gpu.value && gpu.value.vramTotalBytes > 0
-          ? `${formatBytes(gpu.value.vramUsedBytes)} VRAM`
+          ? `${formatMemoryBytes(gpu.value.vramUsedBytes)} VRAM`
           : null,
     },
     arc: {
       status: arc.status,
       fraction: arcFraction,
-      primary: arc.value ? formatBytes(arc.value.sizeBytes) : null,
+      primary: arc.value ? formatMemoryBytes(arc.value.sizeBytes) : null,
       secondary: arc.value?.targetBytes
-        ? `of ${formatBytes(arc.value.targetBytes)} target`
+        ? `of ${formatMemoryBytes(arc.value.targetBytes)} target`
         : null,
     },
   };
