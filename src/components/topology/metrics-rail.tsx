@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { formatBytes, formatRate } from "@/lib/format/bytes";
+import { formatMemoryBytes, formatRate } from "@/lib/format/bytes";
 import { formatPercent } from "@/lib/utils";
 import type {
   DashboardSnapshot,
@@ -109,7 +109,7 @@ export function MetricsRail({ snapshot }: { snapshot: DashboardSnapshot }) {
         status={t.memory.status}
         value={
           t.memory.value
-            ? `${formatBytes(t.memory.value.usedBytes, { system: "binary" })} / ${formatBytes(t.memory.value.totalBytes, { system: "binary", digits: 0 })}`
+            ? `${formatMemoryBytes(t.memory.value.usedBytes)} / ${formatMemoryBytes(t.memory.value.totalBytes, 0)}`
             : null
         }
       />

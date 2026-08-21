@@ -21,6 +21,14 @@ export type ByteUnitSystem = "decimal" | "binary";
 
 const DECIMAL_UNITS = ["B", "kB", "MB", "GB", "TB", "PB"] as const;
 const BINARY_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"] as const;
+const FAMILIAR_MEMORY_UNITS: Record<string, string> = {
+  B: "B",
+  KiB: "kB",
+  MiB: "MB",
+  GiB: "GB",
+  TiB: "TB",
+  PiB: "PB",
+};
 
 export interface FormatBytesOptions {
   /** decimal (SI, ×1000) or binary (IEC, ×1024). Default decimal. */
@@ -60,6 +68,20 @@ export function formatBytes(bytes: number, opts: FormatBytesOptions = {}): strin
   if (scaled === null) return "—";
   const digits = scaled.unit === "B" ? 0 : opts.digits ?? 1;
   return `${scaled.value.toFixed(digits)} ${scaled.unit}`;
+}
+
+/**
+ * Primary memory presentation uses familiar labels while retaining the
+ * hardware/runtime magnitudes operators recognize: 128 GiB of installed RAM
+ * reads as 128 GB. This convention is intentionally limited to volatile
+ * memory; filesystem and pool capacities continue to use decimal formatBytes.
+ */
+export function formatMemoryBytes(bytes: number, digits = 1): string {
+  const scaled = scaleBytes(bytes, "binary");
+  if (scaled === null) return "—";
+  const unit = FAMILIAR_MEMORY_UNITS[scaled.unit];
+  if (!unit) return "—";
+  return `${scaled.value.toFixed(scaled.unit === "B" ? 0 : digits)} ${unit}`;
 }
 
 /** Bytes/sec as a decimal rate string, e.g. "4.2 MB/s". */

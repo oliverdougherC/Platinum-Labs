@@ -24,7 +24,7 @@ import {
   useState,
 } from "react";
 import type { DashboardSnapshot } from "@/lib/types";
-import { formatRate } from "@/lib/format/bytes";
+import { formatBytes, formatRate } from "@/lib/format/bytes";
 import {
   buildKineticScene,
   type AnchorModel,
@@ -240,9 +240,10 @@ function statusWord(anchor: AnchorModel): string | null {
 }
 
 function formatBytesShort(bytes: number): string {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MiB`;
-  return `${Math.round(bytes / 1024)} KiB`;
+  return formatBytes(bytes, {
+    system: "binary",
+    digits: bytes >= 1024 ** 3 ? 1 : 0,
+  });
 }
 
 const FOCUS_RING =

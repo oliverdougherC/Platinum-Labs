@@ -279,6 +279,19 @@ async function validateKineticShot(page, shot) {
   if (!bandText.includes("44C / 88T")) {
     throw new Error(`instrument band lacks the detected CPU topology (${shot.name})`);
   }
+  if (/\b[KMGT]iB\b/.test(bandText)) {
+    throw new Error(`primary instrument band contains an IEC unit label (${shot.name})`);
+  }
+  if (shot.scenario === "container-field-real") {
+    const stageText = await stage.innerText();
+    const familiarMemoryValues = bandText.match(/\b\d+(?:\.\d+)? GB\b/g) ?? [];
+    if (!bandText.includes("128 GB") || familiarMemoryValues.length < 2) {
+      throw new Error(`memory and ARC do not share familiar GB labels (${shot.name})`);
+    }
+    if (!stageText.includes("69.6 TB") || /\bTiB\b/.test(stageText)) {
+      throw new Error(`storage overview drifted from decimal TB labels (${shot.name})`);
+    }
+  }
   if (shot.scenario === "download-rate-unknown") {
     const anchorLabel =
       (await page.locator('[data-kinetic-anchor="qbittorrent"]').getAttribute("aria-label")) ?? "";

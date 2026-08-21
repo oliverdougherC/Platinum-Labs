@@ -14,8 +14,7 @@
  *    carry real state.
  */
 
-import { formatCapacityPair, formatRate } from "@/lib/format/bytes";
-import { formatBytes } from "@/lib/format/bytes";
+import { formatCapacityPair, formatMemoryBytes, formatRate } from "@/lib/format/bytes";
 import { formatPercent, formatRelativeTime } from "@/lib/utils";
 import { pointOnCircle, type Vec } from "@/lib/scene/geom";
 import type { SceneLayout } from "@/lib/scene/layout";
@@ -89,7 +88,7 @@ export function buildLabels(model: SceneModel, layout: SceneLayout, now: number)
       : `${model.core.hostname} — cpu ${cpu.status === "not-configured" ? "not collected" : cpu.status}`;
   const memText =
     cpu.memUsedBytes !== null && cpu.memTotalBytes !== null
-      ? `mem ${formatBytes(cpu.memUsedBytes, { system: "binary", digits: 0 })} / ${formatBytes(cpu.memTotalBytes, { system: "binary", digits: 0 })}`
+      ? `mem ${formatMemoryBytes(cpu.memUsedBytes, 0)} / ${formatMemoryBytes(cpu.memTotalBytes, 0)}`
       : null;
   const loadText = cpu.load1 !== null ? `load ${cpu.load1.toFixed(2)}` : null;
   const coreSecondary = [loadText, memText].filter(Boolean).join(" · ") || null;
