@@ -13,6 +13,7 @@ import type {
   KineticNodeRef,
   KineticScene,
 } from "./model";
+import { layoutTreemap, type TreemapBounds } from "./treemap";
 
 export interface Pt {
   x: number;
@@ -80,7 +81,7 @@ export interface AnchorPlacement {
 }
 
 export interface OrchestratorPlacement {
-  id: "seerr" | "sonarr" | "radarr";
+  id: "sonarr" | "radarr";
   x: number;
   y: number;
 }
@@ -96,8 +97,9 @@ export interface CellPlacement {
   id: string;
   x: number;
   y: number;
-  r: number;
-  slot: number;
+  w: number;
+  h: number;
+  weight: number;
 }
 
 export interface GroupPlacement {
@@ -138,11 +140,9 @@ export interface KineticStage {
   orchestrators: OrchestratorPlacement[];
   edges: EdgePlacement[];
   groups: GroupPlacement[];
+  field: TreemapBounds;
   strata: StratumPlacement[];
   storageTop: number;
-  /** Cell radius range, exposed so size changes can ease without re-layout. */
-  cellRMin: number;
-  cellRMax: number;
 }
 
 export interface KineticLayout extends KineticStage {
@@ -178,54 +178,16 @@ export function hash01(text: string, salt: number): number {
   return v - Math.floor(v);
 }
 
-export const FIELD_GROUP_CAPACITY = 24;
-export const FIELD_MAX_RENDERED_CELLS = FIELD_GROUP_CAPACITY * 4;
-const FIELD_GROUP_COLUMNS = 4;
-const FIELD_SLOT_COLUMNS = 6;
-const FIELD_SLOT_ROWS = 4;
-const GROUP_SLOT_INDEX = new Map<string, number>([
-  ["group:platform", 0],
-  ["group:media-support", 1],
-  ["group:observability", 2],
-  ["group:network-edge", 3],
-]);
-
-interface GroupBounds {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-function placeCells(
-  cells: FieldCellModel[],
-  bounds: GroupBounds,
-  rMin: number,
-  rMax: number,
-): { cells: CellPlacement[]; overflowCount: number } {
-  const insetX = Math.max(8, bounds.w * 0.045);
-  const insetTop = 8;
-  const insetBottom = 8;
-  const usableW = Math.max(bounds.w - insetX * 2, 1);
-  const usableH = Math.max(bounds.h - insetTop - insetBottom, 1);
-  const pitchX = usableW / FIELD_SLOT_COLUMNS;
-  const pitchY = usableH / FIELD_SLOT_ROWS;
-  const slot = Math.max(Math.min(pitchX, pitchY) - 4, 16);
-  const visible = cells.slice(0, FIELD_GROUP_CAPACITY);
-  return {
-    overflowCount: Math.max(0, cells.length - FIELD_GROUP_CAPACITY),
-    cells: visible.map((cell, index) => {
-      const row = Math.floor(index / FIELD_SLOT_COLUMNS);
-      const col = index % FIELD_SLOT_COLUMNS;
-      return {
-        id: cell.id,
-        x: bounds.x + insetX + pitchX * (col + 0.5),
-        y: bounds.y + insetTop + pitchY * (row + 0.5),
-        r: rMin + (rMax - rMin) * Math.pow(cell.sizeScore, 0.9),
-        slot,
-      };
-    }),
-  };
+function representedFieldCells(scene: KineticScene): FieldCellModel[] {
+  return scene.field
+    .flatMap((group) => group.cells)
+    .filter(
+      (cell) =>
+        cell.memoryBytes !== null &&
+        Number.isFinite(cell.memoryBytes) &&
+        cell.memoryBytes > 0 &&
+        (cell.running || cell.unverified),
+    );
 }
 
 function nodePoint(
@@ -245,7 +207,7 @@ function nodePoint(
     }
     case "orchestrator": {
       const orc = L.orchestrators.find((o) => o.id === ref.id)!;
-      return { x: orc.x, y: orc.y + 22 };
+      return { x: orc.x, y: orc.y + 30 };
     }
     case "pool": {
       const stratum = L.strata.find((s) => s.name === ref.name);
@@ -264,6 +226,17 @@ function nodePoint(
  */
 function flowPath(flow: KineticFlow, from: Pt, to: Pt, L: KineticStage): SampledPath {
   const anchorDrop = 58; // ribbons connect below the anchor typography
+  if (flow.kind === "control") {
+    const end = { x: to.x + 64, y: to.y - 44 };
+    const dx = end.x - from.x;
+    const dy = end.y - from.y;
+    return samplePath(
+      from,
+      { x: from.x + dx * 0.18, y: from.y + dy * 0.38 },
+      { x: end.x - dx * 0.2, y: end.y - dy * 0.28 },
+      end,
+    );
+  }
   if (flow.kind === "wan-transfer" || flow.kind === "egress") {
     const a = { ...from };
     const b = { ...to };
@@ -337,7 +310,7 @@ function flowPath(flow: KineticFlow, from: Pt, to: Pt, L: KineticStage): Sampled
 export function buildKineticStage(scene: KineticScene, w: number, h: number): KineticStage {
   const bandH = Math.min(Math.max(h * 0.088, 64), 108);
   const stageH = h - bandH;
-  const orchY = bandH + stageH * 0.135;
+  const orchY = bandH + stageH * 0.17;
   const anchorY = bandH + stageH * 0.34;
   // The pool name + capacity block below each stratum needs real pixels, not
   // a fraction: at small stage heights (200% zoom) a pure-percentage floor
@@ -350,9 +323,8 @@ export function buildKineticStage(scene: KineticScene, w: number, h: number): Ki
     { id: "jellyfin", x: w * 0.665, y: anchorY, r: Math.min(w, h * 1.6) * 0.085 },
   ];
   const orchestrators: OrchestratorPlacement[] = [
-    { id: "seerr", x: w * 0.4, y: orchY },
-    { id: "sonarr", x: w * 0.5, y: orchY },
-    { id: "radarr", x: w * 0.6, y: orchY },
+    { id: "sonarr", x: w * 0.44, y: orchY },
+    { id: "radarr", x: w * 0.56, y: orchY },
   ];
   const edges: EdgePlacement[] = [
     { id: "wan", x: w * 0.048, y: anchorY, side: "left" },
@@ -376,44 +348,42 @@ export function buildKineticStage(scene: KineticScene, w: number, h: number): Ki
     return rect;
   });
 
-  // Workload field: four reserved group lanes, each with its own deterministic
-  // row-major slot grid. Telemetry changes resize the rounded square inside a
-  // slot, but never repack or reorder the field.
+  // Workload field: one fixed resource canvas. Raw positive memory is the
+  // only area weight; unknown/zero memory is omitted rather than fabricated.
+  // Stable identity ordering prevents weight-rank reshuffles; balanced
+  // longest-side splits keep real-scale rectangles legible while ordinary
+  // updates stay continuous.
   const fieldTop = bandH + stageH * 0.5;
   const labelY = storageTop - Math.max(h * 0.03, 22);
-  const groupTop = fieldTop;
-  const groupH = Math.max(labelY - 18 - groupTop, 1);
-  const fieldSpanX = w * 0.1;
-  const fieldSpanW = w * 0.8;
-  const groupGap = Math.max(12, w * 0.01);
-  const groupW = Math.max(
-    (fieldSpanW - groupGap * (FIELD_GROUP_COLUMNS - 1)) / FIELD_GROUP_COLUMNS,
-    1,
+  const field: TreemapBounds = {
+    x: w * 0.1,
+    y: fieldTop,
+    w: w * 0.8,
+    h: Math.max(labelY - fieldTop, 1),
+  };
+  const represented = representedFieldCells(scene);
+  const rectById = new Map(
+    layoutTreemap(
+      represented.map((cell) => ({ id: cell.id, weight: cell.memoryBytes! })),
+      field,
+    ).map((rect) => [rect.id, rect]),
   );
-  const slotExtent = Math.min(
-    (groupW - Math.max(8, groupW * 0.045) * 2) / FIELD_SLOT_COLUMNS,
-    (groupH - 16) / FIELD_SLOT_ROWS,
-  );
-  const rMax = Math.max(8, Math.min(slotExtent * 0.38, h * 0.0135));
-  const rMin = Math.max(4, Math.min(rMax - 2, slotExtent * 0.22));
-  const groups: GroupPlacement[] = scene.field.map((group, index) => {
-    const slotIndex = GROUP_SLOT_INDEX.get(group.id) ?? Math.min(index, FIELD_GROUP_COLUMNS - 1);
-    const x = fieldSpanX + slotIndex * (groupW + groupGap);
-    const y = groupTop;
-    const bounds = { x, y, w: groupW, h: groupH };
-    const placed = placeCells(group.cells, bounds, rMin, rMax);
+  const groups: GroupPlacement[] = scene.field.map((group) => {
+    const cells = group.cells.flatMap((cell): CellPlacement[] => {
+      const rect = rectById.get(cell.id);
+      return rect
+        ? [{ id: cell.id, x: rect.x, y: rect.y, w: rect.w, h: rect.h, weight: rect.weight }]
+        : [];
+    });
     return {
       id: group.id,
       label: group.label,
-      x,
-      y,
-      w: groupW,
-      h: groupH,
-      cx: x + groupW / 2,
-      cy: y + groupH / 2,
+      ...field,
+      cx: field.x + field.w / 2,
+      cy: field.y + field.h / 2,
       labelY,
-      overflowCount: placed.overflowCount,
-      cells: placed.cells,
+      overflowCount: 0,
+      cells,
     };
   });
 
@@ -427,10 +397,9 @@ export function buildKineticStage(scene: KineticScene, w: number, h: number): Ki
     orchestrators,
     edges,
     groups,
+    field,
     strata,
     storageTop,
-    cellRMin: rMin,
-    cellRMax: rMax,
   };
 }
 

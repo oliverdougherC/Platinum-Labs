@@ -22,7 +22,7 @@
  *    present in BOTH samples; when none match the domain holds stale instead.
  * Everything else that the source can omit is `number | null` end to end:
  * load1/5/15, swap, GPU temperature/power, ARC target/hit ratio, container
- * restartCount/cpuFraction/memoryBytes.
+ * restartCount/cpuFraction/memoryBytes/uptimeSeconds.
  */
 
 import { z } from "zod";
@@ -104,6 +104,7 @@ const rawContainerSchema = z.object({
   composeProject: z.string().nullish(),
   composeService: z.string().nullish(),
   networkNames: z.array(z.string()).nullish(),
+  uptimeSeconds: z.number().nullish(),
   restartCount: z.number().nullish(),
   cpuTotalNs: z.number().nullish(),
   systemCpuNs: z.number().nullish(),
@@ -198,6 +199,10 @@ export function cpuFractionFromJiffies(
 /** A finite number from the wire, or null — never a fabricated zero (PLA-273). */
 function finiteOrNull(v: number | null | undefined): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function nonNegativeFiniteOrNull(v: number | null | undefined): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
 }
 
 function sectionSampledAt(
@@ -546,6 +551,7 @@ function normalizeDocker(
       networkNames: sanitizeDockerNetworks(c.networkNames),
       state,
       health: c.health ?? null,
+      uptimeSeconds: nonNegativeFiniteOrNull(c.uptimeSeconds),
       // `/containers/json` does not know restart counts; unknown is null (PLA-273).
       restartCount: finiteOrNull(c.restartCount),
       cpuFraction,

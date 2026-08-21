@@ -31,9 +31,13 @@ export const SearchIcon = (props: IconProps) => (
 
 export const MediaRequestIcon = (props: IconProps) => (
   <IconFrame {...props}>
-    <rect x="2.75" y="4.5" width="10.5" height="8.5" rx="2" />
-    <path d="m7.25 7.15 3.1 1.6-3.1 1.6Z" fill="currentColor" stroke="none" />
-    <path d="M15.25 10.5v5M12.75 13h5" />
+    <rect x="2.5" y="4.75" width="9.25" height="9" rx="2" />
+    <path
+      d="M6.15 7.15 L9.75 9.25 L6.15 11.35 Z"
+      fill="currentColor"
+      stroke="none"
+    />
+    <path d="M15.25 10.25 V15.25 M12.75 12.75 H17.75" />
   </IconFrame>
 );
 

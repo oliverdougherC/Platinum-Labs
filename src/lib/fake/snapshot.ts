@@ -164,6 +164,7 @@ function acquisitionActive(): AcquisitionSnapshot {
       progress: 0.63,
       rateBps: 7_500_000,
       etaSeconds: 320,
+      correlationKey: "fake-severance-s02e07",
     },
     {
       id: "q-2",
@@ -174,6 +175,7 @@ function acquisitionActive(): AcquisitionSnapshot {
       progress: 0.18,
       rateBps: 4_200_000,
       etaSeconds: 1_450,
+      correlationKey: "fake-sinners-2025",
     },
     {
       id: "q-3",
@@ -184,8 +186,38 @@ function acquisitionActive(): AcquisitionSnapshot {
       progress: 1,
       rateBps: null,
       etaSeconds: null,
+      correlationKey: "fake-shrinking-s02e10",
     },
   ];
+  return { items, rollup: rollup(items) };
+}
+
+/** Twelve measured torrent downloads: deterministic overflow evidence for PLA-288. */
+function acquisitionMany(): AcquisitionSnapshot {
+  const items: AcquisitionItem[] = Array.from({ length: 12 }, (_, index) => ({
+    id: `q-many-${index + 1}`,
+    source: index % 2 === 0 ? "sonarr" : "radarr",
+    title:
+      index % 2 === 0
+        ? `Constellation — S01E${String(index + 1).padStart(2, "0")} Extended Release`
+        : `Archive Feature ${String(index + 1).padStart(2, "0")} (2026) Remux`,
+    quality: index % 2 === 0 ? "WEB-DL 1080p" : "Remux-2160p",
+    state: "downloading",
+    progress: Math.min(0.96, 0.08 + index * 0.073),
+    rateBps: 640_000 + index * 510_000,
+    etaSeconds: 2_400 - index * 110,
+    correlationKey: `fake-many-${index + 1}`,
+  }));
+  return { items, rollup: rollup(items) };
+}
+
+/** Same torrent identities at a later live poll, with changed progress and rates. */
+function acquisitionProgressed(): AcquisitionSnapshot {
+  const items = acquisitionActive().items.map((item) => {
+    if (item.id === "q-1") return { ...item, progress: 0.71, rateBps: 8_400_000 };
+    if (item.id === "q-2") return { ...item, progress: 0.24, rateBps: 3_600_000 };
+    return item;
+  });
   return { items, rollup: rollup(items) };
 }
 
@@ -541,6 +573,8 @@ export const SCENARIOS = [
   "mixed-session",
   "partial-zero",
   "downloads",
+  "downloads-progressed",
+  "downloads-many",
   "seeding",
   "seed-only",
   "importing",
@@ -550,6 +584,7 @@ export const SCENARIOS = [
   "background-copy",
   "background-copy-reverse",
   "background-copy-ambiguous",
+  "background-copy-playback-ambiguous",
   "background-copy-stale",
   "background-copy-under-deadband",
   "background-copy-with-import",
@@ -600,6 +635,8 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "mixed-session": "Mixed known / unknown sessions",
   "partial-zero": "Jellyfin — partial zero (total unknown)",
   downloads: "Active downloads / imports",
+  "downloads-progressed": "Active downloads — progressed poll",
+  "downloads-many": "Active downloads — scroll overflow",
   seeding: "Download + seed upload",
   "seed-only": "Seed upload only",
   importing: "Sonarr import (organizing)",
@@ -609,6 +646,7 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "background-copy": "Background copy — DataStore to eSATA",
   "background-copy-reverse": "Background copy — eSATA to DataStore",
   "background-copy-ambiguous": "Background storage — ambiguous pools",
+  "background-copy-playback-ambiguous": "Background copy + concurrent playback ambiguity",
   "background-copy-stale": "Background storage — stale observation",
   "background-copy-under-deadband": "Background storage — below deadband",
   "background-copy-with-import": "Background copy + explicit import",
@@ -1056,6 +1094,22 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       telemetryProfile: "downloads",
     }),
 
+  "downloads-progressed": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionProgressed(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "downloads",
+    }),
+
+  "downloads-many": (now) =>
+    compose(now, {
+      jellyfin: jellyfinIdle(now),
+      acquisition: acquisitionMany(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "downloads",
+    }),
+
   seeding: (now) =>
     compose(now, {
       jellyfin: jellyfinIdle(now),
@@ -1139,6 +1193,39 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       zfs: zfsHealthy(now),
       telemetryProfile: "background-copy-ambiguous",
     }),
+
+  "background-copy-playback-ambiguous": (now) => {
+    const snapshot = compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({
+            id: "s1",
+            title: "The Bear — S03E01",
+            subtitle: "S03E01 — Tomorrow",
+            method: "transcode",
+            resolution: "1080p",
+            rate: null,
+            progress: 0.27,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "transcode-unknown",
+    });
+    const disk = snapshot.telemetry.disk;
+    if (disk.status === "available" && disk.value) {
+      disk.value.pools = [
+        { pool: "DataStore", readBps: 48_000_000, writeBps: 0 },
+        { pool: "NVME", readBps: 0, writeBps: 0 },
+        { pool: "eSATA", readBps: 0, writeBps: 28_000_000 },
+      ];
+    }
+    return snapshot;
+  },
 
   "background-copy-stale": (now) => {
     const snapshot = compose(now, {

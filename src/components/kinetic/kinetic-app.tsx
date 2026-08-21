@@ -14,9 +14,37 @@
  * are stripped so a stale CPU figure can never render as current truth.
  */
 
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { KineticCanvas } from "@/components/kinetic/kinetic-canvas";
-import type { DashboardSnapshot, DockerTelemetry } from "@/lib/types";
+import type {
+  DashboardSnapshot,
+  DockerContainerTelemetry,
+  DockerTelemetry,
+} from "@/lib/types";
+
+function unknownIdentity(container: DockerContainerTelemetry): DockerContainerTelemetry {
+  return {
+    name: container.name,
+    stableId: container.stableId ?? null,
+    composeProject: container.composeProject ?? null,
+    composeService: container.composeService ?? null,
+    networkNames: container.networkNames ?? [],
+    state: "unknown",
+    health: null,
+    restartCount: null,
+    uptimeSeconds: container.uptimeSeconds ?? null,
+    cpuFraction: null,
+    memoryBytes: container.memoryBytes,
+    netRxBps: null,
+    netTxBps: null,
+    blockReadBps: null,
+    blockWriteBps: null,
+  };
+}
+
+function containerIdentity(container: DockerContainerTelemetry): string {
+  return container.stableId ?? `${container.composeProject ?? ""}:${container.composeService ?? ""}:${container.name}`;
+}
 
 function retainedIdentity(last: DockerTelemetry): DockerTelemetry {
   return {
@@ -25,23 +53,40 @@ function retainedIdentity(last: DockerTelemetry): DockerTelemetry {
     healthy: 0,
     unhealthy: 0,
     restarting: 0,
-    containers: last.containers.map((container) => ({
-      name: container.name,
-      stableId: container.stableId ?? null,
-      composeProject: container.composeProject ?? null,
-      composeService: container.composeService ?? null,
-      networkNames: container.networkNames ?? [],
-      state: "unknown",
-      health: null,
-      restartCount: null,
-      cpuFraction: null,
-      memoryBytes: container.memoryBytes, // last-known footprint sizes the cell
-      netRxBps: null,
-      netTxBps: null,
-      blockReadBps: null,
-      blockWriteBps: null,
-    })),
+    containers: last.containers.map(unknownIdentity),
   };
+}
+
+interface RetainedContainer {
+  container: DockerContainerTelemetry;
+  missingSamples: number;
+}
+
+interface DockerReconciliationState {
+  sampleId: number | null;
+  docker: DockerTelemetry | null;
+  retained: Map<string, RetainedContainer>;
+}
+
+export function retainSingleMissingSample(
+  current: DockerTelemetry,
+  previous: ReadonlyMap<string, RetainedContainer>,
+): { docker: DockerTelemetry; retained: Map<string, RetainedContainer> } {
+  const retained = new Map<string, RetainedContainer>();
+  const containers = [...current.containers];
+  const present = new Set<string>();
+  for (const container of current.containers) {
+    const id = containerIdentity(container);
+    present.add(id);
+    retained.set(id, { container, missingSamples: 0 });
+  }
+  for (const [id, entry] of previous) {
+    if (present.has(id) || entry.missingSamples >= 1) continue;
+    const unknown = unknownIdentity(entry.container);
+    containers.push(unknown);
+    retained.set(id, { container: unknown, missingSamples: entry.missingSamples + 1 });
+  }
+  return { docker: { ...current, containers }, retained };
 }
 
 export function KineticApp({
@@ -57,26 +102,58 @@ export function KineticApp({
   frozen: boolean;
   devControls: boolean;
 }) {
-  const lastKnownDocker = useRef<DockerTelemetry | null>(null);
+  const [dockerState, setDockerState] = useState<DockerReconciliationState>({
+    sampleId: null,
+    docker: null,
+    retained: new Map(),
+  });
   const docker = snapshot.telemetry.docker;
   const hasCurrent =
     (docker.status === "available" || docker.status === "stale") &&
-    (docker.value?.containers.length ?? 0) > 0;
-  if (hasCurrent) lastKnownDocker.current = docker.value ?? null;
+    docker.value !== null &&
+    docker.updatedAt !== null;
+  const nextDockerState = useMemo<DockerReconciliationState | null>(() => {
+    if (!hasCurrent || !docker.value || docker.updatedAt === null) return null;
+    // Repeated renders and cached host polls with the same Docker timestamp are
+    // the same telemetry sample. Reuse the prior result verbatim so only a
+    // genuinely new Docker observation can advance missingSamples.
+    if (dockerState.sampleId === docker.updatedAt) return dockerState;
+    const reconciled = retainSingleMissingSample(docker.value, dockerState.retained);
+    return {
+      sampleId: docker.updatedAt,
+      docker: reconciled.docker,
+      retained: reconciled.retained,
+    };
+  }, [docker, dockerState, hasCurrent]);
+
+  useEffect(() => {
+    if (nextDockerState && nextDockerState !== dockerState) {
+      setDockerState(nextDockerState);
+    }
+  }, [dockerState, nextDockerState]);
 
   const effective = useMemo<DashboardSnapshot>(() => {
-    if (hasCurrent || !lastKnownDocker.current) return snapshot;
+    if (nextDockerState?.docker) {
+      return {
+        ...snapshot,
+        telemetry: {
+          ...snapshot.telemetry,
+          docker: { ...snapshot.telemetry.docker, value: nextDockerState.docker },
+        },
+      };
+    }
+    if (!dockerState.docker) return snapshot;
     return {
       ...snapshot,
       telemetry: {
         ...snapshot.telemetry,
         docker: {
           ...snapshot.telemetry.docker,
-          value: retainedIdentity(lastKnownDocker.current),
+          value: retainedIdentity(dockerState.docker),
         },
       },
     };
-  }, [snapshot, hasCurrent]);
+  }, [snapshot, nextDockerState, dockerState.docker]);
 
   return (
     <KineticCanvas

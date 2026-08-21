@@ -12,12 +12,14 @@
 import type { DashboardSnapshot, CpuTopology } from "@/lib/types";
 import {
   buildSceneModel,
+  SERVICE_LABELS,
   type BodyStatus,
   type DockerContainerModel,
   type SceneModel,
   type StorageBodyModel,
 } from "@/lib/scene/model";
 import {
+  backgroundTransferResidualSupport,
   classifyFlowRate,
   flowNetworkBoundary,
   isAuthoritativeZero,
@@ -29,6 +31,7 @@ import {
 } from "@/lib/topology/activity";
 import { groupWorkloads } from "@/lib/fabric/groups";
 import { formatBytes, formatMemoryBytes, formatRate } from "@/lib/format/bytes";
+import { FLOW_DEADBAND_BPS } from "@/lib/topology/smoothing";
 
 // --- instrument band ----------------------------------------------------------
 
@@ -81,7 +84,7 @@ export interface AnchorModel {
 }
 
 export interface OrchestratorModel {
-  id: "seerr" | "sonarr" | "radarr";
+  id: "sonarr" | "radarr";
   label: string;
   status: BodyStatus;
   active: boolean;
@@ -108,10 +111,15 @@ export interface FieldCellModel {
   attention: boolean;
   unverified: boolean;
   running: boolean;
-  /** Labels appear only for attention or materially active cells. */
+  /** Exact-fit candidate; final visibility is decided from live tile geometry. */
   labelVisible: boolean;
+  /** Existing kinetic palette family used for tile fill and related label ink. */
+  tone: "neutral" | "in" | "out" | "import";
   cpuFraction: number | null;
   memoryBytes: number | null;
+  /** Docker-reported running duration, or null when the runtime did not expose it. */
+  uptimeSeconds: number | null;
+  freshness: "live" | "stale" | "unavailable";
 }
 
 export interface FieldGroupModel {
@@ -204,8 +212,80 @@ export interface KineticScene {
   fieldRunning: number | null;
   storage: StorageStratumModel[];
   flows: KineticFlow[];
+  /** Why a previously observed inferred background transfer is absent now. */
+  backgroundTransferObservation:
+    | "observed"
+    | "ambiguous-gap"
+    | "confirmed-end"
+    | "source-unavailable";
+  /** Material raw disk legs that can still plausibly support a retained copy. */
+  backgroundTransferPlausiblePools: {
+    readers: string[];
+    writers: string[];
+  };
+  /** Flow families whose authoritative connector cannot confirm current truth. */
+  unavailableFlowKinds: FlowKind[];
   attention: AttentionSummaryModel;
   critical: boolean;
+}
+
+function unavailableFlowKinds(snapshot: DashboardSnapshot): FlowKind[] {
+  const unavailable = new Set<FlowKind>();
+  const connectorUnavailable = (id: "jellyfin" | "qbittorrent"): boolean =>
+    snapshot.health.some((health) => health.id === id && health.status === "unavailable");
+
+  if (connectorUnavailable("jellyfin")) {
+    unavailable.add("playback");
+    unavailable.add("egress");
+  }
+  if (connectorUnavailable("qbittorrent")) {
+    unavailable.add("wan-transfer");
+    unavailable.add("storage-transfer");
+    unavailable.add("import-copy");
+  }
+  if (snapshot.telemetry.disk.status === "unavailable") {
+    unavailable.add("storage-transfer");
+    unavailable.add("import-copy");
+    unavailable.add("background-transfer");
+    unavailable.add("playback");
+  }
+  return [...unavailable];
+}
+
+function backgroundTransferObservation(
+  snapshot: DashboardSnapshot,
+  flows: readonly KineticFlow[],
+  now: number,
+): KineticScene["backgroundTransferObservation"] {
+  if (flows.some((flow) => flow.kind === "background-transfer")) return "observed";
+  const disk = snapshot.telemetry.disk;
+  if (disk.status !== "available" || !disk.value) return "source-unavailable";
+  if (backgroundTransferResidualSupport(snapshot, now) !== "none") {
+    return "ambiguous-gap";
+  }
+  const namedPools = disk.value.pools.filter((pool) => pool.pool !== "other");
+  const readers = namedPools.filter((pool) => pool.readBps >= FLOW_DEADBAND_BPS);
+  const writers = namedPools.filter((pool) => pool.writeBps >= FLOW_DEADBAND_BPS);
+  return readers.some((reader) => writers.some((writer) => writer.pool !== reader.pool))
+    ? "ambiguous-gap"
+    : "confirmed-end";
+}
+
+function backgroundTransferPlausiblePools(
+  snapshot: DashboardSnapshot,
+): KineticScene["backgroundTransferPlausiblePools"] {
+  const disk = snapshot.telemetry.disk;
+  if (disk.status !== "available" || !disk.value) {
+    return { readers: [], writers: [] };
+  }
+  return {
+    readers: disk.value.pools
+      .filter((pool) => pool.pool !== "other" && pool.readBps >= FLOW_DEADBAND_BPS)
+      .map((pool) => pool.pool),
+    writers: disk.value.pools
+      .filter((pool) => pool.pool !== "other" && pool.writeBps >= FLOW_DEADBAND_BPS)
+      .map((pool) => pool.pool),
+  };
 }
 
 export interface KineticSceneOptions {
@@ -444,16 +524,20 @@ export function rateIntensity(bps: number): number {
 
 function orchestration(scene: SceneModel): OrchestratorModel[] {
   const out: OrchestratorModel[] = [];
-  for (const id of ["seerr", "sonarr", "radarr"] as const) {
+  for (const id of ["sonarr", "radarr"] as const) {
     const body = scene.services.find((s) => s.id === id);
     if (!body) continue;
-    let detail = body.detail;
-    if ((id === "sonarr" || id === "radarr") && body.count && body.count > 0) {
-      detail = body.detail ?? `${body.count} queued`;
-    }
+    const detail =
+      body.status === "down"
+        ? "unavailable"
+        : body.status === "degraded"
+          ? "degraded"
+          : body.active && body.count !== null
+            ? `${body.count} active`
+            : "idle";
     out.push({
       id,
-      label: id === "seerr" ? "Requests" : body.label,
+      label: body.label,
       status: body.status,
       active: body.active,
       detail,
@@ -464,52 +548,70 @@ function orchestration(scene: SceneModel): OrchestratorModel[] {
 
 // --- workload field ------------------------------------------------------------------
 
-const FIELD_LABEL_INTENSITY = 0.45;
+function friendlyContainerName(name: string, composeService: string | null): string {
+  const key = (composeService || name).toLowerCase();
+  if (key === "jellyfin") return SERVICE_LABELS.jellyfin;
+  if (key === "qbittorrent") return SERVICE_LABELS.qbittorrent;
+  if (key === "sonarr") return SERVICE_LABELS.sonarr;
+  if (key === "radarr") return SERVICE_LABELS.radarr;
+  if (key === "jellyseerr" || key === "seerr") return SERVICE_LABELS.seerr;
+  if (key === "immich-machine-learning") return "Image ML";
+  return name;
+}
 
-function fieldCell(c: DockerContainerModel, id: string): FieldCellModel {
+function groupTone(groupId: string): FieldCellModel["tone"] {
+  if (groupId.includes("media")) return "import";
+  if (groupId.includes("observability")) return "in";
+  if (groupId.includes("network")) return "out";
+  return "neutral";
+}
+
+function fieldCell(
+  c: DockerContainerModel,
+  id: string,
+  name: string,
+  tone: FieldCellModel["tone"],
+): FieldCellModel {
   const intensity =
     c.cpuFraction === null ? null : clamp01(1 - Math.exp(-Math.max(0, c.cpuFraction) / 0.5));
   const running = c.state === "running";
   return {
     id,
-    name: c.name,
+    name,
     sizeScore: c.memoryScore,
     intensity,
     ioHalo: c.ioIntensity,
     attention: c.bad,
     unverified: c.unverified,
     running,
-    labelVisible:
-      c.bad || (intensity !== null && intensity >= FIELD_LABEL_INTENSITY) || c.ioIntensity >= 0.5,
+    labelVisible: true,
+    tone,
     cpuFraction: c.cpuFraction,
     memoryBytes: c.memoryBytes,
+    uptimeSeconds: c.uptimeSeconds ?? null,
+    freshness: c.freshness,
   };
 }
 
 function buildField(snapshot: DashboardSnapshot, scene: SceneModel): FieldGroupModel[] {
   const containers = snapshot.telemetry.docker.value?.containers ?? [];
-  const groups = groupWorkloads(containers);
+  const groups = groupWorkloads(containers, { includeFirstClass: true });
   const byName = new Map(scene.docker.containers.map((c) => [c.name, c]));
   return groups
     .map((group) => {
       const cells = group.members
         .map((member) => {
           const model = byName.get(member.name);
-          return model ? fieldCell(model, member.id) : null;
+          return model
+            ? fieldCell(
+                model,
+                member.id,
+                friendlyContainerName(member.name, member.composeService ?? null),
+                groupTone(group.id),
+              )
+            : null;
         })
         .filter((cell): cell is FieldCellModel => cell !== null);
-      // Declutter: attention always names itself; beyond that only the two
-      // most active cells per group carry a label.
-      const labeled = cells
-        .filter((c) => c.labelVisible && !c.attention)
-        .sort((a, b) => (b.intensity ?? 0) - (a.intensity ?? 0) || a.id.localeCompare(b.id))
-        .slice(0, 2);
-      const keep = new Set(labeled.map((c) => c.id));
-      for (const cell of cells) {
-        if (!cell.attention && cell.labelVisible && !keep.has(cell.id)) {
-          cell.labelVisible = false;
-        }
-      }
       return {
         id: group.id,
         label: group.label,
@@ -623,11 +725,6 @@ function toneOf(flow: FlowObservation): KineticFlow["tone"] {
 function buildFlows(scene: SceneModel): KineticFlow[] {
   const out: KineticFlow[] = [];
   for (const flow of scene.flows) {
-    // Control-plane orchestration (Arr → downloader) stays implicit in
-    // overview: the orchestration row sits directly above the anchor and a
-    // drawn line would be topology exposure, not information. `organize`
-    // keeps a visible whisper because it is the only sign of an import.
-    if (flow.kind === "control") continue;
     const wanSide = flow.kind === "wan-transfer" ? "network" : "service-side";
     const from = poolRef(flow.from, wanSide);
     const to = poolRef(flow.to, flow.kind === "egress" ? "service-side" : wanSide);
@@ -746,6 +843,9 @@ export function buildKineticScene(
         : null,
     storage: buildStorage(scene),
     flows,
+    backgroundTransferObservation: backgroundTransferObservation(snapshot, flows, options.now),
+    backgroundTransferPlausiblePools: backgroundTransferPlausiblePools(snapshot),
+    unavailableFlowKinds: unavailableFlowKinds(snapshot),
     attention: buildAttention(snapshot),
     critical: scene.critical,
   };
