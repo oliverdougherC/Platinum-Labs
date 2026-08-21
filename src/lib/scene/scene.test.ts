@@ -121,6 +121,36 @@ describe("scene model semantics", () => {
     expect(both.count).toBeNull();
   });
 
+  it("counts only current Sonarr and Radarr work as active orchestration", () => {
+    const snapshot = structuredClone(makeFakeSnapshot("downloads", NOW));
+    const sonarrDownload = snapshot.acquisition.items.find(
+      (item) => item.source === "sonarr" && item.state === "downloading",
+    )!;
+    snapshot.acquisition.items.push(
+      { ...sonarrDownload, id: "sonarr-stalled", state: "stalled" },
+      { ...sonarrDownload, id: "sonarr-failed", state: "failed" },
+    );
+
+    const scene = buildSceneModel(snapshot, { seerrConfigured: true, now: NOW });
+    const sonarr = scene.services.find((service) => service.id === "sonarr")!;
+    const radarr = scene.services.find((service) => service.id === "radarr")!;
+
+    expect(sonarr).toMatchObject({ active: true, count: 2, detail: "active" });
+    expect(radarr).toMatchObject({ active: true, count: 1, detail: "active" });
+
+    const idle = model("idle");
+    expect(idle.services.find((service) => service.id === "sonarr")).toMatchObject({
+      active: false,
+      count: null,
+      detail: null,
+    });
+    expect(idle.services.find((service) => service.id === "radarr")).toMatchObject({
+      active: false,
+      count: null,
+      detail: null,
+    });
+  });
+
   it("a paused session reads paused — never streaming/transcoding — and does not glow", () => {
     const paused = model("paused").services.find((s) => s.id === "jellyfin")!;
     expect(paused.detail).toBe("paused");

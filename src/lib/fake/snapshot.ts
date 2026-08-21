@@ -584,6 +584,7 @@ export const SCENARIOS = [
   "background-copy",
   "background-copy-reverse",
   "background-copy-ambiguous",
+  "background-copy-playback-ambiguous",
   "background-copy-stale",
   "background-copy-under-deadband",
   "background-copy-with-import",
@@ -645,6 +646,7 @@ export const SCENARIO_LABELS: Record<FakeScenario, string> = {
   "background-copy": "Background copy — DataStore to eSATA",
   "background-copy-reverse": "Background copy — eSATA to DataStore",
   "background-copy-ambiguous": "Background storage — ambiguous pools",
+  "background-copy-playback-ambiguous": "Background copy + concurrent playback ambiguity",
   "background-copy-stale": "Background storage — stale observation",
   "background-copy-under-deadband": "Background storage — below deadband",
   "background-copy-with-import": "Background copy + explicit import",
@@ -1191,6 +1193,39 @@ const BUILDERS: Record<FakeScenario, Builder> = {
       zfs: zfsHealthy(now),
       telemetryProfile: "background-copy-ambiguous",
     }),
+
+  "background-copy-playback-ambiguous": (now) => {
+    const snapshot = compose(now, {
+      jellyfin: {
+        serverAvailable: true,
+        version: "10.9.11",
+        sessions: [
+          session({
+            id: "s1",
+            title: "The Bear — S03E01",
+            subtitle: "S03E01 — Tomorrow",
+            method: "transcode",
+            resolution: "1080p",
+            rate: null,
+            progress: 0.27,
+          }),
+        ],
+        lastPlaybackAt: now - MINUTE,
+      },
+      acquisition: acquisitionEmpty(),
+      zfs: zfsHealthy(now),
+      telemetryProfile: "transcode-unknown",
+    });
+    const disk = snapshot.telemetry.disk;
+    if (disk.status === "available" && disk.value) {
+      disk.value.pools = [
+        { pool: "DataStore", readBps: 48_000_000, writeBps: 0 },
+        { pool: "NVME", readBps: 0, writeBps: 0 },
+        { pool: "eSATA", readBps: 0, writeBps: 28_000_000 },
+      ];
+    }
+    return snapshot;
+  },
 
   "background-copy-stale": (now) => {
     const snapshot = compose(now, {
