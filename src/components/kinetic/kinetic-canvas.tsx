@@ -23,6 +23,11 @@ import {
   useRef,
   useState,
 } from "react";
+import type {
+  FocusEvent as ReactFocusEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  RefObject,
+} from "react";
 import type { DashboardSnapshot } from "@/lib/types";
 import { formatRate } from "@/lib/format/bytes";
 import {
@@ -103,6 +108,79 @@ interface InspectorContent {
   relationships: string[];
   x: number;
   y: number;
+}
+
+interface ActiveDownloadRow {
+  id: string;
+  title: string;
+  progress: number;
+  progressLabel: string;
+  rateLabel: string;
+}
+
+function activeDownloadRows(snapshot: DashboardSnapshot): ActiveDownloadRow[] {
+  return snapshot.acquisition.items
+    .filter(
+      (item) =>
+        item.state === "downloading" &&
+        (item.source === "qbittorrent" || Boolean(item.correlationKey)),
+    )
+    .map((item) => {
+      const progress = Number.isFinite(item.progress)
+        ? Math.min(1, Math.max(0, item.progress))
+        : 0;
+      return {
+        id: item.id,
+        title: item.title,
+        progress,
+        progressLabel: Number.isFinite(item.progress) ? `${Math.round(progress * 100)}%` : "—",
+        rateLabel: item.rateBps === null ? "—" : formatRate(item.rateBps),
+      };
+    });
+}
+
+function useStableDownloadRows(snapshot: DashboardSnapshot): ActiveDownloadRow[] {
+  const rows = useMemo(() => activeDownloadRows(snapshot), [snapshot]);
+  const orderRef = useRef<string[]>([]);
+  return useMemo(() => {
+    const current = new Set(rows.map((row) => row.id));
+    const order = orderRef.current.filter((id) => current.has(id));
+    for (const row of rows) {
+      if (!order.includes(row.id)) order.push(row.id);
+    }
+    orderRef.current = order;
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return order.map((id) => byId.get(id)!);
+  }, [rows]);
+}
+
+function useDownloadPanelPresence() {
+  const [phase, setPhase] = useState<"closed" | "open" | "closing">("closed");
+  const graceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearTimers = useCallback(() => {
+    if (graceTimer.current !== null) clearTimeout(graceTimer.current);
+    if (exitTimer.current !== null) clearTimeout(exitTimer.current);
+    graceTimer.current = null;
+    exitTimer.current = null;
+  }, []);
+  const open = useCallback(() => {
+    clearTimers();
+    setPhase("open");
+  }, [clearTimers]);
+  const close = useCallback(() => {
+    clearTimers();
+    setPhase("closed");
+  }, [clearTimers]);
+  const scheduleClose = useCallback(() => {
+    clearTimers();
+    graceTimer.current = setTimeout(() => {
+      setPhase("closing");
+      exitTimer.current = setTimeout(() => setPhase("closed"), 140);
+    }, 110);
+  }, [clearTimers]);
+  useEffect(() => clearTimers, [clearTimers]);
+  return { phase, open, close, scheduleClose };
 }
 
 const FLOW_KIND_WORDS: Record<KineticFlow["kind"], string> = {
@@ -268,6 +346,49 @@ export function KineticCanvas({
   const pageVisible = usePageVisible();
   const [selection, setSelection] = useState<KineticSelection | null>(null);
   const [motionOn, setMotionOn] = useState(false);
+  const downloadRows = useStableDownloadRows(snapshot);
+  const downloadPanel = useDownloadPanelPresence();
+  const downloadTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const downloadPanelRef = useRef<HTMLElement | null>(null);
+  const downloadListRef = useRef<HTMLUListElement | null>(null);
+  const pendingDownloadFocusRef = useRef(false);
+  const focusDownloadPanelTarget = useCallback(() => {
+    const target = downloadListRef.current ?? downloadPanelRef.current;
+    if (!target) return false;
+    target.focus();
+    pendingDownloadFocusRef.current = false;
+    return true;
+  }, []);
+  const downloadRegionContains = useCallback(
+    (target: EventTarget | null) =>
+      target instanceof Node &&
+      (downloadTriggerRef.current?.contains(target) === true ||
+        downloadPanelRef.current?.contains(target) === true),
+    [],
+  );
+  const blurDownloadRegion = useCallback(
+    (event: ReactFocusEvent<HTMLElement>) => {
+      if (!downloadRegionContains(event.relatedTarget)) {
+        downloadPanel.scheduleClose();
+      }
+    },
+    [downloadPanel, downloadRegionContains],
+  );
+  const enterDownloadPanel = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>) => {
+      if (event.key !== "Tab" || event.shiftKey) return;
+      event.preventDefault();
+      pendingDownloadFocusRef.current = true;
+      downloadPanel.open();
+      focusDownloadPanelTarget();
+    },
+    [downloadPanel, focusDownloadPanelTarget],
+  );
+
+  useEffect(() => {
+    if (downloadPanel.phase !== "open" || !pendingDownloadFocusRef.current) return;
+    focusDownloadPanelTarget();
+  }, [downloadPanel.phase, downloadRows.length, focusDownloadPanelTarget]);
 
   // ONE engine per mounted stage: its epoch — and therefore every particle's
   // phase — is established exactly once, here.
@@ -516,6 +637,28 @@ export function KineticCanvas({
           toggle={toggle}
           cellsById={cellsById}
           surfaceLabel={surfaceLabel}
+          downloadPanelOpen={downloadPanel.phase !== "closed"}
+          openDownloadPanel={downloadPanel.open}
+          closeDownloadPanel={downloadPanel.scheduleClose}
+          dismissDownloadPanel={downloadPanel.close}
+          downloadTriggerRef={downloadTriggerRef}
+          enterDownloadPanel={enterDownloadPanel}
+          blurDownloadRegion={blurDownloadRegion}
+        />
+      ) : null}
+
+      {layout && downloadPanel.phase !== "closed" ? (
+        <DownloadPanel
+          rows={downloadRows}
+          scene={scene}
+          layout={layout}
+          closing={downloadPanel.phase === "closing"}
+          onEnter={downloadPanel.open}
+          onLeave={downloadPanel.scheduleClose}
+          panelRef={downloadPanelRef}
+          listRef={downloadListRef}
+          triggerRef={downloadTriggerRef}
+          onBlur={blurDownloadRegion}
         />
       ) : null}
 
@@ -580,6 +723,144 @@ export function KineticCanvas({
   );
 }
 
+function DownloadPanel({
+  rows,
+  scene,
+  layout,
+  closing,
+  onEnter,
+  onLeave,
+  panelRef,
+  listRef,
+  triggerRef,
+  onBlur,
+}: {
+  rows: ActiveDownloadRow[];
+  scene: KineticScene;
+  layout: KineticLayout;
+  closing: boolean;
+  onEnter: () => void;
+  onLeave: () => void;
+  panelRef: RefObject<HTMLElement | null>;
+  listRef: RefObject<HTMLUListElement | null>;
+  triggerRef: RefObject<HTMLButtonElement | null>;
+  onBlur: (event: ReactFocusEvent<HTMLElement>) => void;
+}) {
+  const anchor = layout.anchors.find((candidate) => candidate.id === "qbittorrent")!;
+  const model = scene.anchors.find((candidate) => candidate.id === "qbittorrent")!;
+  const panelW = 320;
+  const gap = Math.max(62, anchor.r * 0.72);
+  const fitsRight = anchor.x + gap + panelW <= layout.w - 12;
+  const left = fitsRight
+    ? anchor.x + gap
+    : Math.max(12, anchor.x - gap - panelW);
+  const top = Math.min(
+    Math.max(layout.bandH + 12, anchor.y - 78),
+    Math.max(layout.bandH + 12, layout.h - 360),
+  );
+  const qualification =
+    model.status === "down"
+      ? "unavailable · last known"
+      : model.status === "degraded"
+        ? "data may be stale"
+        : null;
+
+  return (
+    <aside
+      ref={panelRef}
+      id="qbittorrent-download-panel"
+      role="region"
+      tabIndex={-1}
+      data-download-panel
+      aria-labelledby="qbittorrent-download-panel-title"
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
+      onFocus={onEnter}
+      onBlur={onBlur}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Tab" && event.shiftKey) {
+          event.preventDefault();
+          triggerRef.current?.focus();
+        }
+      }}
+      className={`absolute z-20 w-[320px] origin-top-left rounded-xl border border-white/[0.08] bg-[#0d1016]/[0.97] px-3 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.48)] backdrop-blur-sm transition-[opacity,transform] duration-[140ms] ease-out ${
+        closing ? "pointer-events-none translate-y-1 scale-[0.985] opacity-0" : "opacity-100"
+      }`}
+      style={{
+        left,
+        top,
+        pointerEvents: closing ? "none" : "auto",
+        animation: closing ? undefined : "kinetic-panel-in 140ms ease-out",
+      }}
+    >
+      <div className="flex items-baseline justify-between gap-3 px-1 pb-2">
+        <div>
+          <h2
+            id="qbittorrent-download-panel-title"
+            className="text-[13px] font-semibold tracking-tight text-fg"
+          >
+            Active downloads
+          </h2>
+          {qualification ? (
+            <p className="mt-0.5 text-[10px] tracking-wide text-warn">{qualification}</p>
+          ) : null}
+        </div>
+        {rows.length > 0 ? (
+          <span className="text-[11px] tabular-nums text-faint">{rows.length}</span>
+        ) : null}
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="border-t border-white/[0.06] px-1 py-3 text-[12px] text-faint">
+          No active downloads
+        </p>
+      ) : (
+        <ul
+          ref={listRef}
+          data-download-list
+          tabIndex={0}
+          aria-label="Active downloads list"
+          onKeyDown={(event) => {
+            if (event.key === "Tab" && event.shiftKey) {
+              event.preventDefault();
+              triggerRef.current?.focus();
+            }
+          }}
+          className={`max-h-64 overflow-y-auto overscroll-contain border-t border-white/[0.06] pr-1 [scrollbar-width:thin] ${FOCUS_RING}`}
+        >
+          {rows.map((row) => (
+            <li
+              key={row.id}
+              data-download-row={row.id}
+              className="relative grid min-h-10 grid-cols-[minmax(0,1fr)_48px_76px] items-center gap-2 border-b border-white/[0.045] px-1 last:border-b-0"
+              aria-label={`${row.title}; ${row.progressLabel}; ${row.rateLabel}`}
+            >
+              <span
+                title={row.title}
+                className="w-[13ch] max-w-full truncate whitespace-nowrap text-[12px] text-fg"
+              >
+                {row.title}
+              </span>
+              <span className="text-right text-[11px] tabular-nums text-muted">
+                {row.progressLabel}
+              </span>
+              <span className="text-right text-[11px] tabular-nums text-fg/85">
+                {row.rateLabel}
+              </span>
+              <span
+                aria-hidden="true"
+                className="absolute inset-x-1 bottom-0 h-px origin-left bg-accent/35 transition-transform duration-500"
+                style={{ transform: `scaleX(${row.progress})` }}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </aside>
+  );
+}
+
 // --- DOM overlay ----------------------------------------------------------------------------
 
 function KineticOverlay({
@@ -589,6 +870,13 @@ function KineticOverlay({
   toggle,
   cellsById,
   surfaceLabel,
+  downloadPanelOpen,
+  openDownloadPanel,
+  closeDownloadPanel,
+  dismissDownloadPanel,
+  downloadTriggerRef,
+  enterDownloadPanel,
+  blurDownloadRegion,
 }: {
   scene: KineticScene;
   layout: KineticLayout;
@@ -596,6 +884,13 @@ function KineticOverlay({
   toggle: (next: KineticSelection, initiator: HTMLElement | null) => void;
   cellsById: Map<string, { name: string; label: string }>;
   surfaceLabel: string;
+  downloadPanelOpen: boolean;
+  openDownloadPanel: () => void;
+  closeDownloadPanel: () => void;
+  dismissDownloadPanel: () => void;
+  downloadTriggerRef: RefObject<HTMLButtonElement | null>;
+  enterDownloadPanel: (event: ReactKeyboardEvent<HTMLElement>) => void;
+  blurDownloadRegion: (event: ReactFocusEvent<HTMLElement>) => void;
 }) {
   const dimClass = (member: KineticSelection): string => {
     if (!selection) return "";
@@ -706,13 +1001,22 @@ function KineticOverlay({
         const idle = !model.active;
         return (
           <button
+            ref={placed.id === "qbittorrent" ? downloadTriggerRef : undefined}
             key={placed.id}
             type="button"
             data-kinetic-anchor={placed.id}
             aria-label={`${model.label}${model.headline ? `; ${model.headline}` : idle ? "; idle" : ""}`}
-            onClick={(event) =>
-              toggle({ kind: "anchor", id: placed.id }, event.currentTarget)
-            }
+            aria-expanded={placed.id === "qbittorrent" ? downloadPanelOpen : undefined}
+            aria-controls={placed.id === "qbittorrent" ? "qbittorrent-download-panel" : undefined}
+            onMouseEnter={placed.id === "qbittorrent" ? openDownloadPanel : undefined}
+            onMouseLeave={placed.id === "qbittorrent" ? closeDownloadPanel : undefined}
+            onFocus={placed.id === "qbittorrent" ? openDownloadPanel : undefined}
+            onBlur={placed.id === "qbittorrent" ? blurDownloadRegion : undefined}
+            onKeyDown={placed.id === "qbittorrent" ? enterDownloadPanel : undefined}
+            onClick={(event) => {
+              if (placed.id === "qbittorrent") dismissDownloadPanel();
+              toggle({ kind: "anchor", id: placed.id }, event.currentTarget);
+            }}
             className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-md text-center transition-opacity duration-300 ${FOCUS_RING} ${dimClass({ kind: "anchor", id: placed.id })}`}
             style={{ left: placed.x, top: placed.y, pointerEvents: "auto" }}
           >
