@@ -1138,7 +1138,7 @@ async function captureContainerTreemapGrowth(browser, baseUrl) {
   );
   const stage = await page.locator("[data-kinetic-stage]").elementHandle();
   const tile = await page
-    .locator('[data-kinetic-cell][aria-label^="immich-machine-learning;"]')
+    .locator('[data-kinetic-cell="fake-immich-machine-learning"]')
     .elementHandle();
   const scale = (value) =>
     page.evaluate((next) => window.__homelabSetContainerMemoryScale(next), value);
@@ -1164,8 +1164,8 @@ async function captureContainerTreemapGrowth(browser, baseUrl) {
  * PLA-286 acceptance evidence: one real-shaped DataStore → eSATA flow stays
  * continuously identifiable across a 2.2s ambiguous telemetry window (frozen
  * as last-known, never a fresh rate), resumes on the same mounted canvas, then
- * disappears once after confirmed inactivity. The
- * ~36s clip crosses many 2s simulator samples without navigation or remounting.
+ * disappears once after confirmed inactivity. The ~36s clip crosses many 2s
+ * simulator samples without navigation or remounting.
  */
 async function captureBackgroundFlowContinuity(browser, baseUrl) {
   const context = await browser.newContext({
@@ -1285,6 +1285,10 @@ async function captureMotion(browser, baseUrl) {
   }
   if (KINETIC && ONLY?.includes("qb-download-panel")) {
     await captureQbDownloadPanelMotion(browser, baseUrl);
+    return;
+  }
+  if (KINETIC && ONLY?.includes("background-flow-continuity")) {
+    await captureBackgroundFlowContinuity(browser, baseUrl);
     return;
   }
   const context = await browser.newContext({
