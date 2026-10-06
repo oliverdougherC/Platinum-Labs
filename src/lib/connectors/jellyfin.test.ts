@@ -219,7 +219,11 @@ describe("normalizeJellyfin", () => {
 describe("createJellyfinConnector", () => {
   it("polls System/Info and Sessions and normalizes", async () => {
     const calls: string[] = [];
-    const http: HttpGet = async (url) => {
+    const http: HttpGet = async (url, options) => {
+      expect(options.headers).toEqual({
+        Authorization: 'MediaBrowser Token="secret"',
+        Accept: "application/json",
+      });
       calls.push(url);
       return url.endsWith("/System/Info") ? SYSTEM : [MOVIE_SESSION];
     };

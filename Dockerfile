@@ -10,7 +10,7 @@
 # the same Node/OS as the runner, then carried through Next's standalone output.
 
 # ---- deps: install and compile node_modules (incl. native better-sqlite3) ----
-FROM node:22-bookworm-slim AS deps
+FROM node:22.23.3-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS deps
 WORKDIR /app
 # Build toolchain for better-sqlite3's native compile.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -20,7 +20,7 @@ COPY package.json package-lock.json .npmrc ./
 RUN npm ci
 
 # ---- builder: produce the standalone Next build ----
-FROM node:22-bookworm-slim AS builder
+FROM node:22.23.3-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS builder
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
@@ -28,7 +28,7 @@ COPY . .
 RUN npm run build
 
 # ---- runner: minimal image with only what the server needs ----
-FROM node:22-bookworm-slim AS runner
+FROM node:22.23.3-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS runner
 WORKDIR /app
 # Deployment provenance: the deploy tooling passes the exact deployed git SHA
 # so /api/health can report it as `revision`.

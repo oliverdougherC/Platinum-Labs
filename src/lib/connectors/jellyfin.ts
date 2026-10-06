@@ -199,7 +199,7 @@ export function createJellyfinConnector(
   http: HttpGet,
   now: () => number = Date.now,
 ): Connector<JellyfinSnapshot> {
-  const headers = { "X-Emby-Token": cfg.apiKey, Accept: "application/json" };
+  const headers = { Authorization: `MediaBrowser Token="${cfg.apiKey}"`, Accept: "application/json" };
   const base = cfg.url.replace(/\/$/, "");
   return {
     id: "jellyfin",
